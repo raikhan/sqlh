@@ -2,7 +2,9 @@ package lsp
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"sync/atomic"
 	"time"
 
 	"github.com/sourcegraph/jsonrpc2"
@@ -75,4 +77,49 @@ func (m *Messenger) ShowDocument(uri string, takeFocus bool) {
 			log.Println("window/showDocument:", err)
 		}
 	}()
+}
+
+var progressSeq int64
+
+// Progress reports a long-running operation with $/progress. Create it from
+// a goroutine (it issues a request and waits for the client). If the client
+// does not support work-done progress, all methods are no-ops.
+type Progress struct {
+	conn  *jsonrpc2.Conn
+	token string
+	ok    bool
+}
+
+func StartProgress(conn *jsonrpc2.Conn, enabled bool, title string) *Progress {
+	p := &Progress{conn: conn, token: fmt.Sprintf("sqlh-%d", atomic.AddInt64(&progressSeq, 1))}
+	if !enabled || conn == nil {
+		return p
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := conn.Call(ctx, "window/workDoneProgress/create", WorkDoneProgressCreateParams{Token: p.token}, nil); err != nil {
+		log.Println("workDoneProgress/create:", err)
+		return p
+	}
+	p.ok = true
+	p.notify(WorkDoneProgressValue{Kind: "begin", Title: title})
+	return p
+}
+
+func (p *Progress) notify(v WorkDoneProgressValue) {
+	if !p.ok {
+		return
+	}
+	if err := p.conn.Notify(context.Background(), "$/progress", ProgressParams{Token: p.token, Value: v}); err != nil {
+		log.Println("$/progress:", err)
+	}
+}
+
+func (p *Progress) Report(message string) {
+	p.notify(WorkDoneProgressValue{Kind: "report", Message: message})
+}
+
+func (p *Progress) End(message string) {
+	p.notify(WorkDoneProgressValue{Kind: "end", Message: message})
+	p.ok = false
 }

@@ -1,10 +1,8 @@
 package handler
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -14,11 +12,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/olekukonko/tablewriter"
-	"github.com/olekukonko/tablewriter/tw"
 	"github.com/raikhan/sqlh/internal/database"
 	"github.com/raikhan/sqlh/internal/lsp"
-	"github.com/raikhan/sqlh/internal/sqlsplit"
 	"github.com/sourcegraph/jsonrpc2"
 )
 
@@ -42,12 +37,31 @@ func (s *Server) handleTextDocumentCodeAction(ctx context.Context, conn *jsonrpc
 		return nil, err
 	}
 
+	limit := s.getConfig().Results.Limit()
 	commands := []lsp.Command{
 		{
-			Title:     "Execute Query",
+			Title:     fmt.Sprintf("Run → CSV (first %d rows)", limit),
+			Command:   CommandRun,
+			Arguments: []interface{}{params.TextDocument.URI, params.Range},
+		},
+		{
+			Title:     "Export → CSV (all rows)",
+			Command:   CommandExport,
+			Arguments: []interface{}{params.TextDocument.URI, params.Range},
+		},
+		{
+			Title:     fmt.Sprintf("Show results (text, first %d rows)", limit),
 			Command:   CommandExecuteQuery,
 			Arguments: []interface{}{params.TextDocument.URI, params.Range},
 		},
+	}
+	if j := s.runningJob(); j != nil {
+		commands = append([]lsp.Command{{
+			Title:   "Cancel: " + j.title,
+			Command: CommandCancel,
+		}}, commands...)
+	}
+	commands = append(commands, []lsp.Command{
 		{
 			Title:     "Show Databases",
 			Command:   CommandShowDatabases,
@@ -78,7 +92,7 @@ func (s *Server) handleTextDocumentCodeAction(ctx context.Context, conn *jsonrpc
 			Command:   CommandShowTables,
 			Arguments: []interface{}{},
 		},
-	}
+	}...)
 	return commands, nil
 }
 
@@ -93,8 +107,23 @@ func (s *Server) handleWorkspaceExecuteCommand(ctx context.Context, conn *jsonrp
 	}
 
 	switch params.Command {
-	case CommandExecuteQuery:
-		result, err = s.executeQuery(ctx, params)
+	case CommandExecuteQuery, CommandRun, CommandExport:
+		uri, rng, limit, vertical, perr := parseRunArgs(params.Arguments)
+		if perr != nil {
+			return nil, perr
+		}
+		if params.Range != nil {
+			rng = params.Range
+		}
+		kind := map[string]jobKind{CommandExecuteQuery: jobText, CommandRun: jobPreview, CommandExport: jobExport}[params.Command]
+		result, err = s.startRun(ctx, conn, runRequest{kind: kind, limit: limit, uri: uri, rng: rng, vertical: vertical})
+	case CommandCancel:
+		if j := s.runningJob(); j != nil {
+			j.stop("by request")
+			result = "cancelling: " + j.title
+		} else {
+			result = "no query is running"
+		}
 	case CommandShowDatabases:
 		result, err = s.showDatabases(ctx, params)
 	case CommandShowSchemas:
@@ -147,124 +176,6 @@ func (s *Server) presentCommandResult(ctx context.Context, conn *jsonrpc2.Conn, 
 		return
 	}
 	m.ShowDocument("file://"+path, true)
-}
-
-func (s *Server) executeQuery(ctx context.Context, params lsp.ExecuteCommandParams) (result interface{}, err error) {
-	if s.dbConn == nil {
-		return nil, errors.New("database connection is not open")
-	}
-
-	// Arguments: [<File URI>?, <Range>?, "-show-vertical"?]
-	// The URI defaults to the most recently used document.
-	uri := s.lastURI
-	showVertical := false
-	var rng *lsp.Range
-	for _, arg := range params.Arguments {
-		switch v := arg.(type) {
-		case string:
-			if v == "-show-vertical" {
-				showVertical = true
-			} else {
-				uri = v
-			}
-		case map[string]interface{}:
-			r, err := rangeFromArg(v)
-			if err != nil {
-				return nil, err
-			}
-			rng = r
-		}
-	}
-	if params.Range != nil {
-		rng = params.Range
-	}
-	if uri == "" {
-		return nil, fmt.Errorf("required arguments were not provided: <File URI>")
-	}
-	f, ok := s.files[uri]
-	if !ok {
-		return nil, fmt.Errorf("document not found, %q", uri)
-	}
-
-	// extract target statements: explicit selection, else statement under
-	// cursor, else whole document
-	dialectOf := sqlsplit.DialectOf(string(s.curDBCfg.Driver))
-	var stmts []sqlsplit.Statement
-	if rng != nil {
-		selected := extractRangeText(f.Text, rng.Start.Line, rng.Start.Character, rng.End.Line, rng.End.Character)
-		// Helix's normal-mode cursor is a 1-character selection
-		if len(strings.TrimSpace(selected)) > 1 {
-			stmts = sqlsplit.Split(selected, dialectOf)
-		} else {
-			all := sqlsplit.Split(f.Text, dialectOf)
-			st, ok := sqlsplit.AtCursor(f.Text, all, sqlsplit.Position{Line: rng.Start.Line, Char: rng.Start.Character})
-			if !ok {
-				return nil, fmt.Errorf("no statement at cursor (line %d)", rng.Start.Line+1)
-			}
-			stmts = []sqlsplit.Statement{st}
-		}
-	} else {
-		stmts = sqlsplit.Split(f.Text, dialectOf)
-	}
-	if len(stmts) == 0 {
-		return nil, errors.New("no statement to execute")
-	}
-
-	// execute statements
-	buf := new(bytes.Buffer)
-	for _, stmt := range stmts {
-		verb := stripLeadingComments(stmt.SQL)
-		if verb == "" {
-			continue
-		}
-		var (
-			res string
-			err error
-		)
-		switch _, isQuery := database.QueryExecType(verb, verb); {
-		case stmt.PLSQL:
-			// rows-affected is meaningless for PL/SQL units
-			if _, err = s.exec(ctx, stmt.SQL, showVertical); err == nil {
-				res = "PL/SQL block completed"
-			}
-		case isQuery:
-			res, err = s.query(ctx, stmt.SQL, showVertical)
-		default:
-			res, err = s.exec(ctx, stmt.SQL, showVertical)
-		}
-		if err != nil {
-			if len(stmts) > 1 {
-				return nil, fmt.Errorf("line %d: %w", stmt.Start.Line+1, err)
-			}
-			return nil, err
-		}
-		fmt.Fprintln(buf, res)
-	}
-	return buf.String(), nil
-}
-
-// stripLeadingComments removes leading "--" line comments and "/* */" block
-// comments so the first word of the statement is the verb (SELECT, INSERT, ...).
-func stripLeadingComments(q string) string {
-	for {
-		q = strings.TrimSpace(q)
-		switch {
-		case strings.HasPrefix(q, "--"):
-			if i := strings.IndexByte(q, '\n'); i >= 0 {
-				q = q[i+1:]
-			} else {
-				return ""
-			}
-		case strings.HasPrefix(q, "/*"):
-			if i := strings.Index(q, "*/"); i >= 0 {
-				q = q[i+2:]
-			} else {
-				return ""
-			}
-		default:
-			return q
-		}
-	}
 }
 
 func rangeFromArg(v map[string]interface{}) (*lsp.Range, error) {
@@ -375,84 +286,6 @@ func sliceUTF16(s string, start, end int) string {
 		startByte = endByte
 	}
 	return s[startByte:endByte]
-}
-
-func (s *Server) query(ctx context.Context, query string, vertical bool) (string, error) {
-	repo, err := s.newDBRepository(ctx)
-	if err != nil {
-		return "", err
-	}
-	rows, err := repo.Query(ctx, query)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = rows.Close() }()
-	columns, err := database.Columns(rows)
-	if err != nil {
-		return "", err
-	}
-	stringRows, err := database.ScanRows(rows, len(columns))
-	if err != nil {
-		return "", err
-	}
-
-	buf := new(bytes.Buffer)
-	if vertical {
-		table := newVerticalTableWriter(buf)
-		table.setHeaders(columns)
-		for _, stringRow := range stringRows {
-			table.appendRow(stringRow)
-		}
-		table.render()
-	} else {
-		table := tablewriter.NewTable(buf, tablewriter.WithHeaderConfig(tw.CellConfig{
-			Formatting: tw.CellFormatting{AutoFormat: tw.Off},
-		}))
-		// Convert []string to []any for Header
-		headers := make([]any, len(columns))
-		for i, v := range columns {
-			headers[i] = v
-		}
-		table.Header(headers...)
-		for _, stringRow := range stringRows {
-			// Convert []string to []any for Append
-			row := make([]any, len(stringRow))
-			for i, v := range stringRow {
-				row[i] = v
-			}
-			if err := table.Append(row...); err != nil {
-				return "", err
-			}
-		}
-		if err := table.Render(); err != nil {
-			return "", err
-		}
-	}
-	fmt.Fprintf(buf, "%d rows in set", len(stringRows))
-	fmt.Fprintln(buf, "")
-	fmt.Fprintln(buf, "")
-	return buf.String(), nil
-}
-
-func (s *Server) exec(ctx context.Context, query string, vertical bool) (string, error) {
-	repo, err := s.newDBRepository(ctx)
-	if err != nil {
-		return "", err
-	}
-	result, err := repo.Exec(ctx, query)
-	if err != nil {
-		return "", err
-	}
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return "", err
-	}
-
-	buf := new(bytes.Buffer)
-	fmt.Fprintf(buf, "Query OK, %d row affected", rowsAffected)
-	fmt.Fprintln(buf, "")
-	fmt.Fprintln(buf, "")
-	return buf.String(), nil
 }
 
 func (s *Server) showDatabases(ctx context.Context, params lsp.ExecuteCommandParams) (result interface{}, err error) {

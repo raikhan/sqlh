@@ -7,6 +7,13 @@ lowercaseKeywords: true
 # Mixed-case names are left alone.
 lowercaseIdentifiers: true
 
+# Query results ("Run → CSV" / "Export → CSV" code actions)
+results:
+  # {workspace} = the editor's project root; also {home}, {conn}, "~"
+  dir: "{workspace}/.sqlh/results"   # .sqlh/ gets a self-ignoring .gitignore
+  previewLimit: 100                   # rows for "Run → CSV" and the text view
+  null: ""                            # text written for SQL NULL
+
 connections:
   - alias: pg_local
     driver: postgresql

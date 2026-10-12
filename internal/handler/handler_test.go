@@ -127,6 +127,9 @@ func TestInitialized(t *testing.T) {
 			RenameProvider:                  true,
 			ExecuteCommandProvider: &lsp.ExecuteCommandOptions{
 				Commands: []string{
+					CommandRun,
+					CommandExport,
+					CommandCancel,
 					CommandExecuteQuery,
 					CommandShowDatabases,
 					CommandShowSchemas,

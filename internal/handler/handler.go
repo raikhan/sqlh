@@ -43,6 +43,13 @@ type Server struct {
 	// lastURI is the most recently used document; used when a workspace command
 	// is issued without a document argument (e.g. Helix :lsp-workspace-command).
 	lastURI string
+
+	// workspace is the client's root directory (initialize rootUri).
+	workspace string
+	// clientProgress: the client supports window/workDoneProgress.
+	clientProgress bool
+
+	jobs jobState
 }
 
 type File struct {
@@ -74,6 +81,8 @@ func panicf(r interface{}, format string, v ...interface{}) error {
 }
 
 func (s *Server) Stop() error {
+	s.stopJob("server stopping")
+	s.closeSession()
 	if s.dbConn != nil {
 		if err := s.dbConn.Close(); err != nil {
 			return err
@@ -174,6 +183,9 @@ func (s *Server) handleInitialize(ctx context.Context, conn *jsonrpc2.Conn, req 
 			RenameProvider:                  true,
 			ExecuteCommandProvider: &lsp.ExecuteCommandOptions{
 				Commands: []string{
+					CommandRun,
+					CommandExport,
+					CommandCancel,
 					CommandExecuteQuery,
 					CommandShowDatabases,
 					CommandShowSchemas,
@@ -187,6 +199,11 @@ func (s *Server) handleInitialize(ctx context.Context, conn *jsonrpc2.Conn, req 
 	}
 
 	s.initOptionDBConfig = params.InitializationOptions.ConnectionConfig
+	s.workspace = uriToPath(params.RootURI)
+	if s.workspace == "" {
+		s.workspace = params.RootPath
+	}
+	s.clientProgress = params.Capabilities.Window != nil && params.Capabilities.Window.WorkDoneProgress
 
 	// Initialize database database connection
 	// NOTE: If no connection is found at this point, it is possible that the connection settings are sent to workspace config, so don't make an error
@@ -208,6 +225,8 @@ func (s *Server) handleInitialize(ctx context.Context, conn *jsonrpc2.Conn, req 
 }
 
 func (s *Server) handleShutdown(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (result interface{}, err error) {
+	s.stopJob("server shutting down")
+	s.closeSession()
 	if s.dbConn != nil {
 		s.dbConn.Close()
 	}
@@ -383,6 +402,9 @@ func (s *Server) reconnectionDB(ctx context.Context) error {
 		return err
 	}
 
+	// the running query and the pinned session belong to the old connection
+	s.stopJob("connection switched")
+	s.closeSession()
 	s.dbConn, s.curDBCfg = dbConn, cfg
 	if prevConn != nil {
 		if err := prevConn.Close(); err != nil {

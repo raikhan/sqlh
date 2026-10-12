@@ -27,6 +27,30 @@ type Config struct {
 	// since those need exact (quoted) spelling.
 	LowercaseIdentifiers bool                 `json:"lowercaseIdentifiers" yaml:"lowercaseIdentifiers"`
 	Connections          []*database.DBConfig `json:"connections" yaml:"connections"`
+	Results              ResultsConfig        `json:"results" yaml:"results"`
+}
+
+// ResultsConfig controls query result files.
+type ResultsConfig struct {
+	// Dir is where CSV files are written. Supports {workspace}, {home}, {conn}
+	// and "~"; relative paths are relative to the workspace.
+	// Default: {workspace}/.sqlh/results
+	Dir string `json:"dir" yaml:"dir"`
+	// PreviewLimit caps rows for "Run → CSV" and the text view. Default: 100.
+	PreviewLimit int `json:"previewLimit" yaml:"previewLimit"`
+	// Null is the text written for SQL NULL. Default: empty.
+	Null string `json:"null" yaml:"null"`
+}
+
+// DefaultPreviewLimit applies when results.previewLimit is not set.
+const DefaultPreviewLimit = 100
+
+// Limit returns the effective preview limit.
+func (r ResultsConfig) Limit() int {
+	if r.PreviewLimit > 0 {
+		return r.PreviewLimit
+	}
+	return DefaultPreviewLimit
 }
 
 func (c *Config) Validate() error {

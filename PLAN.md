@@ -8,21 +8,21 @@ status lives in §4–§5.
 
 ## 1. Decisions (settled)
 
-| Topic | Decision |
-|---|---|
-| Base | Fork sqls, don't rewrite. Parser/completer/hover/formatter are the asset (~19k LOC, tested). |
-| Name | `sqlh` (binary, module `github.com/raikhan/sqlh`, config `~/.config/sqlh/config.yml`). |
-| Shape | Hybrid: the LSP process owns connection + schema cache + live buffers; same operations exposed via (a) LSP `executeCommand`/code actions and (b) a `sqlh` CLI over a Unix socket, with standalone fallback. |
-| Oracle driver | `sijms/go-ora/v2` (pure Go) instead of `godror` (needs Oracle Instant Client; confirmed failing with `DPI-1047` on this machine). |
-| "Current connection" scope | **Per workspace.** Socket keyed by workspace root; CLI resolves it by walking up from cwd (`SQLH_SOCK` overrides). |
-| Results location | **In-project** `{workspace}/.sqlh/results/`, gitignored. `{conn}_{stamp}.csv` + `latest.csv` symlink. |
-| Oracle metadata | **Schema allow-list** per connection (`schemas = [...]`); lazy per-schema loading. Never scan `ALL_TABLES`/`ALL_TAB_COLUMNS` unfiltered. |
-| Opening results | **Save first, don't auto-open.** Viewing (vd in a Herdr pane) is wired on the Helix/Nu side later. |
-| Preview limit | Client-side row cap (read N rows, stop) — dialect-agnostic, safe for CTEs/ORDER BY. Server-side `FETCH FIRST`/`LIMIT` rewriting optional later. |
-| Secrets | `passwdCmd` (e.g. macOS keychain) / `${ENV}` references in config; no plaintext for work DBs. |
-| Config format | YAML (sqls-compatible) for now; TOML deferred (see Phase 1). |
-| Execution splitting | Own dialect-aware splitter (`internal/sqlsplit`); the completion parser is not used for execution. |
-| Git | User pushes; agent commits only when asked. Commit email for this repo: GitHub no-reply. |
+| Topic                      | Decision                                                                                                                                                                                                    |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Base                       | Fork sqls, don't rewrite. Parser/completer/hover/formatter are the asset (~19k LOC, tested).                                                                                                                |
+| Name                       | `sqlh` (binary, module `github.com/raikhan/sqlh`, config `~/.config/sqlh/config.yml`).                                                                                                                      |
+| Shape                      | Hybrid: the LSP process owns connection + schema cache + live buffers; same operations exposed via (a) LSP `executeCommand`/code actions and (b) a `sqlh` CLI over a Unix socket, with standalone fallback. |
+| Oracle driver              | `sijms/go-ora/v2` (pure Go) instead of `godror` (needs Oracle Instant Client; confirmed failing with `DPI-1047` on this machine).                                                                           |
+| "Current connection" scope | **Per workspace.** Socket keyed by workspace root; CLI resolves it by walking up from cwd (`SQLH_SOCK` overrides).                                                                                          |
+| Results location           | **In-project** `{workspace}/.sqlh/results/`, gitignored. `{conn}_{stamp}.csv` + `latest.csv` symlink.                                                                                                       |
+| Oracle metadata            | **Schema allow-list** per connection (`schemas = [...]`); lazy per-schema loading. Never scan `ALL_TABLES`/`ALL_TAB_COLUMNS` unfiltered.                                                                    |
+| Opening results            | **Save first, don't auto-open.** Viewing (vd in a Herdr pane) is wired on the Helix/Nu side later.                                                                                                          |
+| Preview limit              | Client-side row cap (read N rows, stop) — dialect-agnostic, safe for CTEs/ORDER BY. Server-side `FETCH FIRST`/`LIMIT` rewriting optional later.                                                             |
+| Secrets                    | `passwdCmd` (e.g. macOS keychain) / `${ENV}` references in config; no plaintext for work DBs.                                                                                                               |
+| Config format              | YAML (sqls-compatible) for now; TOML deferred (see Phase 1).                                                                                                                                                |
+| Execution splitting        | Own dialect-aware splitter (`internal/sqlsplit`); the completion parser is not used for execution.                                                                                                          |
+| Git                        | User pushes; agent commits only when asked. Commit email for this repo: GitHub no-reply.                                                                                                                    |
 
 ## 2. Key findings (why things are the way they are)
 
@@ -36,7 +36,7 @@ status lives in §4–§5.
   the DSN; for Oracle the login schema is the default, and cross-schema needs the allow-list.
 - Helix config traps that broke the original PG attempt: connections must arrive via
   `initializationOptions.connectionConfig` or a config file; driver name is `postgresql`.
-- The sqls JSON-RPC handler is synchronous: server→client *requests* (`showDocument`) must be
+- The sqls JSON-RPC handler is synchronous: server→client _requests_ (`showDocument`) must be
   issued from a goroutine or they deadlock.
 - Dev Oracle (19c SE2) as `CADE`: 132 users, ~6k visible tables / 104k columns unfiltered
   (mostly SYS/XDB + sibling schemas with identical table names); `CADE` alone: 552 tables,
@@ -46,17 +46,17 @@ status lives in §4–§5.
 ## 3. Architecture
 
 ```
-                ┌──────────────────────────────────────────────┐
-  Helix ──stdio─┤  sqlh lsp                                    │
-   │            │  • parser / completer / hover / format       │
-   │ :pipe-to   │  • connection registry  (current = "dev")    │
-   │ :sh        │  • schema cache (lazy, per schema allow-list)│
-   ▼            │  • exec engine: stmt extract → run → CSV     │
-  sqlh CLI ─────┤  • unix socket JSON-RPC (sourcegraph/jsonrpc2)│
-  (standalone   └──────────────┬───────────────────────────────┘
-   fallback)                   │ go-ora / pgx / sqlite3
-                               ▼
-                       Oracle · Postgres · SQLite
+              ┌──────────────────────────────────────────────┐
+Helix ──stdio─┤  sqlh lsp                                    │
+ │            │  • parser / completer / hover / format       │
+ │ :pipe-to   │  • connection registry  (current = "dev")    │
+ │ :sh        │  • schema cache (lazy, per schema allow-list)│
+ ▼            │  • exec engine: stmt extract → run → CSV     │
+sqlh CLI ─────┤  • unix socket JSON-RPC (sourcegraph/jsonrpc2)│
+(standalone   └──────────────┬───────────────────────────────┘
+ fallback)                   │ go-ora / pgx / sqlite3
+                             ▼
+                     Oracle · Postgres · SQLite
 ```
 
 ### Config target (`~/.config/sqlh/config.toml`, overridable by `.sqlh.toml` up from workspace root)
@@ -89,14 +89,14 @@ path = "./scratch.db"
 
 ### Control plane (Phase 3)
 
-| CLI | LSP `executeCommand` | effect |
-|---|---|---|
-| `sqlh connect [alias]` (none → fzf picker) | `switchConnections "alias"` | switch + re-cache; completions follow |
-| `sqlh connections` / `sqlh status` | `showConnections` | list, mark current |
-| `sqlh run [--limit N] [--file F --line L] [--out P]` | `sqlh.run 100` | preview → CSV |
-| `sqlh export ...` (= `run --limit 0`) | `sqlh.export` | full run → CSV, streamed |
-| `sqlh cancel` | `sqlh.cancel` | abort running query |
-| `sqlh refresh` | `sqlh.refresh` | re-cache schema |
+| CLI                                                  | LSP `executeCommand`        | effect                                |
+| ---------------------------------------------------- | --------------------------- | ------------------------------------- |
+| `sqlh connect [alias]` (none → fzf picker)           | `switchConnections "alias"` | switch + re-cache; completions follow |
+| `sqlh connections` / `sqlh status`                   | `showConnections`           | list, mark current                    |
+| `sqlh run [--limit N] [--file F --line L] [--out P]` | `sqlh.run 100`              | preview → CSV                         |
+| `sqlh export ...` (= `run --limit 0`)                | `sqlh.export`               | full run → CSV, streamed              |
+| `sqlh cancel`                                        | `sqlh.cancel`               | abort running query                   |
+| `sqlh refresh`                                       | `sqlh.refresh`              | re-cache schema                       |
 
 Statement selection priority: stdin SQL → `{file,line}` against the server's **live buffer**
 (no save needed) → selection/statement-under-cursor from code action → whole document.
@@ -105,8 +105,14 @@ Statement selection priority: stdin SQL → `{file,line}` against the server's *
 
 ```toml
 [keys.normal.space.q]
-r = [":pipe-to sqlh run --limit 100 --file r##'%{buffer_name}'## --line %{cursor_line}", ":sh ~/.config/helix/helix-action.nu errors"]
-R = [":pipe-to sqlh export --file r##'%{buffer_name}'## --line %{cursor_line}", ":sh ~/.config/helix/helix-action.nu errors"]
+r = [
+  ":pipe-to sqlh run --limit 100 --file r##'%{buffer_name}'## --line %{cursor_line}",
+  ":sh ~/.config/helix/helix-action.nu errors",
+]
+R = [
+  ":pipe-to sqlh export --file r##'%{buffer_name}'## --line %{cursor_line}",
+  ":sh ~/.config/helix/helix-action.nu errors",
+]
 v = [":sh ~/.config/helix/open-in-herdr-pane.nu 0.9 vd (sqlh latest)"]
 c = [":sh ~/.config/helix/open-in-herdr-pane.nu 0.3 sqlh connect"]
 s = [":lsp-workspace-command showConnections"]
@@ -148,6 +154,7 @@ s = [":lsp-workspace-command showConnections"]
 - [ ] Drop MySQL/MSSQL/H2/Vertica/ClickHouse drivers (binary 52 MB)? Undecided, cosmetic — build tags if wanted.
 
 Known limitations (not blocking):
+
 - FK join hints only for the default (login) schema; FK cache is keyed by table name only, and sibling schemas (`CADE500`, `CHEMALERT*`) share table names.
 - Synonyms aren't completed (CADE has 2; other schemas rely on them heavily).
 - Oracle `DATE`/`TIMESTAMP` render as RFC 3339 UTC (`2026-10-12T16:37:20Z`) in result tables → decide formatting in Phase 2 (CSV).
@@ -166,15 +173,15 @@ Known limitations (not blocking):
       between layouts. Now every `:format` result is checked before it's applied:
       - hazards skipped (above); formatter panics recovered → skip
       - spacing inside statements canonicalised from the token sequence first (layout-
-        independent input; adjacency kept where meaningful: name+`(`, word+string, `.`, ops)
+      independent input; adjacency kept where meaningful: name+`(`, word+string, `.`, ops)
       - result must have identical tokens to the source (comments/strings/quoted identifiers
-        exact, words case-insensitive, operators unsplit), else skip
+      exact, words case-insensitive, operators unsplit), else skip
       - fixed point: up to 3 verified passes until formatting again changes nothing
       - layout between statements (blank lines, `; -- note`, leading/trailing) restored from source
       - one whole-document edit (Helix diffs it → cursor stays); no edit when unchanged
       Result on the battery: 9 formatted, 1 unchanged, 13 skipped with a reason, 0 corrupted.
 - [x] Fix: formatter panicked whenever the parser left an operand nil — typed literals
-      (`d > DATE '2026-04-01'`), half-typed SQL (`b.`, `cadetst.`, `x = `). That was the
+      (`d > DATE '2026-04-01'`), half-typed SQL (`b.`, `cadetst.`, `x =`). That was the
       cause of every formatter crash in the battery. Formatter omits missing operands;
       `ast.joinString/joinRender` skip nil nodes. Battery now: 14 formatted, 1 unchanged,
       8 skipped, 0 crashes. The remaining "alter content" skips are real formatter bugs the
@@ -187,15 +194,38 @@ Known limitations (not blocking):
   sqls. Highlighting is Helix tree-sitter, not the LSP (a stale user grammar in
   `~/.config/helix/runtime/grammars` had broken it; rebuilt).
 
-### Phase 2 — exec engine ⏳ next
+### Phase 2 — exec engine ✅ done
 
-- [ ] `internal/exec`: preview (row cap) and full (streamed) modes, `encoding/csv` writer; reuse `internal/sqlsplit`
-- [ ] Value formatting for CSV: dates/timestamps (local, no `T…Z`), NULL vs empty, LOBs, RAW/bytea
-- [ ] `results_dir` / `results_name` templating, `latest.csv` symlink, `.sqlh/` gitignore hint
-- [ ] Run in goroutine with cancellable context; `$/progress`; `cancel` command
-- [ ] Summary (`rows, elapsed, path`) via `showMessage`; no auto-open
-- [ ] DML/DDL: rows affected; autocommit default; explicit transactions pass through
-- [ ] Expose as `executeCommand` (`sqlh.run <limit>`, `sqlh.export`) + code actions
+- [x] `internal/exec` (no LSP dependency, reusable by the CLI): `Run` streams one statement to a
+      `Sink` (`CSVFile`, `Table`); row cap with "more available" detection (reads N+1);
+      query/exec classification incl. `… RETURNING`; zero-column results; rows affected only for DML
+- [x] Value formatting, based on probing go-ora/pgx/go-sqlite3: Oracle NUMBER / PG numeric are
+      exact strings (no float rounding); wall-clock `TIMESTAMP`/Oracle `DATE` without fake `Z`;
+      PG/SQLite `DATE` date-only (when midnight); `…TZ` keeps offset; RAW/BLOB/BYTEA → `0x…`;
+      JSON as text; NULL → `results.null` (default ""). Note Oracle returns `''` as NULL.
+- [x] Files: `results.dir` (default `{workspace}/.sqlh/results`; `{workspace}` = LSP rootUri,
+      else the document's dir), `{conn}_{yyyymmdd-HHMMSS}[_n][-k].csv`, written to `.part` and
+      renamed on success (cancel/error removes it), `latest.csv` relative symlink (atomic),
+      `.sqlh/.gitignore` = `*` (project .gitignore untouched)
+- [x] Jobs: one background job at a time (LSP stays responsive); `$/progress` begin/report
+      (row count ~1/s)/end; `sqlh.cancel`; switching connection cancels the job first
+      ("cancelled (connection switched)"); second run while busy is rejected with a hint
+- [x] Pinned session (`*sql.Conn`) per connection for all executions: temp tables,
+      `begin … commit/rollback` and session settings carry across runs (psql/sqlplus-like).
+      Pinged before each run, reopened if broken. Switching connection closes it (an open
+      transaction is rolled back by the server).
+- [x] Summary via `showMessage`: `oracle_dev: 100 rows (more available) → .sqlh/results/….csv · 129ms`;
+      DML `3 rows affected`; PL/SQL `PL/SQL block completed`; multi-statement totals; errors with
+      line number; no auto-open
+- [x] Commands/code actions: `Run → CSV (first N rows)` (`sqlh.run`), `Export → CSV (all rows)`
+      (`sqlh.export`), `Show results (text, first N rows)` (`executeQuery`, now async + capped),
+      `Cancel: …` (`sqlh.cancel`, listed only while a job runs). `results.previewLimit` (100).
+- Verified end to end: PG 2M-row export 1.3 s; Oracle `caproduct` 291,245 rows 8 s; Oracle
+  server-side cancel (ORA-01013) and mid-fetch cancel ~10 ms with session reusable; PG
+  cancel immediate; temp table + transaction across runs; switch during a job 0.07 s.
+- Limitations: a custom row limit needs the CLI (Phase 3) — Helix can't pass the cursor with
+  `:lsp-workspace-command`, so `sqlh.run`/`sqlh.export` require a range (code actions provide it).
+  Progress shows nothing while Oracle is still executing (no rows yet); the spinner still runs.
 
 ### Phase 3 — control plane + CLI
 
@@ -233,6 +263,9 @@ Known limitations (not blocking):
 - **2026-10-12** Phase 1.5: formatter no longer corrupts escaped quotes; skips (with a
   warning) documents containing constructs it would break. Then: verified formatting
   (token-identical, stable, layout between statements kept) → format-on-save is safe.
+
+- **2026-10-12** Phase 2 complete: CSV preview/export via code actions, background jobs with
+  progress and cancel, pinned session, exact value formatting, `.sqlh/results` + `latest.csv`.
 
 ## 6. Environment notes
 

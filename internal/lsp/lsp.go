@@ -24,6 +24,30 @@ type InitializeOptions struct {
 }
 
 type ClientCapabilities struct {
+	Window *WindowClientCapabilities `json:"window,omitempty"`
+}
+
+type WindowClientCapabilities struct {
+	WorkDoneProgress bool `json:"workDoneProgress,omitempty"`
+	ShowDocument     *struct {
+		Support bool `json:"support"`
+	} `json:"showDocument,omitempty"`
+}
+
+// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#workDoneProgress
+type WorkDoneProgressCreateParams struct {
+	Token string `json:"token"`
+}
+
+type ProgressParams struct {
+	Token string      `json:"token"`
+	Value interface{} `json:"value"`
+}
+
+type WorkDoneProgressValue struct {
+	Kind    string `json:"kind"` // begin | report | end
+	Title   string `json:"title,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
 type InitializeResult struct {
