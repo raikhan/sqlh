@@ -123,7 +123,7 @@ func (c *Completer) ReferencedTableCandidates(targetTables []*parseutil.TableInf
 	for _, targetTable := range targetTables {
 		includeTables := []*parseutil.TableInfo{}
 		for _, table := range c.DBCache.SortedTables() {
-			if table == targetTable.Name {
+			if strings.EqualFold(table, targetTable.Name) {
 				includeTables = append(includeTables, targetTable)
 			}
 		}
@@ -142,7 +142,7 @@ func (c *Completer) TableCandidates(parent *completionParent, targetTables []*pa
 		for _, table := range c.DBCache.SortedTables() {
 			isExclude := false
 			for _, targetTable := range targetTables {
-				if table == targetTable.Name {
+				if strings.EqualFold(table, targetTable.Name) {
 					isExclude = true
 				}
 			}
@@ -172,6 +172,14 @@ func (c *Completer) joinCandidates(lastTable *parseutil.TableInfo,
 	if len(c.DBCache.ForeignKeys) == 0 {
 		return candidates
 	}
+
+	// FK maps are keyed by the database's spelling of table names.
+	lastTable = c.canonicalTable(lastTable)
+	canonTargets := make([]*parseutil.TableInfo, len(targetTables))
+	for i, t := range targetTables {
+		canonTargets[i] = c.canonicalTable(t)
+	}
+	targetTables = canonTargets
 
 	tMap := make(map[string]*parseutil.TableInfo)
 	for _, t := range targetTables {
@@ -221,6 +229,19 @@ func (c *Completer) joinCandidates(lastTable *parseutil.TableInfo,
 		}
 	}
 	return candidates
+}
+
+// canonicalTable returns a copy of t whose Name uses the cached spelling.
+func (c *Completer) canonicalTable(t *parseutil.TableInfo) *parseutil.TableInfo {
+	if t == nil {
+		return nil
+	}
+	if n, ok := c.DBCache.CanonicalTableName(t.Name); ok && n != t.Name {
+		cp := *t
+		cp.Name = n
+		return &cp
+	}
+	return t
 }
 
 func resolveTables(t *parseutil.TableInfo, cache *database.DBCache) []*parseutil.TableInfo {

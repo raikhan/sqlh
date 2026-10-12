@@ -36,6 +36,12 @@ type DBRepository interface {
 	DescribeForeignKeysBySchema(ctx context.Context, schemaName string) ([]*ForeignKey, error)
 }
 
+// SchemaFilterer is implemented by repositories that can restrict metadata
+// (schemas, tables, columns) to an allow-list of schemas.
+type SchemaFilterer interface {
+	SetSchemaFilter(schemas []string)
+}
+
 type DBOption struct {
 	MaxIdleConns int
 	MaxOpenConns int

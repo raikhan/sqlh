@@ -160,6 +160,18 @@ func (dc *DBCache) SortedTables() []string {
 	return tbls
 }
 
+// CanonicalTableName returns the cached spelling of a default-schema table
+// name, matched case-insensitively (Oracle stores unquoted names upper-case,
+// users usually type lower-case).
+func (dc *DBCache) CanonicalTableName(name string) (string, bool) {
+	for _, t := range dc.SchemaTables[strings.ToUpper(dc.defaultSchema)] {
+		if strings.EqualFold(t, name) {
+			return t, true
+		}
+	}
+	return "", false
+}
+
 func (dc *DBCache) ColumnDescs(tableName string) (cols []*ColumnDesc, ok bool) {
 	cols, ok = dc.ColumnsWithParent[columnDatabaseKey(dc.defaultSchema, tableName)]
 	return

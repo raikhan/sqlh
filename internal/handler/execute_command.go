@@ -9,18 +9,17 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/olekukonko/tablewriter"
 	"github.com/olekukonko/tablewriter/tw"
-	"github.com/sourcegraph/jsonrpc2"
-	"github.com/raikhan/sqlh/ast"
 	"github.com/raikhan/sqlh/internal/database"
 	"github.com/raikhan/sqlh/internal/lsp"
-	"github.com/raikhan/sqlh/parser"
-	"github.com/raikhan/sqlh/token"
+	"github.com/raikhan/sqlh/internal/sqlsplit"
+	"github.com/sourcegraph/jsonrpc2"
 )
 
 const (
@@ -187,46 +186,59 @@ func (s *Server) executeQuery(ctx context.Context, params lsp.ExecuteCommandPara
 		return nil, fmt.Errorf("document not found, %q", uri)
 	}
 
-	// extract target query: explicit selection, else statement under cursor, else whole document
-	text := f.Text
+	// extract target statements: explicit selection, else statement under
+	// cursor, else whole document
+	dialectOf := sqlsplit.DialectOf(string(s.curDBCfg.Driver))
+	var stmts []sqlsplit.Statement
 	if rng != nil {
-		selected := extractRangeText(text, rng.Start.Line, rng.Start.Character, rng.End.Line, rng.End.Character)
-		if strings.TrimSpace(selected) != "" && len(strings.TrimSpace(selected)) > 1 {
-			text = selected
+		selected := extractRangeText(f.Text, rng.Start.Line, rng.Start.Character, rng.End.Line, rng.End.Character)
+		// Helix's normal-mode cursor is a 1-character selection
+		if len(strings.TrimSpace(selected)) > 1 {
+			stmts = sqlsplit.Split(selected, dialectOf)
 		} else {
-			stmt, err := statementAtCursor(text, rng.Start)
-			if err != nil {
-				return nil, err
+			all := sqlsplit.Split(f.Text, dialectOf)
+			st, ok := sqlsplit.AtCursor(f.Text, all, sqlsplit.Position{Line: rng.Start.Line, Char: rng.Start.Character})
+			if !ok {
+				return nil, fmt.Errorf("no statement at cursor (line %d)", rng.Start.Line+1)
 			}
-			text = stmt
+			stmts = []sqlsplit.Statement{st}
 		}
+	} else {
+		stmts = sqlsplit.Split(f.Text, dialectOf)
 	}
-	stmts, err := getStatements(text)
-	if err != nil {
-		return nil, err
+	if len(stmts) == 0 {
+		return nil, errors.New("no statement to execute")
 	}
 
 	// execute statements
 	buf := new(bytes.Buffer)
 	for _, stmt := range stmts {
-		query := stripLeadingComments(stmt.String())
-		if query == "" {
+		verb := stripLeadingComments(stmt.SQL)
+		if verb == "" {
 			continue
 		}
-
-		if _, isQuery := database.QueryExecType(query, query); isQuery {
-			res, err := s.query(ctx, query, showVertical)
-			if err != nil {
-				return nil, err
+		var (
+			res string
+			err error
+		)
+		switch _, isQuery := database.QueryExecType(verb, verb); {
+		case stmt.PLSQL:
+			// rows-affected is meaningless for PL/SQL units
+			if _, err = s.exec(ctx, stmt.SQL, showVertical); err == nil {
+				res = "PL/SQL block completed"
 			}
-			fmt.Fprintln(buf, res)
-		} else {
-			res, err := s.exec(ctx, query, showVertical)
-			if err != nil {
-				return nil, err
-			}
-			fmt.Fprintln(buf, res)
+		case isQuery:
+			res, err = s.query(ctx, stmt.SQL, showVertical)
+		default:
+			res, err = s.exec(ctx, stmt.SQL, showVertical)
 		}
+		if err != nil {
+			if len(stmts) > 1 {
+				return nil, fmt.Errorf("line %d: %w", stmt.Start.Line+1, err)
+			}
+			return nil, err
+		}
+		fmt.Fprintln(buf, res)
 	}
 	return buf.String(), nil
 }
@@ -265,36 +277,6 @@ func rangeFromArg(v map[string]interface{}) (*lsp.Range, error) {
 		return nil, fmt.Errorf("invalid range argument: %w", err)
 	}
 	return &r, nil
-}
-
-// statementAtCursor returns the text of the statement containing pos.
-func statementAtCursor(text string, pos lsp.Position) (string, error) {
-	parsed, err := parser.Parse(text)
-	if err != nil {
-		return "", err
-	}
-	tp := token.Pos{Line: pos.Line, Col: pos.Character}
-	var last *ast.Statement
-	for _, node := range parsed.GetTokens() {
-		stmt, ok := node.(*ast.Statement)
-		if !ok {
-			continue
-		}
-		if strings.TrimSpace(stmt.String()) == "" {
-			continue
-		}
-		if token.ComparePos(stmt.Pos(), tp) <= 0 && token.ComparePos(tp, stmt.End()) <= 0 {
-			return stmt.String(), nil
-		}
-		if token.ComparePos(stmt.End(), tp) < 0 {
-			last = stmt
-		}
-	}
-	// cursor sits in trailing whitespace/comment after a statement: use the nearest preceding one
-	if last != nil {
-		return last.String(), nil
-	}
-	return "", fmt.Errorf("no statement at cursor (line %d)", pos.Line+1)
 }
 
 func extractRangeText(text string, startLine, startChar, endLine, endChar int) string {
@@ -506,40 +488,69 @@ func (s *Server) switchDatabase(ctx context.Context, params lsp.ExecuteCommandPa
 		return nil, fmt.Errorf("specify the db name as a string")
 	}
 
-	// Change current database
+	// Change current database (rolled back if the reconnect fails)
+	prev := s.curDBName
 	s.curDBName = dbName
-
-	// close and reconnection to database
 	if err := s.reconnectionDB(ctx); err != nil {
+		s.curDBName = prev
 		return nil, err
 	}
 
-	return nil, nil
+	return fmt.Sprintf("switched database to %s", dbName), nil
 }
 
 func (s *Server) showConnections(ctx context.Context, params lsp.ExecuteCommandParams) (result interface{}, err error) {
 	results := []string{}
 	conns := s.getConfig().Connections
 	for i, conn := range conns {
-		var desc string
-		if conn.DataSourceName != "" {
-			desc = conn.DataSourceName
-		} else {
-			switch conn.Proto {
-			case database.ProtoTCP:
-				desc = fmt.Sprintf("tcp(%s:%d)/%s", conn.Host, conn.Port, conn.DBName)
-			case database.ProtoUDP:
-				desc = fmt.Sprintf("udp(%s:%d)/%s", conn.Host, conn.Port, conn.DBName)
-			case database.ProtoUnix:
-				desc = fmt.Sprintf("unix(%s)/%s", conn.Path, conn.DBName)
-			case database.ProtoHTTP:
-				desc = fmt.Sprintf("http(%s:%d)/%s", conn.Host, conn.Port, conn.DBName)
-			}
+		mark := " "
+		if i == s.curConnectionIndex && s.dbConn != nil {
+			mark = "*"
 		}
-		res := fmt.Sprintf("%d %s %s %s", i+1, conn.Driver, conn.Alias, desc)
-		results = append(results, res)
+		res := fmt.Sprintf("%s %d %-10s %-12s %s", mark, i+1, conn.Driver, conn.Alias, connectionDesc(conn))
+		results = append(results, strings.TrimRight(res, " "))
 	}
 	return strings.Join(results, "\n"), nil
+}
+
+var dsnPasswordRe = regexp.MustCompile(`(?i)(password=)('[^']*'|\S+)|(://[^:/@]+:)([^@]+)(@)`)
+
+// connectionDesc describes a connection without exposing passwords.
+func connectionDesc(conn *database.DBConfig) string {
+	if conn.DataSourceName != "" {
+		return dsnPasswordRe.ReplaceAllString(conn.DataSourceName, "${1}${3}***${5}")
+	}
+	var desc string
+	switch conn.Proto {
+	case database.ProtoTCP:
+		desc = fmt.Sprintf("tcp(%s:%d)/%s", conn.Host, conn.Port, conn.DBName)
+	case database.ProtoUDP:
+		desc = fmt.Sprintf("udp(%s:%d)/%s", conn.Host, conn.Port, conn.DBName)
+	case database.ProtoUnix:
+		desc = fmt.Sprintf("unix(%s)/%s", conn.Path, conn.DBName)
+	case database.ProtoHTTP:
+		desc = fmt.Sprintf("http(%s:%d)/%s", conn.Host, conn.Port, conn.DBName)
+	default:
+		switch {
+		case conn.Path != "":
+			desc = conn.Path
+		case conn.Host != "":
+			desc = conn.Host
+			if conn.Port != 0 {
+				desc += ":" + strconv.Itoa(conn.Port)
+			}
+			desc += "/" + conn.DBName
+		default:
+			desc = conn.DBName
+		}
+	}
+	if conn.User != "" && desc != "" {
+		desc = conn.User + "@" + desc
+	}
+	if len(conn.Schemas) > 0 {
+		desc += " schemas=" + strings.Join(conn.Schemas, ",")
+	}
+	return desc
 }
 
 func (s *Server) switchConnections(ctx context.Context, params lsp.ExecuteCommandParams) (result interface{}, err error) {
@@ -565,7 +576,17 @@ func (s *Server) switchConnections(ctx context.Context, params lsp.ExecuteComman
 	if index <= 0 {
 		index, err = strconv.Atoi(indexStr)
 		if err != nil {
-			return nil, fmt.Errorf("specify the connection index as a number, %w", err)
+			aliases := []string{}
+			if cfg != nil {
+				for i, conn := range cfg.Connections {
+					if conn.Alias != "" {
+						aliases = append(aliases, conn.Alias)
+					} else {
+						aliases = append(aliases, strconv.Itoa(i+1))
+					}
+				}
+			}
+			return nil, fmt.Errorf("unknown connection %q (available: %s)", indexStr, strings.Join(aliases, ", "))
 		}
 	}
 
@@ -574,15 +595,26 @@ func (s *Server) switchConnections(ctx context.Context, params lsp.ExecuteComman
 	}
 	index = index - 1
 
-	// Reconnect database
-	s.curConnectionIndex = index
-
-	// close and reconnection to database
+	// Reconnect database (rolled back if the reconnect fails). The database
+	// override from switchDatabase belongs to the previous connection.
+	prevIndex, prevDBName := s.curConnectionIndex, s.curDBName
+	s.curConnectionIndex, s.curDBName = index, ""
 	if err := s.reconnectionDB(ctx); err != nil {
+		s.curConnectionIndex, s.curDBName = prevIndex, prevDBName
 		return nil, err
 	}
 
-	return nil, nil
+	return "switched connection to " + connectionLabel(index, s.curDBCfg), nil
+}
+
+func connectionLabel(index int, cfg *database.DBConfig) string {
+	if cfg == nil {
+		return strconv.Itoa(index + 1)
+	}
+	if cfg.Alias != "" {
+		return fmt.Sprintf("%s (%s)", cfg.Alias, cfg.Driver)
+	}
+	return fmt.Sprintf("%d (%s)", index+1, cfg.Driver)
 }
 
 func (s *Server) showTables(ctx context.Context, params lsp.ExecuteCommandParams) (result interface{}, err error) {
@@ -612,23 +644,6 @@ func (s *Server) showTables(ctx context.Context, params lsp.ExecuteCommandParams
 		}
 	}
 	return strings.Join(results, "\n"), nil
-}
-
-func getStatements(text string) ([]*ast.Statement, error) {
-	parsed, err := parser.Parse(text)
-	if err != nil {
-		return nil, err
-	}
-
-	var stmts []*ast.Statement
-	for _, node := range parsed.GetTokens() {
-		stmt, ok := node.(*ast.Statement)
-		if !ok {
-			return nil, fmt.Errorf("invalid type want Statement parsed %T", node)
-		}
-		stmts = append(stmts, stmt)
-	}
-	return stmts, nil
 }
 
 type verticalTableWriter struct {

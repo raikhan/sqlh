@@ -69,7 +69,8 @@ func (db *SQLite3DBRepository) Tables(ctx context.Context) ([]string, error) {
 	FROM
 	  sqlite_master
 	WHERE
-	  type = 'table' 
+	  type IN ('table', 'view')
+	  AND name NOT LIKE 'sqlite_%'
 	ORDER BY
 	  name
 	`)

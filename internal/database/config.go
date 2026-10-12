@@ -1,9 +1,14 @@
 package database
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"regexp"
+	"strings"
+	"time"
 
 	"github.com/raikhan/sqlh/dialect"
 	"golang.org/x/crypto/ssh"
@@ -25,12 +30,69 @@ type DBConfig struct {
 	Proto          Proto                  `json:"proto" yaml:"proto"`
 	User           string                 `json:"user" yaml:"user"`
 	Passwd         string                 `json:"passwd" yaml:"passwd"`
-	Host           string                 `json:"host" yaml:"host"`
-	Port           int                    `json:"port" yaml:"port"`
-	Path           string                 `json:"path" yaml:"path"`
-	DBName         string                 `json:"dbName" yaml:"dbName"`
-	Params         map[string]string      `json:"params" yaml:"params"`
-	SSHCfg         *SSHConfig             `json:"sshConfig" yaml:"sshConfig"`
+	// PasswdCmd is a shell command whose trimmed stdout is the password, e.g.
+	// "security find-generic-password -s cadev1 -w". Used when Passwd is empty.
+	PasswdCmd string            `json:"passwdCmd" yaml:"passwdCmd"`
+	Host      string            `json:"host" yaml:"host"`
+	Port      int               `json:"port" yaml:"port"`
+	Path      string            `json:"path" yaml:"path"`
+	DBName    string            `json:"dbName" yaml:"dbName"`
+	Params    map[string]string `json:"params" yaml:"params"`
+	SSHCfg    *SSHConfig        `json:"sshConfig" yaml:"sshConfig"`
+	// Schemas is the metadata allow-list used for completion/hover. Oracle:
+	// empty means the login schema only. PostgreSQL: empty means all schemas.
+	Schemas []string `json:"schemas" yaml:"schemas"`
+}
+
+// envRefRe matches ${NAME}. Bare $NAME is deliberately not expanded so that
+// literal '$' in existing passwords/DSNs keeps working.
+var envRefRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
+
+// ResolveSecrets returns a copy of the config with ${ENV} references expanded
+// in user, passwd and dataSourceName, and passwdCmd executed when passwd is
+// empty. It runs at connect time, so a keychain prompt only appears for the
+// connection actually used.
+func (c *DBConfig) ResolveSecrets() (*DBConfig, error) {
+	r := *c
+	expand := func(v string) (string, error) {
+		var missing []string
+		out := envRefRe.ReplaceAllStringFunc(v, func(ref string) string {
+			name := envRefRe.FindStringSubmatch(ref)[1]
+			val, ok := os.LookupEnv(name)
+			if !ok {
+				missing = append(missing, name)
+			}
+			return val
+		})
+		if len(missing) > 0 {
+			return "", fmt.Errorf("connection %q: environment variable(s) not set: %s", c.Alias, strings.Join(missing, ", "))
+		}
+		return out, nil
+	}
+	var err error
+	if r.User, err = expand(r.User); err != nil {
+		return nil, err
+	}
+	if r.Passwd, err = expand(r.Passwd); err != nil {
+		return nil, err
+	}
+	if r.DataSourceName, err = expand(r.DataSourceName); err != nil {
+		return nil, err
+	}
+	if r.Passwd == "" && r.PasswdCmd != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		out, err := exec.CommandContext(ctx, "sh", "-c", r.PasswdCmd).Output()
+		if err != nil {
+			msg := err.Error()
+			if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {
+				msg = strings.TrimSpace(string(ee.Stderr))
+			}
+			return nil, fmt.Errorf("connection %q: passwdCmd failed: %s", c.Alias, msg)
+		}
+		r.Passwd = strings.TrimRight(string(out), "\r\n")
+	}
+	return &r, nil
 }
 
 func (c *DBConfig) Validate() error {

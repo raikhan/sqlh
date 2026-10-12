@@ -67,7 +67,11 @@ func Open(cfg *DBConfig) (*DBConnection, error) {
 	if !ok {
 		return nil, fmt.Errorf("driver not found, %s", cfg.Driver)
 	}
-	return OpenFn(cfg)
+	resolved, err := cfg.ResolveSecrets()
+	if err != nil {
+		return nil, err
+	}
+	return OpenFn(resolved)
 }
 
 func CreateRepository(driver dialect.DatabaseDriver, db *sql.DB) (DBRepository, error) {

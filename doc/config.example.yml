@@ -1,0 +1,40 @@
+# sqlh configuration: ~/.config/sqlh/config.yml (or pass -config <file>)
+# The first connection is the default; switch with
+#   :lsp-workspace-command switchConnections "<alias>"
+
+lowercaseKeywords: true
+# Insert all-upper-case identifiers (Oracle's stored form) in lower case.
+# Mixed-case names are left alone.
+lowercaseIdentifiers: true
+
+connections:
+  - alias: pg_local
+    driver: postgresql
+    # search_path makes unqualified completion and FK join hints use your schema
+    dataSourceName: host=localhost port=5432 user=admin password=${PG_LOCAL_PASSWORD} dbname=sdsai sslmode=disable options='-c search_path=cadetst,public'
+    # optional metadata allow-list (PostgreSQL: empty = all schemas)
+    # schemas: [cadetst, public]
+
+  - alias: oracle_dev
+    driver: oracle            # pure Go (go-ora): no Oracle Instant Client needed
+    host: oracle.example.com
+    port: 1521
+    dbName: CADEV1            # service name
+    user: cade
+    # password from the macOS keychain, created with:
+    #   security add-generic-password -a cade -s sqlh-oracle_dev -w '<password>'
+    passwdCmd: security find-generic-password -s sqlh-oracle_dev -w
+    # metadata allow-list (Oracle: empty = login schema only)
+    schemas: [CADE, CADE500]
+    # params are go-ora URL options, e.g.:
+    # params: { "SSL": "true", "TIMEOUT": "30" }
+    # or a full go-ora URL / TNS descriptor:
+    # dataSourceName: oracle://user:${ORA_PW}@host:1521/service
+
+  - alias: scratch
+    driver: sqlite3
+    dataSourceName: file:./scratch.db
+
+# Secrets: ${NAME} is expanded from the environment in user, passwd and
+# dataSourceName (bare $NAME is left literal). passwdCmd runs only when passwd
+# is empty, at connect time.

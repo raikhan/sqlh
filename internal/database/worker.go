@@ -73,6 +73,11 @@ func (w *Worker) Stop() {
 	w.stopOnce.Do(func() { close(w.done) })
 }
 
+// SetRepository replaces the repository used for background cache updates.
+func (w *Worker) SetRepository(repo DBRepository) {
+	w.dbRepo = repo
+}
+
 func (w *Worker) ReCache(ctx context.Context, repo DBRepository) error {
 	w.dbRepo = repo
 	if err := w.updateAllCache(ctx); err != nil {

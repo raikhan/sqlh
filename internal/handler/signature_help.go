@@ -5,12 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/sourcegraph/jsonrpc2"
 	"github.com/raikhan/sqlh/internal/database"
 	"github.com/raikhan/sqlh/internal/lsp"
 	"github.com/raikhan/sqlh/parser"
 	"github.com/raikhan/sqlh/parser/parseutil"
 	"github.com/raikhan/sqlh/token"
+	"github.com/sourcegraph/jsonrpc2"
 )
 
 func (s *Server) handleTextDocumentSignatureHelp(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (result interface{}, err error) {

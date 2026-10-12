@@ -19,7 +19,9 @@ status lives in §4–§5.
 | Oracle metadata | **Schema allow-list** per connection (`schemas = [...]`); lazy per-schema loading. Never scan `ALL_TABLES`/`ALL_TAB_COLUMNS` unfiltered. |
 | Opening results | **Save first, don't auto-open.** Viewing (vd in a Herdr pane) is wired on the Helix/Nu side later. |
 | Preview limit | Client-side row cap (read N rows, stop) — dialect-agnostic, safe for CTEs/ORDER BY. Server-side `FETCH FIRST`/`LIMIT` rewriting optional later. |
-| Secrets | `password_cmd` / env-var references in config; no plaintext for work DBs. |
+| Secrets | `passwdCmd` (e.g. macOS keychain) / `${ENV}` references in config; no plaintext for work DBs. |
+| Config format | YAML (sqls-compatible) for now; TOML deferred (see Phase 1). |
+| Execution splitting | Own dialect-aware splitter (`internal/sqlsplit`); the completion parser is not used for execution. |
 | Git | User pushes; agent commits only when asked. Commit email for this repo: GitHub no-reply. |
 
 ## 2. Key findings (why things are the way they are)
@@ -36,8 +38,10 @@ status lives in §4–§5.
   `initializationOptions.connectionConfig` or a config file; driver name is `postgresql`.
 - The sqls JSON-RPC handler is synchronous: server→client *requests* (`showDocument`) must be
   issued from a goroutine or they deadlock.
-- `reconnectionDB` closes the old connection before opening the new one → a failed switch
-  leaves a dead connection (completion still works from cache; execute fails). To fix.
+- Dev Oracle (19c SE2) as `CADE`: 132 users, ~6k visible tables / 104k columns unfiltered
+  (mostly SYS/XDB + sibling schemas with identical table names); `CADE` alone: 552 tables,
+  656 views, 11.7k columns, 710 FKs. Hence the allow-list and view support.
+- Oracle rejects a trailing `;` on SQL (ORA-00933) but requires it after PL/SQL `END`.
 
 ## 3. Architecture
 
@@ -69,8 +73,8 @@ host = "oracle.dev.example"
 port = 1521
 service = "CADEV1"
 user = "cade"
-password_cmd = "security find-generic-password -s cadev1 -w"
-schemas = ["CADE", "CADE_RPT"]
+password_cmd = "security find-generic-password -s sqlh-oracle_dev -w"
+schemas = ["CADE", "CADE500"]
 
 [connections.pg_local]
 driver = "postgresql"
@@ -81,7 +85,7 @@ driver = "sqlite3"
 path = "./scratch.db"
 ```
 
-(Current config is still sqls' YAML format; migrating to the TOML above is part of Phase 1.)
+(Target format sketch. Current config is sqls-style YAML — see `doc/config.example.yml`; TOML deferred.)
 
 ### Control plane (Phase 3)
 
@@ -126,21 +130,32 @@ s = [":lsp-workspace-command showConnections"]
 - [x] Fork → `raikhan/sqlh`, module/binary/config renamed, binary untracked, `master` tracks `origin`
 - [x] `oracle_dev` added to config; `switchConnections` mechanics verified (fails only on driver)
 
-### Phase 1 — Oracle (pure Go) + SQLite + config ⏳ next
+### Phase 1 — Oracle (pure Go) + SQLite + config ✅ done
 
-- [ ] Replace `godror` → `github.com/sijms/go-ora/v2`; DSN builder (`oracle://user:pass@host:port/service`, TNS alias via `TNS_ADMIN`)
-- [ ] Connect to `CADEV1`; completion (tables/columns/FK joins), hover, Execute Query
-- [ ] Schema allow-list (`schemas`) for Oracle metadata; lazy per-schema cache; measure startup time
-- [ ] Oracle quirks: identifier case (upper-case metadata vs. lower-case typing), `DUAL`, `FETCH FIRST`, PL/SQL `/` terminator handling in statement splitting
-- [ ] SQLite: verify against a scratch `.db` (should already work)
-- [ ] Fix `reconnectionDB` ordering (open new → close old; keep previous index on failure)
-- [ ] `showConnections`: description fallback when no `proto` (currently blank for Oracle)
-- [ ] Config: TOML format above, `password_cmd` / `${ENV}` references; keep YAML reading for a transition
-- [ ] Decide: drop MySQL/MSSQL/H2/Vertica/ClickHouse drivers from the build (binary is 43 MB) — keep behind build tags?
+- [x] Replace `godror` → `github.com/sijms/go-ora/v2` (pure Go; `BuildUrl` escapes passwords; `params` → URL options; `dataSourceName` = full go-ora URL). Binary links only macOS system frameworks.
+- [x] `CADEV1`: completion (tables, views, columns, FK join hints), hover, Execute Query, `cade500.` qualification
+- [x] Schema allow-list `schemas: [...]` (generic `SchemaFilterer`; Oracle: empty = login schema; PG: empty = all). `CADE`+`CADE500` switch ≈ 0.8 s, completion ≈ 10 ms. Lazy per-schema loading not needed at this size → dropped.
+- [x] Oracle metadata: views + materialized views via `ALL_OBJECTS`; types with length/precision (`VARCHAR2(254)`, `NUMBER(10,2)`); real PK flag (sqls returned a literal `'1'`); `BIN$` recycle-bin objects excluded; `DATA_DEFAULT` (LONG) no longer fetched
+- [x] Identifier case: FK/join/referenced-table lookups case-insensitive (`CanonicalTableName`); opt-in `lowercaseIdentifiers` inserts all-upper names lower-case (mixed case untouched)
+- [x] Execution splitter `internal/sqlsplit` (replaces parser-based splitting for execution): strips trailing `;` (ORA-00933), SQL*Plus `/` lines, PL/SQL units kept whole with `END;`, Oracle `q'[...]'`, PG `$tag$` quoting, SQLite `CREATE TRIGGER … END;`; statement-at-cursor incl. attached header comments; per-statement line numbers in errors; "PL/SQL block completed"
+- [x] SQLite: verified (completion, FK joins, hover, triggers); views now offered as tables
+- [x] `reconnectionDB` all-or-nothing (open new → recache → swap → close old); `switchConnections`/`switchDatabase` roll back index/db name on failure; `curDBName` reset on connection switch; loaded config no longer mutated
+- [x] `switchConnections` returns "switched connection to …" (status line); unknown alias lists available ones
+- [x] `showConnections`: marks current (`*`), describes host/port/service/path, masks passwords in DSNs, shows `schemas=`
+- [x] Secrets: `passwdCmd` (run at connect time) and `${NAME}` env expansion in `user`/`passwd`/`dataSourceName` (bare `$NAME` stays literal). `oracle_dev` password moved to the macOS keychain (`sqlh-oracle_dev`).
+- [x] `doc/config.example.yml`; Helix test files `scratch/oracle.sql`, `scratch/sqlite.sql`
+- [ ] ~~TOML config~~ → deferred: YAML works and is what sqls users know. Revisit in Phase 2 when `results_dir`/`default_limit` and per-project overrides are added.
+- [ ] Drop MySQL/MSSQL/H2/Vertica/ClickHouse drivers (binary 52 MB)? Undecided, cosmetic — build tags if wanted.
 
-### Phase 2 — exec engine
+Known limitations (not blocking):
+- FK join hints only for the default (login) schema; FK cache is keyed by table name only, and sibling schemas (`CADE500`, `CHEMALERT*`) share table names.
+- Synonyms aren't completed (CADE has 2; other schemas rely on them heavily).
+- Oracle `DATE`/`TIMESTAMP` render as RFC 3339 UTC (`2026-10-12T16:37:20Z`) in result tables → decide formatting in Phase 2 (CSV).
 
-- [ ] `internal/exec`: preview (row cap) and full (streamed) modes, `encoding/csv` writer
+### Phase 2 — exec engine ⏳ next
+
+- [ ] `internal/exec`: preview (row cap) and full (streamed) modes, `encoding/csv` writer; reuse `internal/sqlsplit`
+- [ ] Value formatting for CSV: dates/timestamps (local, no `T…Z`), NULL vs empty, LOBs, RAW/bytea
 - [ ] `results_dir` / `results_name` templating, `latest.csv` symlink, `.sqlh/` gitignore hint
 - [ ] Run in goroutine with cancellable context; `$/progress`; `cancel` command
 - [ ] Summary (`rows, elapsed, path`) via `showMessage`; no auto-open
@@ -176,12 +191,19 @@ s = [":lsp-workspace-command showConnections"]
   `showDocument`. Repo forked/renamed to `sqlh`. `oracle_dev` configured; blocked only on
   `godror` needing Instant Client → go-ora swap is next.
 
+- **2026-10-12** Phase 1 complete. Oracle via go-ora against `CADEV1` (completion incl.
+  views and FK joins, hover, execute incl. PL/SQL), SQLite verified, PG unchanged. Schema
+  allow-list, all-or-nothing connection switching, execution splitter, keychain password.
+
 ## 6. Environment notes
 
 - Helix: `[language-server.sqlh] command = "sqlh"`, `args = ["-log", "/tmp/sqlh.log"]`
 - Binary: `~/.local/bin/sqlh` (`go build -o ~/.local/bin/sqlh .` from repo root)
-- Config: `~/.config/sqlh/config.yml` (sqls YAML format until Phase 1 migrates it)
-- Test file: `scratch/test.sql` (statements must end with `;`)
+- Config: `~/.config/sqlh/config.yml` (example: `doc/config.example.yml`); connections
+  `pg_local`, `oracle_dev` (keychain `sqlh-oracle_dev`, schemas CADE+CADE500), `sqlite_scratch`
+- Test files: `scratch/test.sql` (PG), `scratch/oracle.sql`, `scratch/sqlite.sql`
+- SQLite scratch DB: `/tmp/sqls-build/scratch.db` (customer/orders/big_orders)
 - Local PG: Docker `llm-sds-reader-postgres-1`, `admin`/`verysecret`, db `sdsai`, schema `cadetst`
 - Oracle dev: see `connection.toml` (gitignored); port 1521 reachable
-- Protocol test harnesses (ad hoc): `/tmp/sqls-build/{smoke2,e2e2,sw}.py`
+- Protocol test client: `/tmp/sqls-build/lspc.py` (+ `t_*.py` scenario scripts); Oracle
+  repo probe: `scratch/oradbg/` (reads creds from env `H S U P`)

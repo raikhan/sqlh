@@ -70,8 +70,9 @@ func (ct completionType) String() string {
 }
 
 type Completer struct {
-	DBCache *database.DBCache
-	Driver  dialect.DatabaseDriver
+	DBCache              *database.DBCache
+	Driver               dialect.DatabaseDriver
+	LowercaseIdentifiers bool
 }
 
 func NewCompleter(dbCache *database.DBCache) *Completer {
@@ -194,10 +195,37 @@ func (c *Completer) Complete(text string, params lsp.CompletionParams, lowercase
 		items = append(items, c.functionCandidates(lowercaseKeywords, drivers)...)
 	}
 
+	if c.LowercaseIdentifiers {
+		lowercaseIdentifierItems(items)
+	}
 	items = filterCandidates(items, lastWord)
 	populateSortText(items)
 
 	return items, nil
+}
+
+var upperIdentRe = regexp.MustCompile(`\b[A-Z][A-Z0-9_$#]*\b`)
+
+// lowercaseUpperIdents lower-cases all-upper-case identifier tokens, leaving
+// mixed-case tokens and the ON/AND keywords of join snippets alone.
+func lowercaseUpperIdents(s string) string {
+	return upperIdentRe.ReplaceAllStringFunc(s, func(tok string) string {
+		if tok == "ON" || tok == "AND" {
+			return tok
+		}
+		return strings.ToLower(tok)
+	})
+}
+
+func lowercaseIdentifierItems(items []lsp.CompletionItem) {
+	for i := range items {
+		switch items[i].Kind {
+		case lsp.FieldCompletion, lsp.ClassCompletion, lsp.ModuleCompletion,
+			lsp.SnippetCompletion, lsp.VariableCompletion:
+			items[i].Label = lowercaseUpperIdents(items[i].Label)
+			items[i].InsertText = lowercaseUpperIdents(items[i].InsertText)
+		}
+	}
 }
 
 // Override the sort text for each completion item.

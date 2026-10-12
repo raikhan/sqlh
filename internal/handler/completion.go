@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/sourcegraph/jsonrpc2"
 	"github.com/raikhan/sqlh/internal/completer"
 	"github.com/raikhan/sqlh/internal/lsp"
+	"github.com/sourcegraph/jsonrpc2"
 )
 
 func (s *Server) handleTextDocumentCompletion(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (result interface{}, err error) {
@@ -26,6 +26,7 @@ func (s *Server) handleTextDocumentCompletion(ctx context.Context, conn *jsonrpc
 	}
 
 	c := completer.NewCompleter(s.worker.Cache())
+	c.LowercaseIdentifiers = s.getConfig().LowercaseIdentifiers
 	if s.dbConn != nil {
 		c.Driver = s.dbConn.Driver
 	} else {

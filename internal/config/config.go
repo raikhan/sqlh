@@ -21,8 +21,12 @@ var (
 )
 
 type Config struct {
-	LowercaseKeywords bool                 `json:"lowercaseKeywords" yaml:"lowercaseKeywords"`
-	Connections       []*database.DBConfig `json:"connections" yaml:"connections"`
+	LowercaseKeywords bool `json:"lowercaseKeywords" yaml:"lowercaseKeywords"`
+	// LowercaseIdentifiers inserts all-upper-case identifiers (Oracle's stored
+	// form of unquoted names) in lower case. Mixed-case names are left alone,
+	// since those need exact (quoted) spelling.
+	LowercaseIdentifiers bool                 `json:"lowercaseIdentifiers" yaml:"lowercaseIdentifiers"`
+	Connections          []*database.DBConfig `json:"connections" yaml:"connections"`
 }
 
 func (c *Config) Validate() error {

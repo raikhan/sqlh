@@ -356,60 +356,86 @@ func (s *Server) handleWorkspaceDidChangeConfiguration(ctx context.Context, conn
 	return nil, nil
 }
 
+// reconnectionDB connects using the current connection settings and rebuilds
+// the schema cache. It is all-or-nothing: the previous connection, config and
+// cache stay active until the new connection is open and cached, so a failed
+// switch leaves the editor on the old database.
 func (s *Server) reconnectionDB(ctx context.Context) error {
-	if err := s.dbConn.Close(); err != nil {
-		return err
-	}
+	prevConn, prevCfg := s.dbConn, s.curDBCfg
 
-	dbConn, err := s.newDBConnection(ctx)
+	dbConn, cfg, err := s.newDBConnection(ctx)
 	if err != nil {
 		return err
 	}
-	s.dbConn = dbConn
-	dbRepo, err := s.newDBRepository(ctx)
+	dbRepo, err := newRepository(cfg, dbConn)
 	if err != nil {
+		_ = dbConn.Close()
 		return err
 	}
 	if err := s.worker.ReCache(ctx, dbRepo); err != nil {
+		_ = dbConn.Close()
+		if prevConn != nil && prevCfg != nil {
+			// restore the previous connection's repository in the worker
+			if prevRepo, perr := newRepository(prevCfg, prevConn); perr == nil {
+				s.worker.SetRepository(prevRepo)
+			}
+		}
 		return err
+	}
+
+	s.dbConn, s.curDBCfg = dbConn, cfg
+	if prevConn != nil {
+		if err := prevConn.Close(); err != nil {
+			log.Println("close previous connection:", err)
+		}
 	}
 	return nil
 }
 
-func (s *Server) newDBConnection(ctx context.Context) (*database.DBConnection, error) {
+// newDBConnection opens a connection for the current connection index / db
+// name without touching server state.
+func (s *Server) newDBConnection(ctx context.Context) (*database.DBConnection, *database.DBConfig, error) {
 	// Get the most preferred DB connection settings
 	connCfg := s.topConnection()
 	if connCfg == nil {
-		return nil, ErrNoConnection
+		return nil, nil, ErrNoConnection
 	}
 	if s.curConnectionIndex != 0 {
 		connCfg = s.getConnection(s.curConnectionIndex)
 	}
 	if connCfg == nil {
-		return nil, fmt.Errorf("not found database connection config, index %d", s.curConnectionIndex+1)
+		return nil, nil, fmt.Errorf("not found database connection config, index %d", s.curConnectionIndex+1)
 	}
 	if s.curDBName != "" {
-		connCfg.DBName = s.curDBName
+		// copy: don't mutate the loaded configuration
+		c := *connCfg
+		c.DBName = s.curDBName
+		connCfg = &c
 	}
-	s.curDBCfg = connCfg
 
-	// Connect database
 	conn, err := database.Open(connCfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	return conn, connCfg, nil
+}
+
+func newRepository(cfg *database.DBConfig, conn *database.DBConnection) (database.DBRepository, error) {
+	repo, err := database.CreateRepository(cfg.Driver, conn.Conn)
 	if err != nil {
 		return nil, err
 	}
-	return conn, nil
+	if f, ok := repo.(database.SchemaFilterer); ok {
+		f.SetSchemaFilter(cfg.Schemas)
+	}
+	return repo, nil
 }
 
 func (s *Server) newDBRepository(ctx context.Context) (database.DBRepository, error) {
 	if s.curDBCfg == nil || s.dbConn == nil {
 		return nil, ErrNoConnection
 	}
-	repo, err := database.CreateRepository(s.curDBCfg.Driver, s.dbConn.Conn)
-	if err != nil {
-		return nil, err
-	}
-	return repo, nil
+	return newRepository(s.curDBCfg, s.dbConn)
 }
 
 func (s *Server) topConnection() *database.DBConfig {

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/sourcegraph/jsonrpc2"
 	"github.com/raikhan/sqlh/ast"
 	"github.com/raikhan/sqlh/ast/astutil"
 	"github.com/raikhan/sqlh/internal/database"
@@ -14,6 +13,7 @@ import (
 	"github.com/raikhan/sqlh/parser"
 	"github.com/raikhan/sqlh/parser/parseutil"
 	"github.com/raikhan/sqlh/token"
+	"github.com/sourcegraph/jsonrpc2"
 )
 
 var ErrNoHover = errors.New("no hover information found")
