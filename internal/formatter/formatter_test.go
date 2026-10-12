@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sqls-server/sqls/ast"
-	"github.com/sqls-server/sqls/internal/config"
-	"github.com/sqls-server/sqls/internal/lsp"
-	"github.com/sqls-server/sqls/parser"
+	"github.com/raikhan/sqlh/ast"
+	"github.com/raikhan/sqlh/internal/config"
+	"github.com/raikhan/sqlh/internal/lsp"
+	"github.com/raikhan/sqlh/parser"
 )
 
 func TestEval(t *testing.T) {

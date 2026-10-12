@@ -1,4 +1,4 @@
-BIN := sqls
+BIN := sqlh
 ifeq ($(OS),Windows_NT)
 BIN := $(BIN).exe
 endif
@@ -19,7 +19,7 @@ build:
 .PHONY: release
 release: $(GOBIN)/gobump
 	go build -ldflags=$(BUILD_LDFLAGS) -o $(BIN) .
-	zip -r sqls-$(GOOS)-$(VERSION).zip $(BIN)
+	zip -r sqlh-$(GOOS)-$(VERSION).zip $(BIN)
 
 .PHONY: install
 install:

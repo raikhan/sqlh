@@ -16,11 +16,11 @@ import (
 	"github.com/olekukonko/tablewriter"
 	"github.com/olekukonko/tablewriter/tw"
 	"github.com/sourcegraph/jsonrpc2"
-	"github.com/sqls-server/sqls/ast"
-	"github.com/sqls-server/sqls/internal/database"
-	"github.com/sqls-server/sqls/internal/lsp"
-	"github.com/sqls-server/sqls/parser"
-	"github.com/sqls-server/sqls/token"
+	"github.com/raikhan/sqlh/ast"
+	"github.com/raikhan/sqlh/internal/database"
+	"github.com/raikhan/sqlh/internal/lsp"
+	"github.com/raikhan/sqlh/parser"
+	"github.com/raikhan/sqlh/token"
 )
 
 const (
@@ -137,7 +137,7 @@ func (s *Server) presentCommandResult(ctx context.Context, conn *jsonrpc2.Conn, 
 		_ = m.ShowInfo(ctx, text)
 		return
 	}
-	dir := filepath.Join(os.TempDir(), "sqls")
+	dir := filepath.Join(os.TempDir(), "sqlh")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		_ = m.ShowError(ctx, err.Error())
 		return

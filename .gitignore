@@ -29,7 +29,7 @@ docker
 .docker
 
 # build dist
-sqls
+sqlh
 dist/
 
 # direnv
@@ -38,4 +38,8 @@ dist/
 # vim
 tags
 
-CLAUDE.md
+/scratch
+/connection.toml
+/*.md
+!README.md
+!CLAUDE.md

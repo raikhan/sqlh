@@ -1,6 +1,6 @@
-# sqls: SQL Language Server
+# sqlh: SQL Language Server
 
-![test](https://github.com/sqls-server/sqls/workflows/test/badge.svg)
+![test](https://github.com/raikhan/sqlh/workflows/test/badge.svg)
 
 An implementation of the Language Server Protocol for SQL.
 
@@ -10,7 +10,7 @@ This project is currently under development and there is no stable release. Ther
 
 ## Features
 
-sqls aims to provide advanced intelligence for you to edit sql in your own editor.
+sqlh aims to provide advanced intelligence for you to edit sql in your own editor.
 
 ### Support RDBMS
 
@@ -25,7 +25,7 @@ sqls aims to provide advanced intelligence for you to edit sql in your own edito
 
 #### Auto Completion
 
-![completion](./imgs/sqls-completion.gif)
+![completion](./imgs/sqlh-completion.gif)
 
 - DML(Data Manipulation Language)
     - [x] SELECT
@@ -38,13 +38,13 @@ sqls aims to provide advanced intelligence for you to edit sql in your own edito
     - [ ] ALTER TABLE
 
 #### Join completion
-If the tables are connected with a foreign key sqls can complete ```JOIN``` statements
+If the tables are connected with a foreign key sqlh can complete ```JOIN``` statements
 
-![join_completion](imgs/sqls-fk_joins.gif)
+![join_completion](imgs/sqlh-fk_joins.gif)
 
 #### CodeAction
 
-![code_actions](https://github.com/sqls-server/sqls.vim/blob/master/imgs/sqls_vim_demo.gif)
+![code_actions](https://github.com/raikhan/sqlh.vim/blob/master/imgs/sqls_vim_demo.gif)
 
 - [x] Execute SQL
 - [ ] Explain SQL
@@ -66,19 +66,19 @@ If the tables are connected with a foreign key sqls can complete ```JOIN``` stat
 ## Installation
 
 ```shell
-go install github.com/sqls-server/sqls@latest
+go install github.com/raikhan/sqlh@latest
 ```
 
 ## Editor Plugins
 
-- [sqls.vim](https://github.com/sqls-server/sqls.vim)
-- [vscode-sqls](https://github.com/lighttiger2505/vscode-sqls)
-- [sqls.nvim](https://github.com/nanotee/sqls.nvim)
-- [Emacs LSP mode](https://emacs-lsp.github.io/lsp-mode/page/lsp-sqls/)
+- [sqlh.vim](https://github.com/raikhan/sqlh.vim)
+- [vscode-sqlh](https://github.com/lighttiger2505/vscode-sqlh)
+- [sqlh.nvim](https://github.com/nanotee/sqlh.nvim)
+- [Emacs LSP mode](https://emacs-lsp.github.io/lsp-mode/page/lsp-sqlh/)
 
 ## DB Configuration
 
-The connection to the RDBMS is essential to take advantage of the functionality provided by `sqls`.
+The connection to the RDBMS is essential to take advantage of the functionality provided by `sqlh`.
 You need to set the connection to the RDBMS.
 
 ### Configuration Methods
@@ -89,7 +89,7 @@ Whichever method you choose, the settings you make will remain the same.
 1. Configuration file specified by the `-config` flag
 1. `workspace/configuration` set to LSP client
 1. Configuration file located in the following location
-    - `$XDG_CONFIG_HOME`/sqls/config.yml ("`$HOME`/.config" is used instead of `$XDG_CONFIG_HOME` if it's not set)
+    - `$XDG_CONFIG_HOME`/sqlh/config.yml ("`$HOME`/.config" is used instead of `$XDG_CONFIG_HOME` if it's not set)
 
 ### Configuration file sample
 
@@ -124,7 +124,7 @@ connections:
       port: 22
       user: sshuser
       passPhrase: ssspass
-      privateKey: /home/sqls-server/.ssh/id_rsa
+      privateKey: /home/sqlh/.ssh/id_rsa
   - alias: dsn_vertica
     driver: vertica
     dataSourceName: vertica://user:pass@host:5433/dbname
@@ -135,15 +135,15 @@ connections:
 - setting example with vim-lsp.
 
 ```vim
-if executable('sqls')
+if executable('sqlh')
     augroup LspSqls
         autocmd!
         autocmd User lsp_setup call lsp#register_server({
-        \   'name': 'sqls',
-        \   'cmd': {server_info->['sqls']},
+        \   'name': 'sqlh',
+        \   'cmd': {server_info->['sqlh']},
         \   'whitelist': ['sql'],
         \   'workspace_config': {
-        \     'sqls': {
+        \     'sqlh': {
         \       'connections': [
         \         {
         \           'driver': 'mysql',
@@ -169,8 +169,8 @@ In `coc-settings.json` opened by `:CocConfig`
 {
     "languageserver": {
         "sql": {
-            "command": "sqls",
-            "args": ["-config", "$HOME/.config/sqls/config.yml"],
+            "command": "sqlh",
+            "args": ["-config", "$HOME/.config/sqlh/config.yml"],
             "filetypes": ["sql"],
             "shell": true
         }
@@ -178,15 +178,15 @@ In `coc-settings.json` opened by `:CocConfig`
 }
 ```
 
-- setting example with [nvim-lspconfig](https://github.com/neovim/nvim-lspconfig/blob/master/doc/server_configurations.md#sqls).
+- setting example with [nvim-lspconfig](https://github.com/neovim/nvim-lspconfig/blob/master/doc/server_configurations.md#sqlh).
 
 ```lua
-require'lspconfig'.sqls.setup{
+require'lspconfig'.sqlh.setup{
   on_attach = function(client, bufnr)
-    require('sqls').on_attach(client, bufnr) -- require sqls.nvim
+    require('sqlh').on_attach(client, bufnr) -- require sqlh.nvim
   end
   settings = {
-    sqls = {
+    sqlh = {
       connections = {
         {
           driver = 'mysql',
@@ -206,14 +206,14 @@ require'lspconfig'.sqls.setup{
 
   Install the LSP Client by Opening the command palette and run ```Package Control: Install Package```, then select ```LSP```.
 
-  Open ```Preferences > Package Settings > LSP > Settings``` and add the ```"sqls"``` client configuration to the ```"clients"```:
+  Open ```Preferences > Package Settings > LSP > Settings``` and add the ```"sqlh"``` client configuration to the ```"clients"```:
 ```
 {
     "show_diagnostics_count_in_view_status": true,
     "clients": {
-        "sqls": {
+        "sqlh": {
             "enabled": true,
-            "command": ["/path/to/sqls binary"],
+            "command": ["/path/to/sqlh binary"],
             "selector": "source.sql"
         }
     }
@@ -270,13 +270,13 @@ See also.
 ## Contributors
 
 This project exists thanks to all the people who contribute.
-<a href="https://github.com/sqls-server/sqls/graphs/contributors">
-    <img src="https://contrib.rocks/image?repo=sqls-server/sqls" />
+<a href="https://github.com/raikhan/sqlh/graphs/contributors">
+    <img src="https://contrib.rocks/image?repo=sqlh/sqlh" />
 </a>
 
 ## Inspired
 
-I created sqls inspired by the following OSS.
+I created sqlh inspired by the following OSS.
 
 - [dbcli Tools](https://github.com/dbcli)
     - [mycli](https://www.mycli.net/)

@@ -105,6 +105,6 @@
       "$ref": "#/definitions/connection-definition"
     }
   },
-  "title": "sqls",
+  "title": "sqlh",
   "type": "object"
 }

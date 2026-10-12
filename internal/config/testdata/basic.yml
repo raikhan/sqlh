@@ -15,7 +15,7 @@ connections:
       tls: skip-verify
   - alias: sqls_sqlite3
     driver: sqlite3
-    dataSourceName: "file:/home/sqls-server/chinook.db"
+    dataSourceName: "file:/home/sqlh/chinook.db"
   - alias: sqls_postgresql
     driver: postgresql
     dataSourceName: ""
@@ -42,4 +42,4 @@ connections:
       port: 22
       user: vagrant
       passPhrase: passphrase1234
-      privateKey: /home/sqls-server/.ssh/id_rsa
+      privateKey: /home/sqlh/.ssh/id_rsa

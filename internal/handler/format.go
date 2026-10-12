@@ -6,8 +6,8 @@ import (
 	"fmt"
 
 	"github.com/sourcegraph/jsonrpc2"
-	"github.com/sqls-server/sqls/internal/formatter"
-	"github.com/sqls-server/sqls/internal/lsp"
+	"github.com/raikhan/sqlh/internal/formatter"
+	"github.com/raikhan/sqlh/internal/lsp"
 )
 
 func (s *Server) handleTextDocumentFormatting(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (result interface{}, err error) {

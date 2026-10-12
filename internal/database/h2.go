@@ -6,7 +6,7 @@ import (
 	"fmt"
 
 	_ "github.com/CodinGame/h2go"
-	"github.com/sqls-server/sqls/dialect"
+	"github.com/raikhan/sqlh/dialect"
 )
 
 func init() {

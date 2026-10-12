@@ -7,9 +7,9 @@ import (
 
 	"github.com/olekukonko/tablewriter"
 	"github.com/olekukonko/tablewriter/tw"
-	"github.com/sqls-server/sqls/internal/config"
-	"github.com/sqls-server/sqls/internal/database"
-	"github.com/sqls-server/sqls/internal/lsp"
+	"github.com/raikhan/sqlh/internal/config"
+	"github.com/raikhan/sqlh/internal/database"
+	"github.com/raikhan/sqlh/internal/lsp"
 )
 
 func Test_executeQuery(t *testing.T) {
@@ -19,7 +19,7 @@ func Test_executeQuery(t *testing.T) {
 
 	didChangeConfigurationParams := lsp.DidChangeConfigurationParams{
 		Settings: struct {
-			SQLS *config.Config "json:\"sqls\""
+			SQLS *config.Config "json:\"sqlh\""
 		}{
 			SQLS: &config.Config{
 				Connections: []*database.DBConfig{

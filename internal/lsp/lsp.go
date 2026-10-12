@@ -1,8 +1,8 @@
 package lsp
 
 import (
-	"github.com/sqls-server/sqls/internal/config"
-	"github.com/sqls-server/sqls/internal/database"
+	"github.com/raikhan/sqlh/internal/config"
+	"github.com/raikhan/sqlh/internal/database"
 )
 
 // https://microsoft.github.io/language-server-protocol/specifications/specification-3-14/#initialize
@@ -303,7 +303,7 @@ type ExecuteCommandParams struct {
 
 	Command   string        `json:"command"`
 	Arguments []interface{} `json:"arguments,omitempty"`
-	// sqls specific option for query execute range
+	// sqlh specific option for query execute range
 	Range *Range `json:"range,omitempty"`
 }
 
@@ -311,7 +311,7 @@ type ExecuteCommandParams struct {
 
 type DidChangeConfigurationParams struct {
 	Settings struct {
-		SQLS *config.Config `json:"sqls"`
+		SQLS *config.Config `json:"sqlh"`
 	} `json:"settings"`
 }
 

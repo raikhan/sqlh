@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/sqls-server/sqls/internal/database"
+	"github.com/raikhan/sqlh/internal/database"
 	"gopkg.in/yaml.v2"
 )
 
@@ -91,7 +91,7 @@ func IsFileExist(fPath string) bool {
 
 func configFilePath(fileName string) string {
 	if xdgConfigHome := os.Getenv("XDG_CONFIG_HOME"); xdgConfigHome != "" {
-		return filepath.Join(xdgConfigHome, "sqls", fileName)
+		return filepath.Join(xdgConfigHome, "sqlh", fileName)
 	}
 
 	var configDir string
@@ -109,7 +109,7 @@ func configFilePath(fileName string) string {
 		}
 	}
 
-	return filepath.Join(configDir, "sqls", fileName)
+	return filepath.Join(configDir, "sqlh", fileName)
 }
 
 func expand(path string) (string, error) {

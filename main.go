@@ -13,11 +13,11 @@ import (
 	"github.com/sourcegraph/jsonrpc2"
 	"github.com/urfave/cli/v2"
 
-	"github.com/sqls-server/sqls/internal/config"
-	"github.com/sqls-server/sqls/internal/handler"
+	"github.com/raikhan/sqlh/internal/config"
+	"github.com/raikhan/sqlh/internal/handler"
 )
 
-const name = "sqls"
+const name = "sqlh"
 
 const version = "0.2.48"
 
@@ -147,14 +147,14 @@ func serve(c *cli.Context) error {
 	}
 
 	// Start language server
-	log.Println("sqls: reading on stdin, writing on stdout")
+	log.Println("sqlh: reading on stdin, writing on stdout")
 	<-jsonrpc2.NewConn(
 		context.Background(),
 		jsonrpc2.NewBufferedStream(stdrwc{}, jsonrpc2.VSCodeObjectCodec{}),
 		h,
 		connOpt...,
 	).DisconnectNotify()
-	log.Println("sqls: connections closed")
+	log.Println("sqlh: connections closed")
 
 	return nil
 }

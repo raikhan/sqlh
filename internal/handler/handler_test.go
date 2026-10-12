@@ -10,8 +10,8 @@ import (
 
 	"github.com/sourcegraph/jsonrpc2"
 
-	"github.com/sqls-server/sqls/internal/config"
-	"github.com/sqls-server/sqls/internal/lsp"
+	"github.com/raikhan/sqlh/internal/config"
+	"github.com/raikhan/sqlh/internal/lsp"
 )
 
 const testFileURI = "file:///Users/octref/Code/css-test/test.sql"
@@ -76,7 +76,7 @@ func (tx *TestContext) initServer(t *testing.T) {
 func (tx *TestContext) addWorkspaceConfig(t *testing.T, cfg *config.Config) {
 	didChangeConfigurationParams := lsp.DidChangeConfigurationParams{
 		Settings: struct {
-			SQLS *config.Config "json:\"sqls\""
+			SQLS *config.Config "json:\"sqlh\""
 		}{
 			SQLS: cfg,
 		},

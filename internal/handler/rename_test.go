@@ -4,9 +4,9 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/sqls-server/sqls/internal/config"
-	"github.com/sqls-server/sqls/internal/database"
-	"github.com/sqls-server/sqls/internal/lsp"
+	"github.com/raikhan/sqlh/internal/config"
+	"github.com/raikhan/sqlh/internal/database"
+	"github.com/raikhan/sqlh/internal/lsp"
 )
 
 var renameTestCases = []struct {

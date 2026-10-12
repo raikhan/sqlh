@@ -2,8 +2,8 @@ package formatter
 
 import (
 	"fmt"
-	"github.com/sqls-server/sqls/ast"
-	"github.com/sqls-server/sqls/parser"
+	"github.com/raikhan/sqlh/ast"
+	"github.com/raikhan/sqlh/parser"
 )
 
 func TestAliased() {

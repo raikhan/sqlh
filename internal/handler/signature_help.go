@@ -6,11 +6,11 @@ import (
 	"fmt"
 
 	"github.com/sourcegraph/jsonrpc2"
-	"github.com/sqls-server/sqls/internal/database"
-	"github.com/sqls-server/sqls/internal/lsp"
-	"github.com/sqls-server/sqls/parser"
-	"github.com/sqls-server/sqls/parser/parseutil"
-	"github.com/sqls-server/sqls/token"
+	"github.com/raikhan/sqlh/internal/database"
+	"github.com/raikhan/sqlh/internal/lsp"
+	"github.com/raikhan/sqlh/parser"
+	"github.com/raikhan/sqlh/parser/parseutil"
+	"github.com/raikhan/sqlh/token"
 )
 
 func (s *Server) handleTextDocumentSignatureHelp(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (result interface{}, err error) {

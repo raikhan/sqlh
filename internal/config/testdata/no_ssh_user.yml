@@ -13,4 +13,4 @@ connections:
       port: 22
       user: ""
       passPhrase: passphrase1234
-      privateKey: /home/sqls-server/.ssh/id_rsa
+      privateKey: /home/sqlh/.ssh/id_rsa

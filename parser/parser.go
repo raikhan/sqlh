@@ -6,10 +6,10 @@ import (
 	"io"
 	"strings"
 
-	"github.com/sqls-server/sqls/ast"
-	"github.com/sqls-server/sqls/ast/astutil"
-	"github.com/sqls-server/sqls/dialect"
-	"github.com/sqls-server/sqls/token"
+	"github.com/raikhan/sqlh/ast"
+	"github.com/raikhan/sqlh/ast/astutil"
+	"github.com/raikhan/sqlh/dialect"
+	"github.com/raikhan/sqlh/token"
 )
 
 type (

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/sqls-server/sqls/dialect"
-	"github.com/sqls-server/sqls/parser/parseutil"
+	"github.com/raikhan/sqlh/dialect"
+	"github.com/raikhan/sqlh/parser/parseutil"
 )
 
 var (
