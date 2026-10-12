@@ -316,6 +316,30 @@ Known limitations (not blocking):
       helper exits with empty stderr and relays the message to the status line
 - [ ] Decide `showDocument` focus behaviour (`takeFocus` vs background load) for non-CSV outputs
 
+### Diagnostics (schema-aware lint, no database round-trips)
+
+- [x] `internal/lint`: per statement (sqlsplit + sqls lexer), against a catalog snapshot of the
+      schema cache. Reports (as errors, source `sqlh`):
+      - unknown qualifier: `fm.*` / `fm.col` with no `fm` among the statement's tables/aliases
+        (`in scope: fd`); Oracle only when the member is `*` or a column in scope (else it may be
+        `pkg.function`)
+      - unknown table in FROM/JOIN/INTO/UPDATE/USING/DELETE, with "did you mean"
+      - unknown column on a resolved table: `alias.col`, INSERT column list, UPDATE SET
+- Quiet when unsure: scope = all tables of the statement (subqueries included, so correlated
+  references never trip); skips PL/SQL, DDL, templates (`${x}`, `{{x}}`, `{x}`), `$$`/q-quotes,
+  SQL*Plus `&var`, dblinks, schemas not in the cache, table functions/CTEs/derived tables
+  (columns unknown), `alias(col, …)`, PARTITION/SAMPLE/PIVOT/AS OF…; Oracle unqualified names
+  only once synonyms are loaded (`ALL_SYNONYMS`, PUBLIC + allowed schemas, background load) and
+  the current schema is cached; PostgreSQL: table found in any one schema (search_path unknown),
+  materialized views now in the table list; tables created/altered anywhere in the document
+  (including `EXECUTE IMMEDIATE '…'`) known / columns unchecked; pseudo-columns (ROWID, ctid…)
+- Handler: debounced 300 ms per document, off the request lock; re-run for all open documents
+  when the cache changes (connect, switch, refresh, background load); cleared on close.
+  `diagnostics: false` in the config turns it off.
+- Validated on real SQL: 1060 chemalert Oracle files (24k statements) → every finding an object
+  really missing from CADE (other schemas/versions); hand-written queries 0 findings; PG
+  llm-sds-reader 0 false positives. 490 KB script: 64 ms.
+
 ### Phase 5 — later / optional
 
 - [ ] `EXPLAIN` to buffer

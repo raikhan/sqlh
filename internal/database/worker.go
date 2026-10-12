@@ -14,6 +14,9 @@ type Worker struct {
 	update   chan struct{}
 	lock     sync.Mutex
 	stopOnce sync.Once
+
+	// OnChange, if set, runs (in its own goroutine) after the cache changed.
+	OnChange func()
 }
 
 func NewWorker() *Worker {
@@ -31,20 +34,30 @@ func (w *Worker) Cache() *DBCache {
 
 func (w *Worker) setCache(c *DBCache) {
 	w.lock.Lock()
-	defer w.lock.Unlock()
 	w.dbCache = c
+	w.lock.Unlock()
+	w.changed()
 }
 
-func (w *Worker) setColumnCache(col map[string][]*ColumnDesc) {
+func (w *Worker) changed() {
+	if w.OnChange != nil {
+		go w.OnChange()
+	}
+}
+
+func (w *Worker) setSecondary(col map[string][]*ColumnDesc, synonyms map[string][]string) {
 	w.lock.Lock()
-	defer w.lock.Unlock()
 	if w.dbCache != nil {
 		// Swap in a copy so that readers holding the previous
 		// *DBCache keep seeing a consistent snapshot.
 		newCache := *w.dbCache
 		newCache.ColumnsWithParent = col
+		newCache.Synonyms = synonyms
+		newCache.SecondaryLoaded = true
 		w.dbCache = &newCache
 	}
+	w.lock.Unlock()
+	w.changed()
 }
 
 func (w *Worker) Start() {
@@ -62,7 +75,14 @@ func (w *Worker) Start() {
 					log.Println(err)
 					continue
 				}
-				w.setColumnCache(col)
+				var synonyms map[string][]string
+				if sl, ok := w.dbRepo.(SynonymLister); ok {
+					if synonyms, err = sl.Synonyms(context.Background()); err != nil {
+						log.Println("synonyms:", err) // lint stays unsure about unqualified names
+						synonyms = nil
+					}
+				}
+				w.setSecondary(col, synonyms)
 				log.Println("db worker: Update db cache secondary complete")
 			}
 		}

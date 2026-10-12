@@ -28,7 +28,13 @@ type Config struct {
 	LowercaseIdentifiers bool                 `json:"lowercaseIdentifiers" yaml:"lowercaseIdentifiers"`
 	Connections          []*database.DBConfig `json:"connections" yaml:"connections"`
 	Results              ResultsConfig        `json:"results" yaml:"results"`
+	// Diagnostics: underline unknown tables, aliases and columns (checked
+	// against the schema cache, never the database). Default: true.
+	Diagnostics *bool `json:"diagnostics" yaml:"diagnostics"`
 }
+
+// DiagnosticsEnabled reports whether diagnostics are on (the default).
+func (c *Config) DiagnosticsEnabled() bool { return c.Diagnostics == nil || *c.Diagnostics }
 
 // ResultsConfig controls query result files.
 type ResultsConfig struct {

@@ -298,6 +298,18 @@ type Diagnostic struct {
 	RelatedInformation []DiagnosticRelatedInformation `json:"relatedInformation,omitempty"`
 }
 
+// PublishDiagnosticsParams is textDocument/publishDiagnostics.
+type PublishDiagnosticsParams struct {
+	URI         DocumentURI  `json:"uri"`
+	Diagnostics []Diagnostic `json:"diagnostics"`
+}
+
+// Diagnostic severities.
+const (
+	SeverityError   = 1
+	SeverityWarning = 2
+)
+
 type WorkDoneProgressParams struct {
 	WorkDoneToken interface{} `json:"workDoneToken"`
 }

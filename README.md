@@ -23,6 +23,13 @@ sqlh aims to provide advanced intelligence for you to edit sql in your own edito
 
 ### Language Server Features
 
+#### Diagnostics
+
+Obvious mistakes are underlined as you type, checked against the cached schema (no queries):
+an alias or table that isn't in the statement (`fm.*` with only `fd` in FROM), unknown tables
+and columns, with "did you mean" suggestions. When sqlh can't be sure (PL/SQL, dynamic SQL,
+templates, synonyms not loaded yet, …) it says nothing. Turn off with `diagnostics: false`.
+
 #### Auto Completion
 
 ![completion](./imgs/sqlh-completion.gif)
@@ -96,6 +103,9 @@ Whichever method you choose, the settings you make will remain the same.
 ```yaml
 # Set to true to use lowercase keywords instead of uppercase.
 lowercaseKeywords: false
+# Underline unknown tables, aliases and columns, checked against the schema cache
+# (never the database). Default: true.
+diagnostics: true
 connections:
   - alias: dsn_mysql
     driver: mysql

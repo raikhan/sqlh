@@ -64,6 +64,8 @@ type Server struct {
 	control net.Listener
 	// jsonKeys caches sampled JSON keys (cleared on switch/refresh).
 	jsonKeys jsoncomplete.Cache
+	// lint schedules diagnostics.
+	lint lintState
 }
 
 type File struct {
@@ -75,11 +77,13 @@ func NewServer() *Server {
 	worker := database.NewWorker()
 	worker.Start()
 
-	return &Server{
+	s := &Server{
 		files:    make(map[string]*File),
 		worker:   worker,
 		jsonKeys: jsoncomplete.Cache{TTL: 10 * time.Minute},
 	}
+	worker.OnChange = s.relintAll
+	return s
 }
 
 func panicf(r interface{}, format string, v ...interface{}) error {
@@ -289,6 +293,7 @@ func (s *Server) handleTextDocumentDidOpen(ctx context.Context, conn *jsonrpc2.C
 	if err := s.updateFile(params.TextDocument.URI, params.TextDocument.Text); err != nil {
 		return nil, err
 	}
+	s.scheduleLint(params.TextDocument.URI)
 	return nil, nil
 }
 
@@ -308,6 +313,7 @@ func (s *Server) handleTextDocumentDidChange(ctx context.Context, conn *jsonrpc2
 	if err := s.updateFile(params.TextDocument.URI, params.ContentChanges[0].Text); err != nil {
 		return nil, err
 	}
+	s.scheduleLint(params.TextDocument.URI)
 	return nil, nil
 }
 
@@ -345,6 +351,7 @@ func (s *Server) handleTextDocumentDidClose(ctx context.Context, conn *jsonrpc2.
 	if err := s.closeFile(params.TextDocument.URI); err != nil {
 		return nil, err
 	}
+	s.clearLint(params.TextDocument.URI)
 	return nil, nil
 }
 

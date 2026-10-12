@@ -42,6 +42,13 @@ type SchemaFilterer interface {
 	SetSchemaFilter(schemas []string)
 }
 
+// SynonymLister is implemented by repositories whose tables may also be
+// reached through synonyms (Oracle): owner → synonym names, for PUBLIC and
+// the allowed schemas.
+type SynonymLister interface {
+	Synonyms(ctx context.Context) (map[string][]string, error)
+}
+
 type DBOption struct {
 	MaxIdleConns int
 	MaxOpenConns int

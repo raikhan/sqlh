@@ -166,14 +166,10 @@ func (db *PostgreSQLDBRepository) SchemaTables(ctx context.Context) (map[string]
 	rows, err := db.Conn.QueryContext(
 		ctx,
 		`
-	SELECT
-		table_schema,
-		table_name
-	FROM
-		information_schema.tables
-	ORDER BY
-		table_schema,
-		table_name
+	SELECT table_schema, table_name FROM information_schema.tables
+	UNION
+	SELECT schemaname, matviewname FROM pg_matviews -- not in information_schema
+	ORDER BY 1, 2
 	`)
 	if err != nil {
 		return nil, err

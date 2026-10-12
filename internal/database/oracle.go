@@ -138,6 +138,25 @@ func (db *OracleDBRepository) Schemas(ctx context.Context) ([]string, error) {
 	return db.Databases(ctx)
 }
 
+// Synonyms returns PUBLIC and allowed-schema synonym names per owner.
+func (db *OracleDBRepository) Synonyms(ctx context.Context) (map[string][]string, error) {
+	pred, args := db.ownerFilter("OWNER")
+	rows, err := db.Conn.QueryContext(ctx, "SELECT OWNER, SYNONYM_NAME FROM ALL_SYNONYMS WHERE OWNER = 'PUBLIC' OR "+pred, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][]string{}
+	for rows.Next() {
+		var owner, name string
+		if err := rows.Scan(&owner, &name); err != nil {
+			return nil, err
+		}
+		out[owner] = append(out[owner], name)
+	}
+	return out, rows.Err()
+}
+
 // SchemaTables returns tables and views per owner.
 func (db *OracleDBRepository) SchemaTables(ctx context.Context) (map[string][]string, error) {
 	pred, args := db.ownerFilter("OWNER")

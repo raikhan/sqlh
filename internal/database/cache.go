@@ -133,6 +133,11 @@ type DBCache struct {
 	SchemaTables      map[string][]string
 	ColumnsWithParent map[string][]*ColumnDesc
 	ForeignKeys       map[string]map[string][]*ForeignKey
+	// Synonyms: owner → names (Oracle; loaded in the background, nil until then
+	// or when the database has none).
+	Synonyms map[string][]string
+	// SecondaryLoaded: the background load (all columns, synonyms) is done.
+	SecondaryLoaded bool
 }
 
 func (dc *DBCache) Database(dbName string) (db string, ok bool) {
@@ -162,6 +167,9 @@ func (dc *DBCache) SortedTables() []string {
 
 // DefaultSchema is the connection's current schema.
 func (dc *DBCache) DefaultSchema() string { return dc.defaultSchema }
+
+// SetDefaultSchema sets the current schema (for caches built by hand, e.g. tests).
+func (dc *DBCache) SetDefaultSchema(s string) { dc.defaultSchema = s }
 
 // CanonicalTableName returns the cached spelling of a default-schema table
 // name, matched case-insensitively (Oracle stores unquoted names upper-case,
