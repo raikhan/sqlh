@@ -286,6 +286,19 @@ Known limitations (not blocking):
       silent no-op (DSN's dbname won) → `pgDSNWithDB`; Oracle/SQLite `db` now explain instead of
       failing with ORA-12514
 
+- [x] Fix: formatting refused queries using PostgreSQL operators (`raw_data->'language'`): the
+      lexer had no multi-character operators (`->>` = Minus Gt Gt → formatted `- > >`). New
+      `token.Operator` for `-> ->> #> #>> #- @> <@ @? @@ ?| ?& || !~ !~*` (`!~` used to be a
+      tokenizer error). Spacing: `->`/`->>` and `::` tight, the rest spaced. A lone `@` (Oracle
+      dblink, MySQL @var), `?` (bind placeholder) and `#` (Oracle names) unchanged; `tags@>'{}'`
+      splits correctly (one-token pushback). Verifier tokenizer taught the same, so a glued
+      `@>`/`#>` can't be mis-split unnoticed. Battery: 14 formatted, 9 skipped, 0 corrupted.
+- [x] Fix (pre-existing): after a JSON operator expression, a cast (`x::text`) or `||` in the
+      select list, completion for the next `alias.` fell back to keywords — the parser only knew
+      `+ - * / % ^` as operators, so the select list wasn't recognised as a list. Parser now builds
+      Operator nodes for `token.Operator` and `::` (cast right side may be a type keyword);
+      `formatOperator` keeps `->`/`->>`/`::` tight.
+
 ### Phase 4 — Helix / Herdr glue
 
 - [ ] `languages.toml` + `space q` keymap

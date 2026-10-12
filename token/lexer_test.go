@@ -906,3 +906,34 @@ test
 		}
 	})
 }
+
+func TestOperatorTokens(t *testing.T) {
+	src := "a->'k' a->>'k' a#>'{x}' a#>>'{x}' a#-'{x}' a @> b a <@ b a @? b a @@ b a ?| b a ?& b a || b a !~ b a !~* b"
+	toks, err := NewTokenizer(bytes.NewBufferString(src), &dialect.GenericSQLDialect{}).Tokenize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ops []string
+	for _, tk := range toks {
+		if tk.Kind == Operator {
+			ops = append(ops, tk.Value.(string))
+		}
+	}
+	want := []string{"->", "->>", "#>", "#>>", "#-", "@>", "<@", "@?", "@@", "?|", "?&", "||", "!~", "!~*"}
+	if strings.Join(ops, " ") != strings.Join(want, " ") {
+		t.Errorf("operators %q\nwant      %q", ops, want)
+	}
+	// operator glued to an identifier
+	toks, _ = NewTokenizer(bytes.NewBufferString("tags@>'{}'"), &dialect.GenericSQLDialect{}).Tokenize()
+	if len(toks) != 3 || toks[0].Value.(*SQLWord).Value != "tags" || toks[1].Kind != Operator || toks[1].Value != "@>" ||
+		toks[1].From.Col != 4 || toks[1].To.Col != 6 || toks[2].From.Col != 6 {
+		t.Errorf("tags@>'{}': %+v %+v %+v", toks[0], toks[1], toks[2])
+	}
+	// unchanged: subtraction, comparison, Oracle dblink, MySQL @var, bind placeholder
+	toks, _ = NewTokenizer(bytes.NewBufferString("a - b > c x@link @v ?"), &dialect.GenericSQLDialect{}).Tokenize()
+	for _, tk := range toks {
+		if tk.Kind == Operator {
+			t.Errorf("unexpected operator %q", tk.Value)
+		}
+	}
+}

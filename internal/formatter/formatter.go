@@ -415,6 +415,14 @@ func formatMemberIdentifier(node *ast.MemberIdentifier, env *formatEnvironment) 
 }
 
 func formatOperator(node *ast.Operator, env *formatEnvironment) ast.Node {
+	if spaced, ok := operatorSpacing(node.Operator); ok && !spaced {
+		// tight: raw_data->>'k', a::int
+		results := []ast.Node{Eval(node.Left, env), node.Operator}
+		if node.Right != nil {
+			results = append(results, Eval(node.Right, env))
+		}
+		return &ast.ItemWith{Toks: results}
+	}
 	results := []ast.Node{
 		Eval(node.Left, env),
 		whitespaceNode,
@@ -656,6 +664,15 @@ func shouldAddSpaceAfter(curNode ast.Node, reader *astutil.NodeReader, formatted
 		}
 	}
 
+	// Operators: JSON field access and casts bind tightly (a->'k', a::int);
+	// the others are spaced (a #>> '{x}', a @> b, a || b, j ? 'k').
+	if sp, ok := operatorSpacing(nextNode); ok {
+		return sp
+	}
+	if sp, ok := operatorSpacing(curNode); ok {
+		return sp
+	}
+
 	// Add space after Item (keyword) unless specific exceptions
 	if curItem, ok := curNode.(*ast.Item); ok {
 		curTok := curItem.GetToken()
@@ -803,4 +820,26 @@ func endsWithWhitespace(node ast.Node) bool {
 
 func formatNode(node ast.Node, env *formatEnvironment) ast.Node {
 	return node
+}
+
+// operatorSpacing reports whether an operator token wants spaces around it.
+func operatorSpacing(n ast.Node) (spaced, isOperator bool) {
+	item, ok := n.(*ast.Item)
+	if !ok {
+		return false, false
+	}
+	tok := item.GetToken()
+	switch {
+	case tok.Kind == token.DoubleColon:
+		return false, true
+	case tok.Kind == token.Operator:
+		switch tok.Value {
+		case "->", "->>": // field access: raw_data->>'language'
+			return false, true
+		}
+		return true, true // #>> '{a,b}', @>, <@, ?|, ?&, ||, !~ …
+	case tok.Kind == token.Char && tok.Value == "?": // jsonb key exists (a bind
+		return true, true // placeholder before , or ) is handled as punctuation)
+	}
+	return false, false
 }

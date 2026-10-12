@@ -70,6 +70,9 @@ const (
 	LBrace
 	// Right brace `}`
 	RBrace
+	// Multi-character operator: PostgreSQL JSON (-> ->> #> #>> #- @> <@ @? @@
+	// ?| ?&), concatenation (||) and regex (!~ !~*)
+	Operator
 	// ILLEGAL sqltoken
 	ILLEGAL
 )

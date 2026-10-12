@@ -175,7 +175,23 @@ func isWordRune(r rune) bool {
 	return r == '_' || r == '$' || r == '#' || r == '@' || r == '.' || unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
-const opChars = "-+*/<>=!~^&|%:?"
+const opChars = "-+*/<>=!~^&|%:?@#"
+
+// atOperator: '@' starting @> @? @@, and '#' starting #> #>>, are operators
+// even right after a word (tags@>'{}', d#>>'{a}'), while a@link, @var and
+// Oracle names like OBJ# stay words.
+func atOperator(rs []rune, i int) bool {
+	if i+1 >= len(rs) {
+		return false
+	}
+	switch rs[i] {
+	case '@':
+		return rs[i+1] == '>' || rs[i+1] == '?' || rs[i+1] == '@'
+	case '#':
+		return rs[i+1] == '>'
+	}
+	return false
+}
 
 func vtokenize(s string) []vtoken {
 	rs := []rune(s)
@@ -230,9 +246,9 @@ func vtokenize(s string) []vtoken {
 		case r == '"' || r == '`':
 			j = quoted(r)
 			emit(vQuoted, i, j)
-		case isWordRune(r):
+		case isWordRune(r) && !atOperator(rs, i):
 			j = i
-			for j < len(rs) && isWordRune(rs[j]) {
+			for j < len(rs) && isWordRune(rs[j]) && !atOperator(rs, j) {
 				j++
 			}
 			emit(vWord, i, j)

@@ -112,6 +112,11 @@ type Tokenizer struct {
 	Scanner *scanner.Scanner
 	Line    int
 	Col     int
+
+	// pendingAt: a word ended because '@' starts an operator (tags@>'{}').
+	// The scanner has one rune of lookahead, so the '@' is already consumed
+	// and the next token is that operator.
+	pendingAt bool
 }
 
 func NewTokenizer(src io.Reader, dialect dialect.Dialect) *Tokenizer {
@@ -162,6 +167,13 @@ func (t *Tokenizer) Pos() Pos {
 }
 
 func (t *Tokenizer) next() (Kind, interface{}, error) {
+	if t.pendingAt {
+		t.pendingAt = false
+		op, _ := multiCharOperator('@', t.Scanner.Peek())
+		t.Scanner.Next()
+		t.Col += len(op)
+		return Operator, op, nil
+	}
 	r := t.Scanner.Peek()
 	switch {
 	case r == ' ':
@@ -205,6 +217,13 @@ func (t *Tokenizer) next() (Kind, interface{}, error) {
 
 	case t.Dialect.IsIdentifierStart(r):
 		t.Scanner.Next()
+		if r == '@' { // @> @? @@ are operators; @var / a@link stay words
+			if op, ok := multiCharOperator('@', t.Scanner.Peek()); ok {
+				t.Scanner.Next()
+				t.Col += len(op)
+				return Operator, op, nil
+			}
+		}
 		s := t.tokenizeWord(r)
 		return SQLKeyword, MakeKeyword(s, 0), nil
 
@@ -275,6 +294,16 @@ func (t *Tokenizer) next() (Kind, interface{}, error) {
 				}
 			}
 		}
+		if t.Scanner.Peek() == '>' { // -> and ->> (JSON)
+			t.Scanner.Next()
+			if t.Scanner.Peek() == '>' {
+				t.Scanner.Next()
+				t.Col += 3
+				return Operator, "->>", nil
+			}
+			t.Col += 2
+			return Operator, "->", nil
+		}
 		t.Col++
 		return Minus, "-", nil
 
@@ -325,6 +354,16 @@ func (t *Tokenizer) next() (Kind, interface{}, error) {
 			t.Col += 2
 			return Neq, "!=", nil
 		}
+		if n == '~' { // regex: !~ and !~*
+			t.Scanner.Next()
+			if t.Scanner.Peek() == '*' {
+				t.Scanner.Next()
+				t.Col += 3
+				return Operator, "!~*", nil
+			}
+			t.Col += 2
+			return Operator, "!~", nil
+		}
 		return ILLEGAL, "", fmt.Errorf("tokenizer error: illegal sequence %s%s", string(r), string(n))
 
 	case r == '<':
@@ -338,6 +377,10 @@ func (t *Tokenizer) next() (Kind, interface{}, error) {
 			t.Scanner.Next()
 			t.Col += 2
 			return Neq, "<>", nil
+		case '@': // contained by (JSON/arrays)
+			t.Scanner.Next()
+			t.Col += 2
+			return Operator, "<@", nil
 		default:
 			t.Col++
 			return Lt, "<", nil
@@ -391,6 +434,21 @@ func (t *Tokenizer) next() (Kind, interface{}, error) {
 		t.Scanner.Next()
 		t.Col++
 		return RBrace, "}", nil
+	case r == '#' || r == '@' || r == '?' || r == '|':
+		// Multi-character operators only; a lone '@' (Oracle dblink), '?'
+		// (bind placeholder) or '#'/'|' stays a Char as before.
+		t.Scanner.Next()
+		if op, ok := multiCharOperator(r, t.Scanner.Peek()); ok {
+			t.Scanner.Next()
+			if op == "#>" && t.Scanner.Peek() == '>' {
+				t.Scanner.Next()
+				op = "#>>"
+			}
+			t.Col += len(op)
+			return Operator, op, nil
+		}
+		t.Col++
+		return Char, string(r), nil
 	case scanner.EOF == r:
 		return ILLEGAL, "", io.EOF
 	default:
@@ -406,12 +464,17 @@ func (t *Tokenizer) tokenizeWord(f rune) string {
 
 	for {
 		r := t.Scanner.Peek()
-		if t.Dialect.IsIdentifierPart(r) {
-			t.Scanner.Next()
-			str = append(str, r)
-		} else {
+		if !t.Dialect.IsIdentifierPart(r) {
 			break
 		}
+		t.Scanner.Next()
+		if r == '@' {
+			if _, ok := multiCharOperator('@', t.Scanner.Peek()); ok {
+				t.pendingAt = true // "tags@>…": the word ends before the operator
+				break
+			}
+		}
+		str = append(str, r)
 	}
 	t.Col += len(str)
 	return string(str)
@@ -522,4 +585,13 @@ func (t *Tokenizer) tokenizeMultilineComment() (string, error) {
 	}
 
 	return string(str), nil
+}
+
+// multiCharOperator recognises two-character operators starting with first.
+func multiCharOperator(first, next rune) (string, bool) {
+	switch string([]rune{first, next}) {
+	case "#>", "#-", "@>", "@?", "@@", "?|", "?&", "||":
+		return string([]rune{first, next}), true
+	}
+	return "", false
 }

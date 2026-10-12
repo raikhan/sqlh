@@ -321,6 +321,11 @@ var operatorInfixMatcher = astutil.NodeMatcher{
 		token.Div,
 		token.Mod,
 		token.Caret,
+		// PostgreSQL: -> ->> #> #>> @> <@ ?| ?& || !~ …, and casts (a::int).
+		// Without these an expression like raw_data->>'k' stays a loose token
+		// run and completion loses track of the select list.
+		token.Operator,
+		token.DoubleColon,
 	},
 }
 var operatorTargetMatcher = astutil.NodeMatcher{
@@ -339,6 +344,16 @@ var operatorTargetMatcher = astutil.NodeMatcher{
 	},
 }
 
+var castTypeMatcher = astutil.NodeMatcher{
+	NodeTypes:    []ast.NodeType{ast.TypeMultiKeyword},
+	ExpectTokens: []token.Kind{token.SQLKeyword},
+}
+
+func isCast(n ast.Node) bool {
+	item, ok := n.(*ast.Item)
+	return ok && item.GetToken().Kind == token.DoubleColon
+}
+
 func parseOperator(reader *astutil.NodeReader) ast.Node {
 	if !reader.CurNodeIs(operatorTargetMatcher) {
 		return reader.CurNode
@@ -355,7 +370,9 @@ func parseOperator(reader *astutil.NodeReader) ast.Node {
 		reader.NextNode(true)
 		operator := reader.CurNode
 
-		if !reader.PeekNodeIs(true, operatorTargetMatcher) {
+		// a cast's right side is a type name, usually a keyword (x::text)
+		isCastType := isCast(operator) && reader.PeekNodeIs(true, castTypeMatcher)
+		if !isCastType && !reader.PeekNodeIs(true, operatorTargetMatcher) {
 			// Include white space after the comma
 			var endIndex int
 			peekIndex, peekNode := reader.PeekNode(true)

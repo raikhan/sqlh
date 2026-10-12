@@ -18,21 +18,24 @@ func verified(t *testing.T, src string) (string, error) {
 
 func TestFormatVerifiedFormats(t *testing.T) {
 	cases := map[string]string{
-		"plain join":        "select p.prod_id, co.co_name from cade.caproduct p join cade.cacompany co on co.co_id = p.co_id where p.status = 'A';\n",
-		"escaped quote":     "select * from t where name = '4,4''-mdi';\n",
-		"function calls":    "select nvl(a, 0), decode(b, 1, 'one', 'other') from t;\n",
-		"cte + window":      "with x as (select id, row_number() over (partition by g order by d desc) rn from t) select count(*) filter (where rn = 1) from x;\n",
-		"upsert":            "insert into t (id, n) values ($1, 'a') on conflict (id) do update set n = excluded.n returning id;\n",
-		"e-string":          "select e'line\\nbreak' from t;\n",
-		"sections":          "-- 1. first\nselect 1 from t;\n\n-- 2. second\nselect 2 from t; -- trailing note\n\n\n/* block\n   comment */\nselect 3 from t;\n",
-		"transaction":       "begin;\nupdate t set a = 1 where id = 2;\ncommit;\n",
-		"already formatted": "select\n  a\nfrom\n  t;\n",
-		"pg cast":           "select a::int from t;\n", // becomes "a ::int": odd but valid
-		"typed literal":     "select p.prod_id from cade.caproduct p where p.edited_date > DATE '2026-04-01' and p.status = 'A';\n",
-		"midedit member":    "select b. from batch b;\n",
-		"midedit schema":    "select * from cadetst.\n",
-		"oracle outer join": "select a.x, b.y from a, b where a.id = b.id(+);\n",
-		"dblink + bind":     "select * from caproduct@remote_link where prod_id = :id;\n",
+		"plain join":         "select p.prod_id, co.co_name from cade.caproduct p join cade.cacompany co on co.co_id = p.co_id where p.status = 'A';\n",
+		"escaped quote":      "select * from t where name = '4,4''-mdi';\n",
+		"function calls":     "select nvl(a, 0), decode(b, 1, 'one', 'other') from t;\n",
+		"cte + window":       "with x as (select id, row_number() over (partition by g order by d desc) rn from t) select count(*) filter (where rn = 1) from x;\n",
+		"upsert":             "insert into t (id, n) values ($1, 'a') on conflict (id) do update set n = excluded.n returning id;\n",
+		"e-string":           "select e'line\\nbreak' from t;\n",
+		"sections":           "-- 1. first\nselect 1 from t;\n\n-- 2. second\nselect 2 from t; -- trailing note\n\n\n/* block\n   comment */\nselect 3 from t;\n",
+		"transaction":        "begin;\nupdate t set a = 1 where id = 2;\ncommit;\n",
+		"already formatted":  "select\n  a\nfrom\n  t;\n",
+		"pg cast":            "select a::int from t;\n", // becomes "a ::int": odd but valid
+		"typed literal":      "select p.prod_id from cade.caproduct p where p.edited_date > DATE '2026-04-01' and p.status = 'A';\n",
+		"midedit member":     "select b. from batch b;\n",
+		"midedit schema":     "select * from cadetst.\n",
+		"oracle outer join":  "select a.x, b.y from a, b where a.id = b.id(+);\n",
+		"dblink + bind":      "select * from caproduct@remote_link where prod_id = :id;\n",
+		"json operators":     "select sds.raw_data->'language' as language, d->'a'->>'b' from t sds where d #>> '{a,b}' is not null;\n",
+		"pg operators":       "select a from t where tags @> '{\"x\":1}' and j ? 'k' and j ?| array['a'] and a || b = 'ab' and n !~* '^x';\n",
+		"sqlite placeholder": "insert into t (a, b) values (?, ?);\n",
 	}
 	for name, src := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -91,7 +94,6 @@ func TestFormatVerifiedSkips(t *testing.T) {
 		"unterminated string": "select 'abc from t;\n",
 		// the raw formatter corrupts these; verification must catch it
 		"merges values":      "select -1, .5 from t;",                           // -> "-1.5"
-		"splits operator":    "select j->>'k' from t;",                          // -> "j -  > >'k'"
 		"glues limit offset": "select a from t limit 10 offset 5;",              // -> "10offset"
 		"glues prior":        "select a from emp connect by prior empno = mgr;", // -> "priorempno"
 	}
@@ -171,6 +173,30 @@ func TestFormatNilOperands(t *testing.T) {
 	} {
 		if _, err := Format(src, p, cfg); err != nil {
 			t.Errorf("%q: %v", src, err)
+		}
+	}
+}
+
+func TestFormatOperatorSpacing(t *testing.T) {
+	for src, want := range map[string]string{
+		"select sds.raw_data -> 'language' from t;": "sds.raw_data->'language'",
+		"select d->'a' ->> 'b' from t;":             "d->'a'->>'b'",
+		"select a from t where d#>>'{a,b}' = 'x';":  "d #>> '{a,b}' = 'x'",
+		"select a from t where tags@>'{}' ;":        "tags @> '{}'",
+		"select a||b from t;":                       "a || b",
+		"select a from t where j?'k';":              "j ? 'k'",
+		"select a from t where n!~'x';":             "n !~ 'x'",
+		"select * from caproduct@remote_link;":      "caproduct@remote_link",
+		"select a :: int, b::text from t;":          "a::int,",
+		"select d->>'k' || '!' from t;":             "d->>'k' || '!'",
+	} {
+		out, err := verified(t, src)
+		if err != nil {
+			t.Errorf("%q: %v", src, err)
+			continue
+		}
+		if !strings.Contains(out, want) {
+			t.Errorf("%q: want %q in\n%s", src, want, out)
 		}
 	}
 }
