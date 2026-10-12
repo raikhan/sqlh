@@ -227,17 +227,39 @@ Known limitations (not blocking):
   `:lsp-workspace-command`, so `sqlh.run`/`sqlh.export` require a range (code actions provide it).
   Progress shows nothing while Oracle is still executing (no rows yet); the spinner still runs.
 
-### Phase 3 — control plane + CLI
+### Phase 3 — control plane + CLI ✅ done
 
-- [ ] Unix socket per workspace (`$XDG_RUNTIME_DIR`/`~/.cache/sqlh/<hash>.sock`), JSON-RPC
-- [ ] `sqlh` subcommands: `lsp`, `connect`, `connections`, `status`, `run`, `export`, `cancel`, `refresh`, `latest`
-- [ ] Standalone fallback (no server → open connection from config directly)
-- [ ] Socket resolution from cwd; `SQLH_SOCK` override
+- [x] `internal/control`: JSON-RPC over a per-workspace Unix socket
+      (`~/Library/Caches/sqlh/<hash>.sock`, `$XDG_RUNTIME_DIR/sqlh`, `SQLH_RUNTIME_DIR`), sidecar
+      `<hash>.json` (workspace, pid). Key = symlink-resolved workspace root (macOS `/tmp` →
+      `/private/tmp` broke the first version). First server wins; stale sockets replaced; clear
+      error if the path exceeds the 104-byte socket limit. Removed on shutdown.
+- [x] Server: starts the socket at `initialize`; all request handling (editor + CLI) serialised
+      by `Server.mu`; control connections use an async handler so a waiting `run` still notices
+      the CLI disconnecting (Ctrl-C, kill -9 → job cancelled); `run` waits for its job without
+      holding the lock (editor completion stays ~1 ms during a CLI export)
+- [x] Jobs report a structured `RunResult`; CLI-started runs also show progress + summary in the
+      editor. Sources: SQL (stdin/`--sql`) or `--file`+`--line` against the editor's **live buffer**
+      (unsaved edits), else disk. `--out`, `--table`, `--json`, `--limit`.
+- [x] CLI (`internal/cmd`): `lsp` (default), `run`, `export`, `connect [alias]` (fzf picker),
+      `connections`/`ls`, `status [--all]`, `cancel`, `refresh`, `latest`; stdin ≤ 1 char ignored
+      (Helix `:pipe-to` cursor). Reference: `doc/cli.md`.
+- [x] Standalone fallback (no server, or `--conn`/`--standalone`): config connection (`--conn`,
+      else remembered, else first), workspace = nearest `.git`/`.helix`/… ancestor, same results
+      dir/naming/summary; Ctrl-C cancels; progress on a TTY
+- [x] Remembered connection per workspace (`~/.local/state/sqlh/state.json`), restored at editor
+      start — each project reopens on its last database
+- [x] LSP command `sqlh.refresh`; shared `internal/report` (summaries, text tables) for server + CLI;
+      `database.DescribeConnection`
+- [x] Fix: `exit` called `Stop()` re-entrantly (would deadlock with the new lock) → `stopLocked`
+- Verified: unit tests (+ `-race`), full CLI↔server scenario on a `-race` server build with no
+  race reports; PG + Oracle (keychain) standalone.
 
 ### Phase 4 — Helix / Herdr glue
 
 - [ ] `languages.toml` + `space q` keymap
-- [ ] `sqlh.nu` helper: fzf connection picker in a Herdr pane, `vd` on `latest.csv`, limit prompt
+- [ ] `sqlh.nu` helper: fzf connection picker in a Herdr pane (`sqlh connect`), `vd` on
+      `sqlh latest`, limit prompt (`sqlh run --limit N --file %{buffer_name} --line %{cursor_line}`)
 - [ ] Decide `showDocument` focus behaviour (`takeFocus` vs background load) for non-CSV outputs
 
 ### Phase 5 — later / optional
@@ -267,10 +289,15 @@ Known limitations (not blocking):
 - **2026-10-12** Phase 2 complete: CSV preview/export via code actions, background jobs with
   progress and cancel, pinned session, exact value formatting, `.sqlh/results` + `latest.csv`.
 
+- **2026-10-12** Phase 3 complete: CLI + per-workspace control socket, standalone mode,
+  remembered connection per workspace.
+
 ## 6. Environment notes
 
 - Helix: `[language-server.sqlh] command = "sqlh"`, `args = ["-log", "/tmp/sqlh.log"]`
-- Binary: `~/.local/bin/sqlh` (`go build -o ~/.local/bin/sqlh .` from repo root)
+- Binary: `~/.local/bin/sqlh` (`go build -o ~/.local/bin/sqlh .` from repo root); CLI: `doc/cli.md`
+- Tests isolating sockets/state: `SQLH_RUNTIME_DIR=/tmp/sqlh-rt XDG_STATE_HOME=/tmp/sqlh-state`;
+  `/tmp/sqls-build/t_p3.py` (CLI↔server scenario)
 - Config: `~/.config/sqlh/config.yml` (example: `doc/config.example.yml`); connections
   `oracle_dev` (default; keychain `sqlh-oracle_dev`, schemas CADE), `pg_local`, `sqlite_scratch`
 - Test files: `scratch/test.sql` (PG), `scratch/oracle.sql`, `scratch/sqlite.sql`

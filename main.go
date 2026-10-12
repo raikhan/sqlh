@@ -13,6 +13,7 @@ import (
 	"github.com/sourcegraph/jsonrpc2"
 	"github.com/urfave/cli/v2"
 
+	"github.com/raikhan/sqlh/internal/cmd"
 	"github.com/raikhan/sqlh/internal/config"
 	"github.com/raikhan/sqlh/internal/handler"
 )
@@ -35,7 +36,7 @@ func realMain() error {
 	app := &cli.App{
 		Name:    name,
 		Version: fmt.Sprintf("Version:%s, Revision:%s\n", version, revision),
-		Usage:   "An implementation of the Language Server Protocol for SQL.",
+		Usage:   "SQL language server (Oracle, PostgreSQL, SQLite) and query runner.",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:    "log",
@@ -53,7 +54,12 @@ func realMain() error {
 				Usage:   "Print all requests and responses.",
 			},
 		},
-		Commands: cli.Commands{
+		Commands: append(cli.Commands{
+			{
+				Name:   "lsp",
+				Usage:  "run the language server on stdio (same as no command)",
+				Action: serve,
+			},
 			{
 				Name:    "config",
 				Aliases: []string{"c"},
@@ -72,7 +78,7 @@ func realMain() error {
 					return openEditor(editorEnv, config.YamlConfigPath)
 				},
 			},
-		},
+		}, cmd.Commands()...),
 		Action: func(c *cli.Context) error {
 			return serve(c)
 		},

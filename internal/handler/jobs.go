@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -14,20 +13,21 @@ import (
 	"sync"
 	"time"
 
-	"github.com/olekukonko/tablewriter"
-	"github.com/olekukonko/tablewriter/tw"
 	"github.com/sourcegraph/jsonrpc2"
 
+	"github.com/raikhan/sqlh/internal/control"
 	"github.com/raikhan/sqlh/internal/database"
 	"github.com/raikhan/sqlh/internal/exec"
 	"github.com/raikhan/sqlh/internal/lsp"
+	"github.com/raikhan/sqlh/internal/report"
 	"github.com/raikhan/sqlh/internal/sqlsplit"
 )
 
 const (
-	CommandRun    = "sqlh.run"    // run → CSV, first N rows
-	CommandExport = "sqlh.export" // run → CSV, all rows
-	CommandCancel = "sqlh.cancel" // cancel the running query
+	CommandRun     = "sqlh.run"     // run → CSV, first N rows
+	CommandExport  = "sqlh.export"  // run → CSV, all rows
+	CommandCancel  = "sqlh.cancel"  // cancel the running query
+	CommandRefresh = "sqlh.refresh" // reload schema metadata
 )
 
 type jobKind int
@@ -47,6 +47,10 @@ type job struct {
 
 	mu     sync.Mutex
 	reason string // why it was cancelled
+
+	// set before done is closed
+	result *control.RunResult
+	err    error
 }
 
 func (j *job) stop(reason string) {
@@ -78,9 +82,17 @@ type jobState struct {
 type runRequest struct {
 	kind     jobKind
 	limit    int
-	uri      string
-	rng      *lsp.Range
+	uri      string     // editor: document
+	rng      *lsp.Range // editor: selection / cursor
 	vertical bool
+
+	// CLI sources (instead of uri/rng): explicit SQL, or a file + 1-based line
+	sql     string
+	file    string
+	line    int
+	col     int
+	out     string // CSV path for the first result set
+	fromCLI bool
 }
 
 // parseRunArgs reads [uri?, range?, limit?, "-show-vertical"?] in any order.
@@ -104,9 +116,42 @@ func parseRunArgs(args []interface{}) (uri string, rng *lsp.Range, limit int, ve
 	return
 }
 
-// targetStatements resolves what to run: the selection, else the statement
-// under the cursor, else (no range) the whole document.
-func (s *Server) targetStatements(uri string, rng *lsp.Range) ([]sqlsplit.Statement, string, error) {
+// resolveStatements works out what to run:
+//   - CLI SQL (stdin/--sql): all statements in it;
+//   - CLI file + line: the statement at that line, using the editor's live
+//     buffer when the file is open (unsaved edits included), else the disk;
+//   - editor selection: its statements; editor cursor: the statement under it;
+//   - editor without a range: the whole document.
+func (s *Server) resolveStatements(req runRequest) ([]sqlsplit.Statement, string, error) {
+	d := sqlsplit.DialectOf(string(s.curDBCfg.Driver))
+	nonEmpty := func(st []sqlsplit.Statement) ([]sqlsplit.Statement, error) {
+		if len(st) == 0 {
+			return nil, errors.New("no statement to execute")
+		}
+		return st, nil
+	}
+	switch {
+	case strings.TrimSpace(req.sql) != "":
+		st, err := nonEmpty(sqlsplit.Split(req.sql, d))
+		return st, "", err
+	case req.file != "":
+		uri, text, err := s.documentText(req.file)
+		if err != nil {
+			return nil, "", err
+		}
+		if req.line < 1 {
+			st, err := nonEmpty(sqlsplit.Split(text, d))
+			return st, uri, err
+		}
+		col := max(req.col-1, 0)
+		st, ok := sqlsplit.AtCursor(text, sqlsplit.Split(text, d), sqlsplit.Position{Line: req.line - 1, Char: col})
+		if !ok {
+			return nil, "", fmt.Errorf("no statement at %s:%d", filepath.Base(req.file), req.line)
+		}
+		return []sqlsplit.Statement{st}, uri, nil
+	}
+
+	uri := req.uri
 	if uri == "" {
 		uri = s.lastURI
 	}
@@ -117,33 +162,47 @@ func (s *Server) targetStatements(uri string, rng *lsp.Range) ([]sqlsplit.Statem
 	if !ok {
 		return nil, "", fmt.Errorf("document not found, %q", uri)
 	}
-	d := sqlsplit.DialectOf(string(s.curDBCfg.Driver))
-	var stmts []sqlsplit.Statement
-	if rng != nil {
-		selected := extractRangeText(f.Text, rng.Start.Line, rng.Start.Character, rng.End.Line, rng.End.Character)
-		// Helix's normal-mode cursor is a 1-character selection
-		if len(strings.TrimSpace(selected)) > 1 {
-			stmts = sqlsplit.Split(selected, d)
-			// report line numbers relative to the document
-			for i := range stmts {
-				stmts[i].Start.Line += rng.Start.Line
-				stmts[i].End.Line += rng.Start.Line
-			}
-		} else {
-			all := sqlsplit.Split(f.Text, d)
-			st, ok := sqlsplit.AtCursor(f.Text, all, sqlsplit.Position{Line: rng.Start.Line, Char: rng.Start.Character})
-			if !ok {
-				return nil, "", fmt.Errorf("no statement at cursor (line %d)", rng.Start.Line+1)
-			}
-			stmts = []sqlsplit.Statement{st}
+	rng := req.rng
+	if rng == nil {
+		st, err := nonEmpty(sqlsplit.Split(f.Text, d))
+		return st, uri, err
+	}
+	selected := extractRangeText(f.Text, rng.Start.Line, rng.Start.Character, rng.End.Line, rng.End.Character)
+	// Helix's normal-mode cursor is a 1-character selection
+	if len(strings.TrimSpace(selected)) > 1 {
+		stmts := sqlsplit.Split(selected, d)
+		// report line numbers relative to the document
+		for i := range stmts {
+			stmts[i].Start.Line += rng.Start.Line
+			stmts[i].End.Line += rng.Start.Line
 		}
-	} else {
-		stmts = sqlsplit.Split(f.Text, d)
+		st, err := nonEmpty(stmts)
+		return st, uri, err
 	}
-	if len(stmts) == 0 {
-		return nil, "", errors.New("no statement to execute")
+	st, ok := sqlsplit.AtCursor(f.Text, sqlsplit.Split(f.Text, d), sqlsplit.Position{Line: rng.Start.Line, Char: rng.Start.Character})
+	if !ok {
+		return nil, "", fmt.Errorf("no statement at cursor (line %d)", rng.Start.Line+1)
 	}
-	return stmts, uri, nil
+	return []sqlsplit.Statement{st}, uri, nil
+}
+
+// documentText returns a file's text: the editor's live buffer if open,
+// otherwise the file on disk.
+func (s *Server) documentText(path string) (uri, text string, err error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", "", err
+	}
+	for u, f := range s.files {
+		if uriToPath(u) == abs {
+			return u, f.Text, nil
+		}
+	}
+	b, err := os.ReadFile(abs)
+	if err != nil {
+		return "", "", err
+	}
+	return "file://" + abs, string(b), nil
 }
 
 // sessionConn returns the pinned session, (re)opening it when missing,
@@ -212,14 +271,16 @@ type runEnv struct {
 	null       string
 }
 
-func (s *Server) startRun(ctx context.Context, conn *jsonrpc2.Conn, req runRequest) (interface{}, error) {
+// startRun validates a request and starts it as a background job. Call with
+// s.mu held; the job itself does not touch server state.
+func (s *Server) startRun(ctx context.Context, req runRequest) (*job, error) {
 	if s.dbConn == nil || s.curDBCfg == nil {
 		return nil, errors.New("database connection is not open")
 	}
-	if (req.kind == jobPreview || req.kind == jobExport) && req.rng == nil {
-		return nil, errors.New("no cursor position: run this from the code action menu (space a)")
+	if !req.fromCLI && (req.kind == jobPreview || req.kind == jobExport) && req.rng == nil {
+		return nil, errors.New("no cursor position: use the code action menu (space a), or `sqlh run --file F --line L [--limit N]`")
 	}
-	stmts, uri, err := s.targetStatements(req.uri, req.rng)
+	stmts, uri, err := s.resolveStatements(req)
 	if err != nil {
 		return nil, err
 	}
@@ -233,7 +294,7 @@ func (s *Server) startRun(ctx context.Context, conn *jsonrpc2.Conn, req runReque
 
 	cfg := s.getConfig().Results
 	env := runEnv{
-		conn:      conn,
+		conn:      s.editor,
 		progress:  s.clientProgress,
 		alias:     connAlias(s.curDBCfg),
 		dialect:   sqlsplit.DialectOf(string(s.curDBCfg.Driver)),
@@ -242,7 +303,11 @@ func (s *Server) startRun(ctx context.Context, conn *jsonrpc2.Conn, req runReque
 		null:      cfg.Null,
 	}
 	if env.workspace == "" {
-		env.workspace = filepath.Dir(uriToPath(uri))
+		if p := uriToPath(uri); p != "" {
+			env.workspace = filepath.Dir(p)
+		} else if wd, err := os.Getwd(); err == nil {
+			env.workspace = wd
+		}
 	}
 	env.resultsDir = exec.ExpandDir(cfg.Dir, env.workspace, env.alias)
 	switch {
@@ -260,7 +325,7 @@ func (s *Server) startRun(ctx context.Context, conn *jsonrpc2.Conn, req runReque
 	s.jobs.mu.Unlock()
 
 	go s.runJob(jctx, j, session, stmts, req, env)
-	return nil, nil
+	return j, nil
 }
 
 func describeRun(kind jobKind, limit, n int) string {
@@ -289,10 +354,21 @@ func (s *Server) runJob(ctx context.Context, j *job, session *sql.Conn, stmts []
 		close(j.done)
 	}()
 	m := lsp.NewMessenger(env.conn)
+	notify := func(info bool, msg string) {
+		if env.conn == nil {
+			return
+		}
+		if info {
+			_ = m.ShowInfo(context.Background(), msg)
+		} else {
+			_ = m.ShowError(context.Background(), msg)
+		}
+	}
 	prog := lsp.StartProgress(env.conn, env.progress, j.title)
 	started := time.Now()
 	values := exec.ValueFormatter{Dialect: env.dialect, Null: env.null}
 
+	res := &control.RunResult{Connection: env.alias}
 	var (
 		outcomes []exec.Outcome
 		files    []string
@@ -313,17 +389,25 @@ func (s *Server) runJob(ctx context.Context, j *job, session *sql.Conn, stmts []
 				table = &exec.Table{}
 				return table, nil
 			}
-			if err := exec.PrepareDir(env.resultsDir); err != nil {
-				return nil, err
+			if req.out != "" && len(files) == 0 {
+				file = req.out
+				if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+					return nil, err
+				}
+				_ = os.Remove(file) // --out overwrites
+			} else {
+				if err := exec.PrepareDir(env.resultsDir); err != nil {
+					return nil, err
+				}
+				file = exec.ResultPath(env.resultsDir, env.alias, started, index)
 			}
-			file = exec.ResultPath(env.resultsDir, env.alias, started, index)
 			return exec.NewCSVFile(file), nil
 		}
 		opts := exec.Options{
 			Limit:  env.limit,
 			Values: values,
 			Progress: func(n int64) {
-				prog.Report(rowCount(n))
+				prog.Report(report.RowCount(n))
 			},
 		}
 		out, err := exec.Run(ctx, session, st, newSink, opts)
@@ -344,175 +428,63 @@ func (s *Server) runJob(ctx context.Context, j *job, session *sql.Conn, stmts []
 			if len(stmts) > 1 {
 				msg = fmt.Sprintf("line %d: %s (%d of %d statements done)", out.Line+1, msg, i, len(stmts))
 			}
-			_ = m.ShowError(context.Background(), env.alias+": "+msg)
+			j.err = errors.New(env.alias + ": " + msg)
+			notify(false, j.err.Error())
 			return
 		}
 		outcomes = append(outcomes, out)
+		tables = append(tables, table)
+		sr := control.StatementResult{
+			Line: out.Line + 1, Rows: out.Rows, Truncated: out.Truncated,
+			Affected: out.Affected, ElapsedMS: out.Elapsed.Milliseconds(),
+		}
+		switch out.Kind {
+		case exec.KindResultSet:
+			sr.Kind = "rows"
+		case exec.KindPLSQL:
+			sr.Kind = "plsql"
+		default:
+			sr.Kind = "executed"
+		}
 		if file != "" && out.Kind == exec.KindResultSet {
+			sr.File = file
 			files = append(files, file)
-			if err := exec.UpdateLatest(env.resultsDir, file); err != nil {
-				log.Println("update latest.csv:", err)
+			if req.out == "" || file != req.out {
+				if err := exec.UpdateLatest(env.resultsDir, file); err != nil {
+					log.Println("update latest.csv:", err)
+				}
 			}
 		}
-		if table != nil {
-			tables = append(tables, table)
-		} else {
-			tables = append(tables, nil)
-		}
+		res.Statements = append(res.Statements, sr)
 	}
 	elapsed := time.Since(started)
+	res.Files = files
+	res.ElapsedMS = elapsed.Milliseconds()
 
 	if req.kind == jobText {
+		res.Table = report.Text(outcomes, tables, req.vertical)
+		res.Summary = fmt.Sprintf("%s: %s", env.alias, report.Duration(elapsed))
 		prog.End("done")
-		text := renderText(outcomes, tables, req.vertical)
+		j.result = res
+		if req.fromCLI {
+			return // the CLI prints the table
+		}
 		dir := filepath.Join(os.TempDir(), "sqlh")
 		path := filepath.Join(dir, CommandExecuteQuery+".txt")
 		if err := os.MkdirAll(dir, 0o755); err == nil {
-			if err = os.WriteFile(path, []byte(text), 0o644); err == nil {
+			if err = os.WriteFile(path, []byte(res.Table), 0o644); err == nil {
 				m.ShowDocument("file://"+path, true)
 				return
 			}
 		}
-		_ = m.ShowError(context.Background(), "cannot write results file")
+		notify(false, "cannot write results file")
 		return
 	}
 
-	summary := summarize(env, outcomes, files, elapsed)
-	prog.End(summary)
-	_ = m.ShowInfo(context.Background(), summary)
-}
-
-func summarize(env runEnv, outcomes []exec.Outcome, files []string, elapsed time.Duration) string {
-	rel := func(p string) string {
-		if r, err := filepath.Rel(env.workspace, p); err == nil && !strings.HasPrefix(r, "..") {
-			return r
-		}
-		return p
-	}
-	if len(outcomes) == 1 {
-		o := outcomes[0]
-		switch o.Kind {
-		case exec.KindResultSet:
-			more := ""
-			if o.Truncated {
-				more = " (more available)"
-			}
-			return fmt.Sprintf("%s: %s%s → %s · %s", env.alias, rowCount(o.Rows), more, rel(files[0]), dur(elapsed))
-		case exec.KindPLSQL:
-			return fmt.Sprintf("%s: PL/SQL block completed · %s", env.alias, dur(elapsed))
-		default:
-			return fmt.Sprintf("%s: %s · %s", env.alias, affected(o.Affected), dur(elapsed))
-		}
-	}
-	var parts []string
-	aff := int64(-1) // stays -1 when no DML ran
-	execs := 0
-	for _, o := range outcomes {
-		if o.Kind != exec.KindResultSet {
-			execs++
-			if o.Affected >= 0 {
-				aff = max(aff, 0) + o.Affected
-			}
-		}
-	}
-	parts = append(parts, fmt.Sprintf("%d statements", len(outcomes)))
-	if len(files) > 0 {
-		parts = append(parts, fmt.Sprintf("%d result files (latest → %s)", len(files), rel(filepath.Join(filepath.Dir(files[len(files)-1]), exec.LatestName))))
-	}
-	if execs > 0 {
-		parts = append(parts, affected(aff))
-	}
-	parts = append(parts, dur(elapsed))
-	return env.alias + ": " + strings.Join(parts, " · ")
-}
-
-func rowCount(n int64) string {
-	if n == 1 {
-		return "1 row"
-	}
-	return thousands(n) + " rows"
-}
-
-func affected(n int64) string {
-	switch {
-	case n < 0:
-		return "statement executed"
-	case n == 1:
-		return "1 row affected"
-	default:
-		return rowCount(n) + " affected"
-	}
-}
-
-func dur(d time.Duration) string {
-	if d < time.Second {
-		return d.Round(time.Millisecond).String()
-	}
-	return d.Round(100 * time.Millisecond).String()
-}
-
-func thousands(n int64) string {
-	s := fmt.Sprint(n)
-	if n < 0 {
-		return s
-	}
-	var b strings.Builder
-	for i, c := range s {
-		if i > 0 && (len(s)-i)%3 == 0 {
-			b.WriteByte(',')
-		}
-		b.WriteRune(c)
-	}
-	return b.String()
-}
-
-func renderText(outcomes []exec.Outcome, tables []*exec.Table, vertical bool) string {
-	buf := new(bytes.Buffer)
-	for i, o := range outcomes {
-		if i > 0 {
-			fmt.Fprintln(buf)
-		}
-		switch o.Kind {
-		case exec.KindPLSQL:
-			fmt.Fprintln(buf, "PL/SQL block completed")
-			continue
-		case exec.KindExecuted:
-			fmt.Fprintln(buf, "Query OK, "+affected(o.Affected))
-			continue
-		}
-		t := tables[i]
-		if vertical {
-			vw := newVerticalTableWriter(buf)
-			vw.setHeaders(t.Columns)
-			for _, r := range t.Rows {
-				vw.appendRow(r)
-			}
-			vw.render()
-		} else {
-			tbl := tablewriter.NewTable(buf, tablewriter.WithHeaderConfig(tw.CellConfig{
-				Formatting: tw.CellFormatting{AutoFormat: tw.Off},
-			}))
-			headers := make([]any, len(t.Columns))
-			for k, v := range t.Columns {
-				headers[k] = v
-			}
-			tbl.Header(headers...)
-			for _, r := range t.Rows {
-				row := make([]any, len(r))
-				for k, v := range r {
-					row[k] = v
-				}
-				_ = tbl.Append(row...)
-			}
-			_ = tbl.Render()
-		}
-		if t.Truncated {
-			fmt.Fprintf(buf, "first %d rows shown, more available (Export → CSV for all rows)\n", len(t.Rows))
-		} else {
-			fmt.Fprintf(buf, "%d rows in set\n", len(t.Rows))
-		}
-	}
-	return buf.String()
+	res.Summary = report.Summary(env.alias, env.workspace, outcomes, files, elapsed)
+	prog.End(res.Summary)
+	j.result = res
+	notify(true, res.Summary)
 }
 
 func connAlias(cfg *database.DBConfig) string {

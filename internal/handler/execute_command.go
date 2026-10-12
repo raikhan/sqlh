@@ -4,16 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
+	"log"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/raikhan/sqlh/internal/database"
 	"github.com/raikhan/sqlh/internal/lsp"
+	"github.com/raikhan/sqlh/internal/state"
 	"github.com/sourcegraph/jsonrpc2"
 )
 
@@ -116,7 +116,9 @@ func (s *Server) handleWorkspaceExecuteCommand(ctx context.Context, conn *jsonrp
 			rng = params.Range
 		}
 		kind := map[string]jobKind{CommandExecuteQuery: jobText, CommandRun: jobPreview, CommandExport: jobExport}[params.Command]
-		result, err = s.startRun(ctx, conn, runRequest{kind: kind, limit: limit, uri: uri, rng: rng, vertical: vertical})
+		_, err = s.startRun(ctx, runRequest{kind: kind, limit: limit, uri: uri, rng: rng, vertical: vertical})
+	case CommandRefresh:
+		result, err = s.refreshCache(ctx)
 	case CommandCancel:
 		if j := s.runningJob(); j != nil {
 			j.stop("by request")
@@ -340,103 +342,69 @@ func (s *Server) showConnections(ctx context.Context, params lsp.ExecuteCommandP
 		if i == s.curConnectionIndex && s.dbConn != nil {
 			mark = "*"
 		}
-		res := fmt.Sprintf("%s %d %-10s %-12s %s", mark, i+1, conn.Driver, conn.Alias, connectionDesc(conn))
+		res := fmt.Sprintf("%s %d %-10s %-12s %s", mark, i+1, conn.Driver, conn.Alias, database.DescribeConnection(conn))
 		results = append(results, strings.TrimRight(res, " "))
 	}
 	return strings.Join(results, "\n"), nil
-}
-
-var dsnPasswordRe = regexp.MustCompile(`(?i)(password=)('[^']*'|\S+)|(://[^:/@]+:)([^@]+)(@)`)
-
-// connectionDesc describes a connection without exposing passwords.
-func connectionDesc(conn *database.DBConfig) string {
-	if conn.DataSourceName != "" {
-		return dsnPasswordRe.ReplaceAllString(conn.DataSourceName, "${1}${3}***${5}")
-	}
-	var desc string
-	switch conn.Proto {
-	case database.ProtoTCP:
-		desc = fmt.Sprintf("tcp(%s:%d)/%s", conn.Host, conn.Port, conn.DBName)
-	case database.ProtoUDP:
-		desc = fmt.Sprintf("udp(%s:%d)/%s", conn.Host, conn.Port, conn.DBName)
-	case database.ProtoUnix:
-		desc = fmt.Sprintf("unix(%s)/%s", conn.Path, conn.DBName)
-	case database.ProtoHTTP:
-		desc = fmt.Sprintf("http(%s:%d)/%s", conn.Host, conn.Port, conn.DBName)
-	default:
-		switch {
-		case conn.Path != "":
-			desc = conn.Path
-		case conn.Host != "":
-			desc = conn.Host
-			if conn.Port != 0 {
-				desc += ":" + strconv.Itoa(conn.Port)
-			}
-			desc += "/" + conn.DBName
-		default:
-			desc = conn.DBName
-		}
-	}
-	if conn.User != "" && desc != "" {
-		desc = conn.User + "@" + desc
-	}
-	if len(conn.Schemas) > 0 {
-		desc += " schemas=" + strings.Join(conn.Schemas, ",")
-	}
-	return desc
 }
 
 func (s *Server) switchConnections(ctx context.Context, params lsp.ExecuteCommandParams) (result interface{}, err error) {
 	if len(params.Arguments) != 1 {
 		return nil, fmt.Errorf("required arguments were not provided: <Connection Index>")
 	}
-	indexStr, ok := params.Arguments[0].(string)
+	name, ok := params.Arguments[0].(string)
 	if !ok {
-		return nil, fmt.Errorf("specify the connection index as a number")
+		return nil, fmt.Errorf("specify the connection alias or index as a string")
 	}
+	return s.switchTo(ctx, name)
+}
 
-	var index int
-
+// connectionIndex resolves an alias or 1-based index to a 0-based index.
+func (s *Server) connectionIndex(name string) (int, error) {
 	cfg := s.getConfig()
 	if cfg != nil {
 		for i, conn := range cfg.Connections {
-			if conn.Alias == indexStr {
-				index = i + 1
-				break
+			if conn.Alias == name {
+				return i, nil
 			}
 		}
 	}
-	if index <= 0 {
-		index, err = strconv.Atoi(indexStr)
-		if err != nil {
-			aliases := []string{}
-			if cfg != nil {
-				for i, conn := range cfg.Connections {
-					if conn.Alias != "" {
-						aliases = append(aliases, conn.Alias)
-					} else {
-						aliases = append(aliases, strconv.Itoa(i+1))
-					}
-				}
+	if n, err := strconv.Atoi(name); err == nil && cfg != nil && n >= 1 && n <= len(cfg.Connections) {
+		return n - 1, nil
+	}
+	aliases := []string{}
+	if cfg != nil {
+		for i, conn := range cfg.Connections {
+			if conn.Alias != "" {
+				aliases = append(aliases, conn.Alias)
+			} else {
+				aliases = append(aliases, strconv.Itoa(i+1))
 			}
-			return nil, fmt.Errorf("unknown connection %q (available: %s)", indexStr, strings.Join(aliases, ", "))
 		}
 	}
+	return 0, fmt.Errorf("unknown connection %q (available: %s)", name, strings.Join(aliases, ", "))
+}
 
-	if index <= 0 {
-		return nil, fmt.Errorf("specify the connection index as a number")
+// switchTo switches to a connection by alias or 1-based index and remembers
+// the choice for this workspace.
+func (s *Server) switchTo(ctx context.Context, name string) (string, error) {
+	index, err := s.connectionIndex(name)
+	if err != nil {
+		return "", err
 	}
-	index = index - 1
-
 	// Reconnect database (rolled back if the reconnect fails). The database
 	// override from switchDatabase belongs to the previous connection.
 	prevIndex, prevDBName := s.curConnectionIndex, s.curDBName
 	s.curConnectionIndex, s.curDBName = index, ""
 	if err := s.reconnectionDB(ctx); err != nil {
 		s.curConnectionIndex, s.curDBName = prevIndex, prevDBName
-		return nil, err
+		return "", err
 	}
-
+	if s.curDBCfg != nil && s.curDBCfg.Alias != "" {
+		if err := state.SetConnection(s.workspace, s.curDBCfg.Alias); err != nil {
+			log.Println("save state:", err)
+		}
+	}
 	return "switched connection to " + connectionLabel(index, s.curDBCfg), nil
 }
 
@@ -477,45 +445,4 @@ func (s *Server) showTables(ctx context.Context, params lsp.ExecuteCommandParams
 		}
 	}
 	return strings.Join(results, "\n"), nil
-}
-
-type verticalTableWriter struct {
-	writer       io.Writer
-	headers      []string
-	rows         [][]string
-	headerMaxLen int
-}
-
-func newVerticalTableWriter(writer io.Writer) *verticalTableWriter {
-	return &verticalTableWriter{
-		writer: writer,
-	}
-}
-
-func (vtw *verticalTableWriter) setHeaders(headers []string) {
-	vtw.headers = headers
-	for _, h := range headers {
-		length := len(h)
-		if vtw.headerMaxLen < length {
-			vtw.headerMaxLen = length
-		}
-	}
-}
-
-func (vtw *verticalTableWriter) appendRow(row []string) {
-	vtw.rows = append(vtw.rows, row)
-}
-
-func (vtw *verticalTableWriter) render() {
-	for rowNum, row := range vtw.rows {
-		fmt.Fprintf(vtw.writer, "***************************[ %d. row ]***************************", rowNum+1)
-		fmt.Fprintln(vtw.writer, "")
-		for colNum, col := range row {
-			header := vtw.headers[colNum]
-
-			padHeader := fmt.Sprintf("%"+strconv.Itoa(vtw.headerMaxLen)+"s", header)
-			fmt.Fprintf(vtw.writer, "%s | %s", padHeader, col)
-			fmt.Fprintln(vtw.writer, "")
-		}
-	}
 }

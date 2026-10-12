@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/sourcegraph/jsonrpc2"
 
@@ -50,6 +52,14 @@ type Server struct {
 	clientProgress bool
 
 	jobs jobState
+
+	// mu serialises request handling: the editor connection and CLI
+	// connections (control socket) are served on different goroutines.
+	mu sync.Mutex
+	// editor is the LSP client connection (for messages from jobs/CLI runs).
+	editor *jsonrpc2.Conn
+	// control is the CLI socket listener (nil if not listening).
+	control net.Listener
 }
 
 type File struct {
@@ -80,11 +90,22 @@ func panicf(r interface{}, format string, v ...interface{}) error {
 	return nil
 }
 
+// Stop shuts the server down (from outside request handling).
 func (s *Server) Stop() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.stopLocked()
+}
+
+// stopLocked shuts the server down; s.mu must be held.
+func (s *Server) stopLocked() error {
+	s.stopControl()
 	s.stopJob("server stopping")
 	s.closeSession()
 	if s.dbConn != nil {
-		if err := s.dbConn.Close(); err != nil {
+		err := s.dbConn.Close()
+		s.dbConn = nil // Stop may run twice (exit, then main)
+		if err != nil {
 			return err
 		}
 	}
@@ -99,6 +120,11 @@ func (s *Server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.
 			err = perr
 		}
 	}()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if req.Method == "initialize" {
+		s.editor = conn
+	}
 	res, err := s.handle(ctx, conn, req)
 	if err != nil {
 		log.Printf("error serving, %+v\n", err)
@@ -186,6 +212,7 @@ func (s *Server) handleInitialize(ctx context.Context, conn *jsonrpc2.Conn, req 
 					CommandRun,
 					CommandExport,
 					CommandCancel,
+					CommandRefresh,
 					CommandExecuteQuery,
 					CommandShowDatabases,
 					CommandShowSchemas,
@@ -204,6 +231,8 @@ func (s *Server) handleInitialize(ctx context.Context, conn *jsonrpc2.Conn, req 
 		s.workspace = params.RootPath
 	}
 	s.clientProgress = params.Capabilities.Window != nil && params.Capabilities.Window.WorkDoneProgress
+	s.restoreConnection()
+	s.startControl()
 
 	// Initialize database database connection
 	// NOTE: If no connection is found at this point, it is possible that the connection settings are sent to workspace config, so don't make an error
@@ -225,6 +254,7 @@ func (s *Server) handleInitialize(ctx context.Context, conn *jsonrpc2.Conn, req 
 }
 
 func (s *Server) handleShutdown(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (result interface{}, err error) {
+	s.stopControl()
 	s.stopJob("server shutting down")
 	s.closeSession()
 	if s.dbConn != nil {
@@ -234,10 +264,7 @@ func (s *Server) handleShutdown(ctx context.Context, conn *jsonrpc2.Conn, req *j
 }
 
 func (s *Server) handleExit(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (result interface{}, err error) {
-	if s.dbConn != nil {
-		s.dbConn.Close()
-	}
-	err = s.Stop()
+	err = s.stopLocked()
 	return nil, err
 }
 

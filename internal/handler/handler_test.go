@@ -130,6 +130,7 @@ func TestInitialized(t *testing.T) {
 					CommandRun,
 					CommandExport,
 					CommandCancel,
+					CommandRefresh,
 					CommandExecuteQuery,
 					CommandShowDatabases,
 					CommandShowSchemas,
