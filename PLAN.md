@@ -301,9 +301,14 @@ Known limitations (not blocking):
 
 ### Phase 4 — Helix / Herdr glue
 
-- [ ] `languages.toml` + `space q` keymap
-- [ ] `sqlh.nu` helper: fzf connection picker in a Herdr pane (`sqlh connect`), `vd` on
-      `sqlh latest`, limit prompt (`sqlh run --limit N --file %{buffer_name} --line %{cursor_line}`)
+- [x] `languages.toml` + `space i` keymap (`space q` is taken): `r` run, `v` run → VisiData,
+      `l` limit prompt, `e` export, `o` open latest, `x` cancel, `t`/`c` insert table/columns,
+      `C`/`D` connection/database pickers, `s` status, `u` refresh
+- [x] `~/.config/helix/sqlh.nu` helper: queries via async `:sh` (popup = summary or DB error;
+      `:sh` drops stderr on success, where `sqlh run` puts the summary); VisiData in a 70% Herdr
+      pane via `open-in-herdr-pane.nu`; pickers under `:pipe-to` + `:redraw`, handing their
+      outcome to the next `:sh` through a per-pane state file; limit prompt = fzf presets or a
+      typed number (`10` is 10, not the `100` preset), `all` = export
 - [ ] Decide `showDocument` focus behaviour (`takeFocus` vs background load) for non-CSV outputs
 
 ### Phase 5 — later / optional

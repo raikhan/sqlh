@@ -64,11 +64,31 @@ sqlh export --conn pg_local --sql "select * from batch" --out /tmp/batch.csv
 sqlh connect pg_local
 ```
 
-Helix (Phase 4 adds keybindings around these):
+## Helix
+
+Keybindings under `space i` (in `~/.config/helix/config.toml`) call the helper
+`~/.config/helix/sqlh.nu`, which wraps these commands so that queries run from an async `:sh`
+(Helix stays usable, `space i x` cancels) and every outcome shows in Helix's popup:
+
+| Keys | |
+|---|---|
+| `space i r` / `v` / `e` | run the statement at the cursor → CSV (preview) / → VisiData pane / export all rows |
+| `space i l` | pick a row limit (preset, typed number, `all`), then run |
+| `space i o` | open the latest result in VisiData (Herdr pane) |
+| `space i x` | cancel the running query |
+| `space i t` / `c` | insert a table / columns (fzf) |
+| `space i C` / `D` | switch connection / database (fzf) |
+| `space i s` / `u` | status / reload schema metadata |
+
+`space a` (code actions) does the same per statement, without the helper. The raw form:
 
 ```
-:pipe-to sqlh run --limit 500 --file %{buffer_name} --line %{cursor_line}
+:sh sqlh run --limit 500 --file %{buffer_name} --line %{cursor_line}
 ```
+
+(`:sh` shows only stdout on success, and `sqlh run` prints the summary on stderr — hence the
+helper. Pickers need the terminal, so they run under `:pipe-to`/`:insert-output`, followed
+by `:redraw`.)
 
 ## Files
 
