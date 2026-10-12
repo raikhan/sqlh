@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/raikhan/sqlh/internal/jsoncomplete"
+	"github.com/raikhan/sqlh/internal/sqlsplit"
 
 	"github.com/raikhan/sqlh/internal/completer"
 	"github.com/raikhan/sqlh/internal/lsp"
@@ -23,6 +25,19 @@ func (s *Server) handleTextDocumentCompletion(ctx context.Context, conn *jsonrpc
 	f, ok := s.files[params.TextDocument.URI]
 	if !ok {
 		return nil, fmt.Errorf("document not found: %s", params.TextDocument.URI)
+	}
+
+	// JSON keys inside json/jsonb operators and SQL/JSON paths
+	var d sqlsplit.Dialect
+	if s.curDBCfg != nil {
+		d = sqlsplit.DialectOf(string(s.curDBCfg.Driver))
+	}
+	line, char := params.Position.Line, params.Position.Character
+	if jc, ok := jsoncomplete.Detect(f.Text, line, char, d); ok {
+		return s.jsonCompletion(f.Text, params, jc, d)
+	}
+	if jsoncomplete.InString(f.Text, line, char, d) {
+		return []lsp.CompletionItem{}, nil // inside an ordinary string literal
 	}
 
 	c := completer.NewCompleter(s.worker.Cache())

@@ -409,6 +409,11 @@ func (db *PostgreSQLDBRepository) Query(ctx context.Context, query string) (*sql
 
 func genPostgresConfig(connCfg *DBConfig) (string, error) {
 	if connCfg.DataSourceName != "" {
+		if connCfg.DBName != "" {
+			// a database switch (switchDatabase / sqlh db) on a DSN-configured
+			// connection: the DSN's own dbname would otherwise win
+			return pgDSNWithDB(connCfg.DataSourceName, connCfg.DBName)
+		}
 		return connCfg.DataSourceName, nil
 	}
 
@@ -499,4 +504,19 @@ func genOptions(q url.Values, joiner, assign, sep, valSep string, skipWhenEmpty 
 	}
 
 	return ""
+}
+
+// pgDSNWithDB sets the database of a URL (postgres://…/db) or key=value DSN.
+func pgDSNWithDB(dsn, db string) (string, error) {
+	if strings.HasPrefix(dsn, "postgres://") || strings.HasPrefix(dsn, "postgresql://") {
+		u, err := url.Parse(dsn)
+		if err != nil {
+			return "", err
+		}
+		u.Path = "/" + db
+		u.RawPath = ""
+		return u.String(), nil
+	}
+	// key=value: a repeated keyword takes the last value
+	return dsn + " dbname=" + quotePostgresParam(db), nil
 }

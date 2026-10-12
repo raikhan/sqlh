@@ -11,6 +11,7 @@ import (
 
 	"github.com/sourcegraph/jsonrpc2"
 
+	"github.com/raikhan/sqlh/internal/catalog"
 	"github.com/raikhan/sqlh/internal/control"
 	"github.com/raikhan/sqlh/internal/database"
 	"github.com/raikhan/sqlh/internal/exec"
@@ -113,6 +114,53 @@ func (s *Server) handleControl(ctx context.Context, conn *jsonrpc2.Conn, req *js
 		return "no query is running", nil
 	case control.MethodRefresh:
 		return s.refreshCache(ctx)
+	case control.MethodSchemas:
+		var p control.SchemasParams
+		if err := unmarshal(req, &p); err != nil {
+			return nil, err
+		}
+		src, opt, err := s.catalog(p.All)
+		if err != nil {
+			return nil, err
+		}
+		return catalog.Schemas(src, opt), nil
+	case control.MethodTables:
+		var p control.TablesParams
+		if err := unmarshal(req, &p); err != nil {
+			return nil, err
+		}
+		src, opt, err := s.catalog(p.All)
+		if err != nil {
+			return nil, err
+		}
+		return catalog.Tables(src, p.Schema, opt), nil
+	case control.MethodColumns:
+		var p control.ColumnsParams
+		if err := unmarshal(req, &p); err != nil {
+			return nil, err
+		}
+		src, opt, err := s.catalog(false)
+		if err != nil {
+			return nil, err
+		}
+		return catalog.Columns(src, p.Table, opt)
+	case control.MethodDatabases:
+		repo, err := s.newDBRepository(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return repo.Databases(ctx)
+	case control.MethodUseDatabase:
+		var p control.DatabaseParams
+		if err := unmarshal(req, &p); err != nil {
+			return nil, err
+		}
+		msg, err := s.useDatabase(ctx, p.Name)
+		if err != nil {
+			return nil, err
+		}
+		s.notifyEditor(msg)
+		return msg, nil
 	}
 	return nil, &jsonrpc2.Error{Code: jsonrpc2.CodeMethodNotFound, Message: "unknown method " + req.Method}
 }
@@ -211,5 +259,17 @@ func (s *Server) refreshCache(ctx context.Context) (string, error) {
 	if err := s.worker.ReCache(ctx, repo); err != nil {
 		return "", err
 	}
+	s.jsonKeys.Clear()
 	return fmt.Sprintf("%s: schema cache refreshed", connAlias(s.curDBCfg)), nil
+}
+
+// catalog exposes the schema cache to the CLI pickers.
+func (s *Server) catalog(all bool) (catalog.Source, catalog.Options, error) {
+	cache := s.worker.Cache()
+	if s.dbConn == nil || s.curDBCfg == nil || cache == nil {
+		return nil, catalog.Options{}, errors.New("not connected")
+	}
+	return catalog.CacheSource{C: cache}, catalog.Options{
+		Driver: s.curDBCfg.Driver, Lower: s.getConfig().LowercaseIdentifiers, All: all,
+	}, nil
 }

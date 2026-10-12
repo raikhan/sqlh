@@ -1,0 +1,210 @@
+{
+	"uses": ["Machine oil."],
+	"sdsDate": { "day": 14, "year": 2022, "month": 10 },
+	"ghsItems": [
+		{
+			"code": "H412",
+			"ghsText": "Harmful to aquatic life with long lasting effects.",
+			"category": "Category 3",
+			"hazClass": "Long-term (chronic) aquatic hazard"
+		}
+	],
+	"language": "English",
+	"synonyms": ["001D7775"],
+	"sdsRegion": {
+		"evidence": [
+			"Viva Energy Australia Pty Ltd",
+			"720 Bourke Street Docklands Victoria 3008 Australia",
+			"1800 651 818 (Australia). ; POISONS INFORMATION CENTRE: 13 11 26 (Australia)."
+		],
+		"likely_region": "Australia"
+	},
+	"properties": {
+		"appearance": {
+			"form": null,
+			"color": "light brown",
+			"physicalState": "Liquid",
+			"appearanceText": "Liquid at room temperature. light brown"
+		},
+		"flammability": { "value": "Not classified as flammable but will burn." },
+		"other_properties": [
+			{ "name": "Odour", "index": 44, "value": "Slight hydrocarbon" },
+			{ "name": "Odour Threshold", "index": 20, "value": null },
+			{ "name": "pH", "index": 7, "value": "Not applicable" },
+			{ "name": "pour point", "index": null, "value": "-15 °C / 5 °F" },
+			{ "name": "Melting / freezing point", "index": 4, "value": null },
+			{
+				"name": "Initial boiling point and boiling range",
+				"index": 3,
+				"value": "> 280 °C / 536 °F"
+			},
+			{ "name": "Flash point", "index": 2, "value": "250 °C / 482 °F" },
+			{ "name": "Evaporation rate", "index": 6, "value": null },
+			{
+				"name": "Flammability (solid, gas)",
+				"index": 1,
+				"value": "Not applicable"
+			},
+			{
+				"name": "Flammability (liquids)",
+				"index": 1,
+				"value": "Not classified as flammable but will burn."
+			},
+			{
+				"name": "Upper explosion limit",
+				"index": 12,
+				"value": "Typical 10 %(V)"
+			},
+			{
+				"name": "Lower explosion limit",
+				"index": 13,
+				"value": "Typical 1 %(V)"
+			},
+			{
+				"name": "Vapour pressure",
+				"index": 11,
+				"value": "< 0.5 Pa (20 °C / 68 °F)"
+			},
+			{
+				"name": "Relative vapour density",
+				"index": 28,
+				"value": "> 1estimated value(s)"
+			},
+			{
+				"name": "Relative density",
+				"index": 94,
+				"value": "0.894 (15 °C / 59 °F)"
+			},
+			{
+				"name": "Density",
+				"index": null,
+				"value": "894 kg/m3 (15.0 °C / 59.0 °F)"
+			},
+			{ "name": "Solubility(ies)", "index": 10, "value": null },
+			{ "name": "Water solubility", "index": 10, "value": "negligible" },
+			{ "name": "Solubility in other solvents", "index": 10, "value": null },
+			{
+				"name": "Partition coefficient: n-octanol/water",
+				"index": 78,
+				"value": "log Pow: > 6"
+			},
+			{
+				"name": "Auto-ignition temperature",
+				"index": 27,
+				"value": "> 320 °C / 608 °F"
+			},
+			{ "name": "Decomposition temperature", "index": 29, "value": null },
+			{ "name": "Viscosity", "index": 79, "value": null },
+			{ "name": "Viscosity, dynamic", "index": 79, "value": null },
+			{
+				"name": "Viscosity, kinematic",
+				"index": 79,
+				"value": "220 mm2/s (40.0 °C / 104.0 °F)"
+			},
+			{
+				"name": "Explosive properties",
+				"index": 95,
+				"value": "Not classified"
+			},
+			{ "name": "Oxidizing properties", "index": 77, "value": null },
+			{
+				"name": "Conductivity",
+				"index": null,
+				"value": "This material is not expected to be a static accumulator."
+			}
+		]
+	},
+	"hazchemCode": null,
+	"ingredients": [
+		{
+			"name": "Butylated hydroxytoluene",
+			"ecNumber": null,
+			"casNumber": "128-37-0",
+			"concentration": "0.1 - 0.5",
+			"molecularWeight": null,
+			"molecularFormula": null,
+			"detailedConcentration": {
+				"toOperand": null,
+				"fromOperand": null,
+				"toConcentration": 0.5,
+				"fromConcentration": 0.1
+			}
+		},
+		{
+			"name": "Alkyl thiadiazole",
+			"ecNumber": null,
+			"casNumber": "13539-13-4",
+			"concentration": "0.01 - 0.099",
+			"molecularWeight": null,
+			"molecularFormula": null,
+			"detailedConcentration": {
+				"toOperand": null,
+				"fromOperand": null,
+				"toConcentration": 0.099,
+				"fromConcentration": 0.01
+			}
+		},
+		{
+			"name": "Alkenyl amine",
+			"ecNumber": null,
+			"casNumber": "112-90-3",
+			"concentration": "0.01 - 0.099",
+			"molecularWeight": null,
+			"molecularFormula": null,
+			"detailedConcentration": {
+				"toOperand": null,
+				"fromOperand": null,
+				"toConcentration": 0.099,
+				"fromConcentration": 0.01
+			}
+		}
+	],
+	"productName": "Shell Tonna S3 M 220",
+	"hazard_types": {
+		"osha": null,
+		"health": false,
+		"physical": false,
+		"environment": true
+	},
+	"supplierName": "Viva Energy Australia Pty Ltd",
+	"supplierEmail": null,
+	"supplierPhone": "+61 (0)3 8823 4444",
+	"transportInfo": {
+		"air": {
+			"unNumber": null,
+			"dgClasses": null,
+			"packingGroup": null,
+			"shippingName": null,
+			"environmentalHazards": null
+		},
+		"sea": {
+			"unNumber": null,
+			"dgClasses": null,
+			"packingGroup": null,
+			"shippingName": null,
+			"environmentalHazards": null
+		},
+		"land": {
+			"unNumber": null,
+			"dgClasses": null,
+			"packingGroup": null,
+			"shippingName": null,
+			"environmentalHazards": null
+		}
+	},
+	"poisonSchedule": null,
+	"supplierAddress": {
+		"city": "Docklands",
+		"state": "Victoria",
+		"address": "720 Bourke Street",
+		"country": "Australia",
+		"postalCode": "3008"
+	},
+	"supplierWebsite": null,
+	"product_hazardous": true,
+	"usesAdvisedAgainst": null,
+	"emergencyPhoneNumbers": {
+		"emergencyPhoneNumber": "1800 651 818 (Australia). ; POISONS INFORMATION CENTRE: 13 11 26 (Australia).",
+		"internationalEmergencyPhoneNumber": null
+	}
+}

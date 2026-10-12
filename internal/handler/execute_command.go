@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/raikhan/sqlh/dialect"
 	"github.com/raikhan/sqlh/internal/database"
 	"github.com/raikhan/sqlh/internal/lsp"
 	"github.com/raikhan/sqlh/internal/state"
@@ -322,15 +324,26 @@ func (s *Server) switchDatabase(ctx context.Context, params lsp.ExecuteCommandPa
 	if !ok {
 		return nil, fmt.Errorf("specify the db name as a string")
 	}
+	return s.useDatabase(ctx, dbName)
+}
 
-	// Change current database (rolled back if the reconnect fails)
+// useDatabase reconnects the current connection to another database
+// (rolled back if the reconnect fails).
+func (s *Server) useDatabase(ctx context.Context, dbName string) (string, error) {
+	if s.curDBCfg != nil {
+		switch s.curDBCfg.Driver {
+		case dialect.DatabaseDriverOracle:
+			return "", errors.New("Oracle has one database per connection; to work with another schema add it to the connection's `schemas:` list and use schema.table")
+		case dialect.DatabaseDriverSQLite3:
+			return "", errors.New("SQLite has one database per file; add another connection instead")
+		}
+	}
 	prev := s.curDBName
 	s.curDBName = dbName
 	if err := s.reconnectionDB(ctx); err != nil {
 		s.curDBName = prev
-		return nil, err
+		return "", err
 	}
-
 	return fmt.Sprintf("switched database to %s", dbName), nil
 }
 

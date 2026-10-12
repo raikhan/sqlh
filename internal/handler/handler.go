@@ -10,11 +10,13 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sourcegraph/jsonrpc2"
 
 	"github.com/raikhan/sqlh/internal/config"
 	"github.com/raikhan/sqlh/internal/database"
+	"github.com/raikhan/sqlh/internal/jsoncomplete"
 	"github.com/raikhan/sqlh/internal/lsp"
 )
 
@@ -60,6 +62,8 @@ type Server struct {
 	editor *jsonrpc2.Conn
 	// control is the CLI socket listener (nil if not listening).
 	control net.Listener
+	// jsonKeys caches sampled JSON keys (cleared on switch/refresh).
+	jsonKeys jsoncomplete.Cache
 }
 
 type File struct {
@@ -72,8 +76,9 @@ func NewServer() *Server {
 	worker.Start()
 
 	return &Server{
-		files:  make(map[string]*File),
-		worker: worker,
+		files:    make(map[string]*File),
+		worker:   worker,
+		jsonKeys: jsoncomplete.Cache{TTL: 10 * time.Minute},
 	}
 }
 
@@ -194,7 +199,7 @@ func (s *Server) handleInitialize(ctx context.Context, conn *jsonrpc2.Conn, req 
 			HoverProvider:      true,
 			CodeActionProvider: true,
 			CompletionProvider: &lsp.CompletionOptions{
-				TriggerCharacters: []string{"(", "."},
+				TriggerCharacters: []string{"(", ".", "'"},
 			},
 			SignatureHelpProvider: &lsp.SignatureHelpOptions{
 				TriggerCharacters:   []string{"(", ","},
@@ -431,6 +436,7 @@ func (s *Server) reconnectionDB(ctx context.Context) error {
 
 	// the running query and the pinned session belong to the old connection
 	s.stopJob("connection switched")
+	s.jsonKeys.Clear()
 	s.closeSession()
 	s.dbConn, s.curDBCfg = dbConn, cfg
 	if prevConn != nil {

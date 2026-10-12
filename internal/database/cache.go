@@ -160,6 +160,9 @@ func (dc *DBCache) SortedTables() []string {
 	return tbls
 }
 
+// DefaultSchema is the connection's current schema.
+func (dc *DBCache) DefaultSchema() string { return dc.defaultSchema }
+
 // CanonicalTableName returns the cached spelling of a default-schema table
 // name, matched case-insensitively (Oracle stores unquoted names upper-case,
 // users usually type lower-case).

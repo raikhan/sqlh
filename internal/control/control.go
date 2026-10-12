@@ -26,7 +26,53 @@ const (
 	MethodRun         = "sqlh/run"
 	MethodCancel      = "sqlh/cancel"
 	MethodRefresh     = "sqlh/refresh"
+	MethodSchemas     = "sqlh/schemas"
+	MethodTables      = "sqlh/tables"
+	MethodColumns     = "sqlh/columns"
+	MethodDatabases   = "sqlh/databases"
+	MethodUseDatabase = "sqlh/useDatabase"
 )
+
+// SchemaItem is a schema; Default marks the connection's current schema.
+type SchemaItem struct {
+	Name    string `json:"name"`
+	Default bool   `json:"default"`
+}
+
+// TableItem is a table or view. Insert is how to type it in SQL: unqualified
+// in the default schema, quoted when needed.
+type TableItem struct {
+	Schema  string `json:"schema"`
+	Name    string `json:"name"`
+	Insert  string `json:"insert"`
+	Default bool   `json:"default"`
+	Columns int    `json:"columns"`
+}
+
+type ColumnItem struct {
+	Name   string `json:"name"`
+	Type   string `json:"type"`
+	Null   string `json:"null"`
+	Key    string `json:"key"`
+	Insert string `json:"insert"`
+}
+
+type TablesParams struct {
+	Schema string `json:"schema,omitempty"`
+	All    bool   `json:"all,omitempty"` // include system schemas
+}
+
+type ColumnsParams struct {
+	Table string `json:"table"` // table, schema.table, or a TableItem.Insert
+}
+
+type SchemasParams struct {
+	All bool `json:"all,omitempty"`
+}
+
+type DatabaseParams struct {
+	Name string `json:"name"`
+}
 
 // Connection describes one configured connection.
 type Connection struct {

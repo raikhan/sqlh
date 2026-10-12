@@ -255,6 +255,37 @@ Known limitations (not blocking):
 - Verified: unit tests (+ `-race`), full CLI↔server scenario on a `-race` server build with no
   race reports; PG + Oracle (keychain) standalone.
 
+### Phase 3.5 — JSON key completion + CLI pickers ✅ done
+
+- [x] JSON keys completion (`internal/jsoncomplete`), keys sampled from the data (1,000 non-null
+      rows), cached 10 min per column/path, cleared on switch/refresh; 1.5 s cap per lookup, then
+      `isIncomplete` and the fetch finishes in the background. `'` added as a trigger character.
+  - PostgreSQL json/jsonb: `col->'…'`, `->>'…'`, nested chains incl. array indexes
+    (`->'ingredients'->0->>'…'`), arrays looked through (`->'ingredients'->>'…'`), `#>`/`#>>`
+    `'{a,…'`, `?`, and `jsonb_path_*(col, '$.a.…')`. `jsonb_each` gives types and frequency
+    (`hazchemCode: string|null · 6/6 sampled`).
+  - Oracle 19c: `json_value/json_query/json_exists/json_table(col, '$.…')` on any column (no
+    `IS JSON` constraints in CADE; CLOB JSON in e.g. `CAREGLISTENTRY.CONTENT_JSON`, 500k rows) via
+    `JSON_DATAGUIDE` (~70 ms); keys needing quotes inserted as `."CAS RN"`.
+  - Column resolution: FROM-clause aliases (string closed at the cursor first, so an
+    un-paired quote doesn't swallow the FROM), else a unique JSON column of that name.
+  - Inside ordinary string literals completion now returns nothing (was keyword noise).
+  - Array-element keys (PG operator styles): `->'ghsItems'->>'code'` is always NULL, yet
+    looking through arrays offered `code` there. Now flagged `⚠ array element key`, sorted
+    last, with a doc popup giving `->0->>'code'`, `jsonb_path_query_array(col, '$.ghsItems[*].code')`
+    and `jsonb_array_elements`. Not flagged with an index or in SQL/JSON paths (lax mode).
+- [x] CLI catalog + pickers (`internal/catalog`, `internal/cmd/{catalog,picker}.go`): `tables`,
+      `columns`, `schemas`, `databases`, `db`; list (one insertable name per line), `--long`,
+      `--json`, `-p` fzf pick (table preview = columns; columns multi-select with `--prefix`/`--sep`).
+      fzf like `fzf-in-helix.nu` (height mode, kitty protocol off) and no trailing newline into a
+      pipe → works with `:insert-output`. Server cache (instant) or standalone (queries).
+      Names as typed: default schema unqualified, Oracle upper-case lowered with
+      `lowercaseIdentifiers`, quoted when needed (`database.QuoteIdent`).
+- [x] Fix: urfave/cli ignored flags after a positional (`sqlh columns t -p`) → `cmd.ReorderArgs`
+- [x] Fix (upstream sqls bug): switching database on a DSN-configured PostgreSQL connection was a
+      silent no-op (DSN's dbname won) → `pgDSNWithDB`; Oracle/SQLite `db` now explain instead of
+      failing with ORA-12514
+
 ### Phase 4 — Helix / Herdr glue
 
 - [ ] `languages.toml` + `space q` keymap
@@ -291,6 +322,9 @@ Known limitations (not blocking):
 
 - **2026-10-12** Phase 3 complete: CLI + per-workspace control socket, standalone mode,
   remembered connection per workspace.
+
+- **2026-10-12** Phase 3.5: JSON key completion (PG operators/jsonpath, Oracle SQL/JSON via
+  dataguide) and CLI pickers for tables/columns/schemas/databases.
 
 ## 6. Environment notes
 

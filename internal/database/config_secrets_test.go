@@ -72,3 +72,19 @@ func TestValidateOracle(t *testing.T) {
 		}
 	}
 }
+
+func TestPgDSNWithDB(t *testing.T) {
+	cases := map[string]string{
+		"host=localhost dbname=sdsai sslmode=disable": "host=localhost dbname=sdsai sslmode=disable dbname=postgres",
+		"postgres://u:p@h:5432/sdsai?sslmode=disable": "postgres://u:p@h:5432/postgres?sslmode=disable",
+		"postgresql://h/sdsai":                        "postgresql://h/postgres",
+	}
+	for in, want := range cases {
+		if got, err := pgDSNWithDB(in, "postgres"); err != nil || got != want {
+			t.Errorf("pgDSNWithDB(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	if got, _ := pgDSNWithDB("host=h", "my db"); got != "host=h dbname='my db'" {
+		t.Errorf("quoting: %q", got)
+	}
+}

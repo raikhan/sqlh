@@ -94,7 +94,7 @@ func realMain() error {
 		Usage:   "Print help.",
 	}
 
-	err := app.Run(os.Args)
+	err := app.Run(cmd.ReorderArgs(app, os.Args))
 	if err != nil {
 		return err
 	}

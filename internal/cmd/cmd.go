@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"strings"
@@ -39,7 +38,7 @@ func Commands() []*cli.Command {
 		&cli.BoolFlag{Name: "standalone", Usage: "do not use a running server"},
 		dirFlag, jsonFlag,
 	}
-	return []*cli.Command{
+	return append([]*cli.Command{
 		{
 			Name:      "run",
 			Usage:     "run SQL → CSV (first N rows); prints the CSV path(s)",
@@ -94,7 +93,7 @@ func Commands() []*cli.Command {
 			Flags:  []cli.Flag{dirFlag, &cli.StringFlag{Name: "conn", Usage: "standalone: connection `ALIAS` (for a results dir using {conn})"}},
 			Action: latestCmd,
 		},
-	}
+	}, catalogCommands()...)
 }
 
 // startDir is where workspace/server resolution starts.
@@ -302,7 +301,7 @@ func connectCmd(c *cli.Context) error {
 		if err := call(cl, control.MethodConnections, nil, &conns); err != nil {
 			return err
 		}
-		if alias, err = pick(conns); err != nil || alias == "" {
+		if alias, err = pickConnection(conns); err != nil || alias == "" {
 			return err
 		}
 	}
@@ -316,36 +315,21 @@ func connectCmd(c *cli.Context) error {
 	return nil
 }
 
-// pick lets the user choose a connection with fzf.
-func pick(conns []control.Connection) (string, error) {
-	if _, err := exec.LookPath("fzf"); err != nil {
-		var names []string
-		for _, cn := range conns {
-			names = append(names, cn.Alias)
-		}
-		return "", fmt.Errorf("give a connection: %s", strings.Join(names, ", "))
-	}
-	var in strings.Builder
-	for _, cn := range conns {
+// pickConnection lets the user choose a connection with fzf.
+func pickConnection(conns []control.Connection) (string, error) {
+	lines := make([]string, len(conns))
+	for i, cn := range conns {
 		mark := " "
 		if cn.Current {
 			mark = "*"
 		}
-		fmt.Fprintf(&in, "%s\t%s %s\t%s\n", cn.Alias, mark, cn.Driver, cn.Desc)
+		lines[i] = fmt.Sprintf("%s\t%s %-16s %-10s %s", cn.Alias, mark, cn.Alias, cn.Driver, cn.Desc)
 	}
-	cmd := exec.Command("fzf", "--prompt", "connection> ", "--delimiter", "\t", "--with-nth", "1,2,3",
-		"--height", "~40%", "--reverse", "--no-sort")
-	cmd.Stdin = strings.NewReader(in.String())
-	cmd.Stderr = os.Stderr
-	out, err := cmd.Output()
-	if err != nil {
-		var ee *exec.ExitError
-		if errors.As(err, &ee) && (ee.ExitCode() == 130 || ee.ExitCode() == 1) {
-			return "", nil // cancelled / no match
-		}
+	vals, err := pick(lines, pickOpts{prompt: "connection"})
+	if err != nil || len(vals) == 0 {
 		return "", err
 	}
-	return strings.SplitN(strings.TrimSpace(string(out)), "\t", 2)[0], nil
+	return vals[0], nil
 }
 
 func statusCmd(c *cli.Context) error {

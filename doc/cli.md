@@ -15,6 +15,27 @@ editor buffers** — via a Unix socket. Without a running server, `run`, `export
 | `sqlh cancel` | cancel the running query |
 | `sqlh refresh` | reload schema metadata (after DDL) |
 | `sqlh latest` | path of the newest result CSV: `vd $(sqlh latest)` |
+| `sqlh tables [-s SCHEMA] [--all]` | tables/views as you'd type them (default schema unqualified, others `schema.table`, quoted when needed); `-p` picks one with a columns preview |
+| `sqlh columns [TABLE] [--prefix p.] [--sep ", "]` | a table's columns; `-p` multi-picks (Tab, Ctrl-A all) → `p.a, p.b`; no TABLE with `-p`: pick the table first |
+| `sqlh schemas [--all]` / `sqlh databases` | lists; `-p` picks one |
+| `sqlh db [NAME]` | switch the editor's connection to another database (PostgreSQL; no NAME: pick) |
+
+## Pickers
+
+`-p` runs fzf (`--height=80%`, kitty keyboard protocol switched off around it, like
+`fzf-in-helix.nu`) and prints the choice **without a trailing newline** when stdout is not a
+terminal, so it can be inserted directly from Helix:
+
+```
+:insert-output sqlh tables -p
+:insert-output sqlh columns -p --prefix p.
+```
+
+Esc/no match prints nothing (exit 0). Without `-p` the commands print one insertable name per
+line (`--long` for details, `--json` structured), e.g. to feed another picker.
+`SQLH_FZF_ARGS` adds fzf arguments.
+
+Flags may come before or after positional arguments (`sqlh columns caproduct -p`).
 
 ## What `run` / `export` execute
 
