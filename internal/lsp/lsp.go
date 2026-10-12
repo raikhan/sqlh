@@ -84,7 +84,9 @@ type DocumentOnTypeFormattingOptions struct{}
 
 type DocumentLinkOptions struct{}
 
-type ExecuteCommandOptions struct{}
+type ExecuteCommandOptions struct {
+	Commands []string `json:"commands"`
+}
 
 // https://microsoft.github.io/language-server-protocol/specifications/specification-3-14/#textDocument_didOpen
 
@@ -406,6 +408,18 @@ type SignatureHelpParams struct {
 type ShowMessageParams struct {
 	Type    MessageType `json:"type"`
 	Message string      `json:"message"`
+}
+
+// https://microsoft.github.io/language-server-protocol/specifications/lsp/3.17/specification/#window_showDocument
+type ShowDocumentParams struct {
+	URI       DocumentURI `json:"uri"`
+	External  *bool       `json:"external,omitempty"`
+	TakeFocus *bool       `json:"takeFocus,omitempty"`
+	Selection *Range      `json:"selection,omitempty"`
+}
+
+type ShowDocumentResult struct {
+	Success bool `json:"success"`
 }
 
 type ShowMessageRequestParams struct {

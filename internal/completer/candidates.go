@@ -68,7 +68,16 @@ func (c *Completer) columnCandidates(targetTables []*parseutil.TableInfo, parent
 			if table.Name != parent.Name && table.Alias != parent.Name {
 				continue
 			}
-			columns, ok := c.DBCache.ColumnDescs(table.Name)
+			var (
+				columns []*database.ColumnDesc
+				ok      bool
+			)
+			if table.DatabaseSchema != "" {
+				// schema-qualified reference: look up in that schema, not the default one
+				columns, ok = c.DBCache.ColumnDatabase(table.DatabaseSchema, table.Name)
+			} else {
+				columns, ok = c.DBCache.ColumnDescs(table.Name)
+			}
 			if !ok {
 				continue
 			}

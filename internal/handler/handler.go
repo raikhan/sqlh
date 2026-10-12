@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"runtime"
+	"strings"
 
 	"github.com/sourcegraph/jsonrpc2"
 
@@ -38,6 +39,10 @@ type Server struct {
 
 	worker *database.Worker
 	files  map[string]*File
+
+	// lastURI is the most recently used document; used when a workspace command
+	// is issued without a document argument (e.g. Helix :lsp-workspace-command).
+	lastURI string
 }
 
 type File struct {
@@ -69,8 +74,10 @@ func panicf(r interface{}, format string, v ...interface{}) error {
 }
 
 func (s *Server) Stop() error {
-	if err := s.dbConn.Close(); err != nil {
-		return err
+	if s.dbConn != nil {
+		if err := s.dbConn.Close(); err != nil {
+			return err
+		}
 	}
 	s.worker.Stop()
 	return nil
@@ -90,6 +97,7 @@ func (s *Server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.
 	return res, err
 }
 func (s *Server) handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (result interface{}, err error) {
+	s.trackActiveDocument(req)
 	switch req.Method {
 	case "initialize":
 		return s.handleInitialize(ctx, conn, req)
@@ -164,6 +172,17 @@ func (s *Server) handleInitialize(ctx context.Context, conn *jsonrpc2.Conn, req 
 			DocumentFormattingProvider:      true,
 			DocumentRangeFormattingProvider: true,
 			RenameProvider:                  true,
+			ExecuteCommandProvider: &lsp.ExecuteCommandOptions{
+				Commands: []string{
+					CommandExecuteQuery,
+					CommandShowDatabases,
+					CommandShowSchemas,
+					CommandShowConnections,
+					CommandSwitchDatabase,
+					CommandSwitchConnection,
+					CommandShowTables,
+				},
+			},
 		},
 	}
 
@@ -435,4 +454,19 @@ func validConfig(cfg *config.Config) bool {
 		return true
 	}
 	return false
+}
+
+// trackActiveDocument remembers the document of the latest textDocument/* request.
+func (s *Server) trackActiveDocument(req *jsonrpc2.Request) {
+	if req.Params == nil || !strings.HasPrefix(req.Method, "textDocument/") || req.Method == "textDocument/didClose" {
+		return
+	}
+	var p struct {
+		TextDocument struct {
+			URI string `json:"uri"`
+		} `json:"textDocument"`
+	}
+	if err := json.Unmarshal(*req.Params, &p); err == nil && p.TextDocument.URI != "" {
+		s.lastURI = p.TextDocument.URI
+	}
 }

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/sqls-server/sqls/dialect"
 	"github.com/sqls-server/sqls/parser/parseutil"
@@ -102,15 +103,77 @@ func Coalesce(str ...string) string {
 
 func TableDoc(tableName string, cols []*ColumnDesc) string {
 	buf := new(bytes.Buffer)
-	fmt.Fprintf(buf, "# `%s` table", tableName)
+	fmt.Fprintf(buf, "`%s` table", tableName)
 	fmt.Fprintln(buf)
 	fmt.Fprintln(buf)
-	fmt.Fprintln(buf)
-	fmt.Fprintln(buf, "| Name&nbsp;&nbsp; | Type&nbsp;&nbsp; | Primary&nbsp;key&nbsp;&nbsp; | Default&nbsp;&nbsp; | Extra&nbsp;&nbsp; |")
-	fmt.Fprintln(buf, "| :--------------- | :--------------- | :---------------------- | :------------------ | :---------------- |")
+	// Rendered as a fenced block with padded columns: clients such as Helix show
+	// markdown tables as raw text, so pipe tables do not line up.
+	rows := make([][]string, 0, len(cols))
 	for _, col := range cols {
-		fmt.Fprintf(buf, "| `%s` | `%s` | `%s` | `%s` | %s |", col.Name, col.Type, col.Key, Coalesce(col.Default.String, "-"), col.Extra)
-		fmt.Fprintln(buf)
+		key := col.Key
+		if key == "" {
+			key = "-"
+		}
+		rows = append(rows, []string{col.Name, col.Type, key, Coalesce(col.Default.String, "-"), col.Extra})
+	}
+	fmt.Fprintln(buf, "```")
+	fmt.Fprint(buf, alignedTable([]string{"Name", "Type", "PK", "Default", "Extra"}, rows))
+	fmt.Fprintln(buf, "```")
+	return buf.String()
+}
+
+// alignedTable renders rows as space-padded columns; trailing empty columns are dropped.
+func alignedTable(headers []string, rows [][]string) string {
+	n := len(headers)
+	// drop trailing columns that are empty in every row
+	for n > 1 {
+		empty := true
+		for _, r := range rows {
+			if n-1 < len(r) && strings.TrimSpace(r[n-1]) != "" {
+				empty = false
+				break
+			}
+		}
+		if !empty {
+			break
+		}
+		n--
+	}
+	widths := make([]int, n)
+	for i := 0; i < n; i++ {
+		widths[i] = utf8.RuneCountInString(headers[i])
+	}
+	for _, r := range rows {
+		for i := 0; i < n && i < len(r); i++ {
+			if w := utf8.RuneCountInString(r[i]); w > widths[i] {
+				widths[i] = w
+			}
+		}
+	}
+	line := func(cells []string) string {
+		parts := make([]string, n)
+		for i := 0; i < n; i++ {
+			c := ""
+			if i < len(cells) {
+				c = cells[i]
+			}
+			if i == n-1 {
+				parts[i] = c
+			} else {
+				parts[i] = c + strings.Repeat(" ", widths[i]-utf8.RuneCountInString(c))
+			}
+		}
+		return strings.TrimRight(strings.Join(parts, "  "), " ")
+	}
+	buf := new(bytes.Buffer)
+	fmt.Fprintln(buf, line(headers))
+	seps := make([]string, n)
+	for i := range seps {
+		seps[i] = strings.Repeat("-", widths[i])
+	}
+	fmt.Fprintln(buf, line(seps))
+	for _, r := range rows {
+		fmt.Fprintln(buf, line(r))
 	}
 	return buf.String()
 }

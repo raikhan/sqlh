@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode/utf8"
@@ -18,6 +20,7 @@ import (
 	"github.com/sqls-server/sqls/internal/database"
 	"github.com/sqls-server/sqls/internal/lsp"
 	"github.com/sqls-server/sqls/parser"
+	"github.com/sqls-server/sqls/token"
 )
 
 const (
@@ -44,7 +47,7 @@ func (s *Server) handleTextDocumentCodeAction(ctx context.Context, conn *jsonrpc
 		{
 			Title:     "Execute Query",
 			Command:   CommandExecuteQuery,
-			Arguments: []interface{}{params.TextDocument.URI},
+			Arguments: []interface{}{params.TextDocument.URI, params.Range},
 		},
 		{
 			Title:     "Show Databases",
@@ -92,60 +95,111 @@ func (s *Server) handleWorkspaceExecuteCommand(ctx context.Context, conn *jsonrp
 
 	switch params.Command {
 	case CommandExecuteQuery:
-		return s.executeQuery(ctx, params)
+		result, err = s.executeQuery(ctx, params)
 	case CommandShowDatabases:
-		return s.showDatabases(ctx, params)
+		result, err = s.showDatabases(ctx, params)
 	case CommandShowSchemas:
-		return s.showSchemas(ctx, params)
+		result, err = s.showSchemas(ctx, params)
 	case CommandShowConnections:
-		return s.showConnections(ctx, params)
+		result, err = s.showConnections(ctx, params)
 	case CommandSwitchDatabase:
-		return s.switchDatabase(ctx, params)
+		result, err = s.switchDatabase(ctx, params)
 	case CommandSwitchConnection:
-		return s.switchConnections(ctx, params)
+		result, err = s.switchConnections(ctx, params)
 	case CommandShowTables:
-		return s.showTables(ctx, params)
+		result, err = s.showTables(ctx, params)
+	default:
+		return nil, fmt.Errorf("unsupported command: %v", params.Command)
 	}
-	return nil, fmt.Errorf("unsupported command: %v", params.Command)
+	s.presentCommandResult(ctx, conn, params.Command, result, err)
+	return result, err
+}
+
+// presentCommandResult pushes a command's outcome to the editor. Clients such as
+// Helix discard the executeCommand response, so one-line results go to the
+// status line (window/showMessage) and multi-line results are written to a file
+// which the client is asked to open (window/showDocument).
+func (s *Server) presentCommandResult(ctx context.Context, conn *jsonrpc2.Conn, command string, result interface{}, err error) {
+	m := lsp.NewMessenger(conn)
+	if err != nil {
+		_ = m.ShowError(ctx, fmt.Sprintf("%s: %v", command, err))
+		return
+	}
+	text, ok := result.(string)
+	if !ok || strings.TrimSpace(text) == "" {
+		if command == CommandSwitchConnection || command == CommandSwitchDatabase {
+			_ = m.ShowInfo(ctx, fmt.Sprintf("%s: done", command))
+		}
+		return
+	}
+	text = strings.TrimRight(text, "\n")
+	if !strings.Contains(text, "\n") {
+		_ = m.ShowInfo(ctx, text)
+		return
+	}
+	dir := filepath.Join(os.TempDir(), "sqls")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		_ = m.ShowError(ctx, err.Error())
+		return
+	}
+	path := filepath.Join(dir, command+".txt")
+	if err := os.WriteFile(path, []byte(text+"\n"), 0o644); err != nil {
+		_ = m.ShowError(ctx, err.Error())
+		return
+	}
+	m.ShowDocument("file://"+path, true)
 }
 
 func (s *Server) executeQuery(ctx context.Context, params lsp.ExecuteCommandParams) (result interface{}, err error) {
-	// parse execute command arguments
 	if s.dbConn == nil {
 		return nil, errors.New("database connection is not open")
 	}
-	if len(params.Arguments) == 0 {
-		return nil, fmt.Errorf("required arguments were not provided: <File URI>")
+
+	// Arguments: [<File URI>?, <Range>?, "-show-vertical"?]
+	// The URI defaults to the most recently used document.
+	uri := s.lastURI
+	showVertical := false
+	var rng *lsp.Range
+	for _, arg := range params.Arguments {
+		switch v := arg.(type) {
+		case string:
+			if v == "-show-vertical" {
+				showVertical = true
+			} else {
+				uri = v
+			}
+		case map[string]interface{}:
+			r, err := rangeFromArg(v)
+			if err != nil {
+				return nil, err
+			}
+			rng = r
+		}
 	}
-	uri, ok := params.Arguments[0].(string)
-	if !ok {
-		return nil, fmt.Errorf("specify the file uri as a string")
+	if params.Range != nil {
+		rng = params.Range
+	}
+	if uri == "" {
+		return nil, fmt.Errorf("required arguments were not provided: <File URI>")
 	}
 	f, ok := s.files[uri]
 	if !ok {
 		return nil, fmt.Errorf("document not found, %q", uri)
 	}
 
-	showVertical := false
-	if len(params.Arguments) > 1 {
-		showVerticalFlag, ok := params.Arguments[1].(string)
-		if ok {
-			if showVerticalFlag == "-show-vertical" {
-				showVertical = true
-			}
-		}
-	}
-
-	// extract target query
+	// extract target query: explicit selection, else statement under cursor, else whole document
 	text := f.Text
-	if params.Range != nil {
-		text = extractRangeText(
-			text,
-			params.Range.Start.Line,
-			params.Range.Start.Character,
-			params.Range.End.Line,
-			params.Range.End.Character,
-		)
+	if rng != nil {
+		selected := extractRangeText(text, rng.Start.Line, rng.Start.Character, rng.End.Line, rng.End.Character)
+		if strings.TrimSpace(selected) != "" && len(strings.TrimSpace(selected)) > 1 {
+			text = selected
+		} else {
+			stmt, err := statementAtCursor(text, rng.Start)
+			if err != nil {
+				return nil, err
+			}
+			text = stmt
+		}
 	}
 	stmts, err := getStatements(text)
 	if err != nil {
@@ -155,12 +209,12 @@ func (s *Server) executeQuery(ctx context.Context, params lsp.ExecuteCommandPara
 	// execute statements
 	buf := new(bytes.Buffer)
 	for _, stmt := range stmts {
-		query := strings.TrimSpace(stmt.String())
+		query := stripLeadingComments(stmt.String())
 		if query == "" {
 			continue
 		}
 
-		if _, isQuery := database.QueryExecType(query, ""); isQuery {
+		if _, isQuery := database.QueryExecType(query, query); isQuery {
 			res, err := s.query(ctx, query, showVertical)
 			if err != nil {
 				return nil, err
@@ -175,6 +229,72 @@ func (s *Server) executeQuery(ctx context.Context, params lsp.ExecuteCommandPara
 		}
 	}
 	return buf.String(), nil
+}
+
+// stripLeadingComments removes leading "--" line comments and "/* */" block
+// comments so the first word of the statement is the verb (SELECT, INSERT, ...).
+func stripLeadingComments(q string) string {
+	for {
+		q = strings.TrimSpace(q)
+		switch {
+		case strings.HasPrefix(q, "--"):
+			if i := strings.IndexByte(q, '\n'); i >= 0 {
+				q = q[i+1:]
+			} else {
+				return ""
+			}
+		case strings.HasPrefix(q, "/*"):
+			if i := strings.Index(q, "*/"); i >= 0 {
+				q = q[i+2:]
+			} else {
+				return ""
+			}
+		default:
+			return q
+		}
+	}
+}
+
+func rangeFromArg(v map[string]interface{}) (*lsp.Range, error) {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var r lsp.Range
+	if err := json.Unmarshal(b, &r); err != nil {
+		return nil, fmt.Errorf("invalid range argument: %w", err)
+	}
+	return &r, nil
+}
+
+// statementAtCursor returns the text of the statement containing pos.
+func statementAtCursor(text string, pos lsp.Position) (string, error) {
+	parsed, err := parser.Parse(text)
+	if err != nil {
+		return "", err
+	}
+	tp := token.Pos{Line: pos.Line, Col: pos.Character}
+	var last *ast.Statement
+	for _, node := range parsed.GetTokens() {
+		stmt, ok := node.(*ast.Statement)
+		if !ok {
+			continue
+		}
+		if strings.TrimSpace(stmt.String()) == "" {
+			continue
+		}
+		if token.ComparePos(stmt.Pos(), tp) <= 0 && token.ComparePos(tp, stmt.End()) <= 0 {
+			return stmt.String(), nil
+		}
+		if token.ComparePos(stmt.End(), tp) < 0 {
+			last = stmt
+		}
+	}
+	// cursor sits in trailing whitespace/comment after a statement: use the nearest preceding one
+	if last != nil {
+		return last.String(), nil
+	}
+	return "", fmt.Errorf("no statement at cursor (line %d)", pos.Line+1)
 }
 
 func extractRangeText(text string, startLine, startChar, endLine, endChar int) string {

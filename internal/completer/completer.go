@@ -377,13 +377,26 @@ func getCompletionTypes(nw *parseutil.NodeWalker) *CompletionContext {
 			}
 		}
 	case syntaxPos == parseutil.JoinClause:
-		t = []completionType{
-			CompletionTypeJoin,
-			CompletionTypeTable,
-			CompletionTypeReferencedTable,
-			CompletionTypeSchema,
-			CompletionTypeView,
-			CompletionTypeSubQuery,
+		if nw.CurNodeIs(memberIdentifierMatcher) {
+			// "join schema." -> tables of that schema
+			mi := nw.CurNodeTopMatched(memberIdentifierMatcher).(*ast.MemberIdentifier)
+			t = []completionType{
+				CompletionTypeTable,
+				CompletionTypeView,
+			}
+			p = &completionParent{
+				Type: ParentTypeSchema,
+				Name: mi.ParentTok.NoQuoteString(),
+			}
+		} else {
+			t = []completionType{
+				CompletionTypeJoin,
+				CompletionTypeTable,
+				CompletionTypeReferencedTable,
+				CompletionTypeSchema,
+				CompletionTypeView,
+				CompletionTypeSubQuery,
+			}
 		}
 	case syntaxPos == parseutil.JoinOn:
 		t = []completionType{

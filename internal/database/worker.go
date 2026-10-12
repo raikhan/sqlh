@@ -10,9 +10,10 @@ type Worker struct {
 	dbRepo  DBRepository
 	dbCache *DBCache
 
-	done   chan struct{}
-	update chan struct{}
-	lock   sync.Mutex
+	done     chan struct{}
+	update   chan struct{}
+	lock     sync.Mutex
+	stopOnce sync.Once
 }
 
 func NewWorker() *Worker {
@@ -69,7 +70,7 @@ func (w *Worker) Start() {
 }
 
 func (w *Worker) Stop() {
-	close(w.done)
+	w.stopOnce.Do(func() { close(w.done) })
 }
 
 func (w *Worker) ReCache(ctx context.Context, repo DBRepository) error {
