@@ -152,6 +152,18 @@ Known limitations (not blocking):
 - Synonyms aren't completed (CADE has 2; other schemas rely on them heavily).
 - Oracle `DATE`/`TIMESTAMP` render as RFC 3339 UTC (`2026-10-12T16:37:20Z`) in result tables → decide formatting in Phase 2 (CSV).
 
+### Phase 1.5 — formatting safety ✅ done
+
+- [x] Fix: lexer stored `''` inside string literals as a single `'`, so every re-render
+      (formatter; upstream's executeQuery via `stmt.String()`) corrupted literals like
+      `'4,4''-mdi'` → `'4,4'-mdi'`. Now kept doubled. Affects all dialects.
+- [x] Format guard (`sqlsplit.FormatHazards`, dialect-agnostic): skip formatting and show a
+      warning for Oracle `/` lines, `q'…'` strings, PL/SQL blocks, PG `$$` bodies, and trigger
+      bodies (BEGIN/DECLARE). Transaction `BEGIN;` and body-less PG triggers still format.
+- Notes: `:format` = whole document via LSP; range formatting (`=`) is a no-op stub in
+  sqls. Highlighting is Helix tree-sitter, not the LSP (a stale user grammar in
+  `~/.config/helix/runtime/grammars` had broken it; rebuilt).
+
 ### Phase 2 — exec engine ⏳ next
 
 - [ ] `internal/exec`: preview (row cap) and full (streamed) modes, `encoding/csv` writer; reuse `internal/sqlsplit`
@@ -194,6 +206,9 @@ Known limitations (not blocking):
 - **2026-10-12** Phase 1 complete. Oracle via go-ora against `CADEV1` (completion incl.
   views and FK joins, hover, execute incl. PL/SQL), SQLite verified, PG unchanged. Schema
   allow-list, all-or-nothing connection switching, execution splitter, keychain password.
+
+- **2026-10-12** Phase 1.5: formatter no longer corrupts escaped quotes; skips (with a
+  warning) documents containing constructs it would break.
 
 ## 6. Environment notes
 

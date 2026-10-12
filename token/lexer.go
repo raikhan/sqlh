@@ -428,9 +428,10 @@ func (t *Tokenizer) tokenizeSingleQuotedString() string {
 		if n == '\'' {
 			t.Scanner.Next()
 			if t.Scanner.Peek() == '\'' {
-				// An escaped quote consumes two source columns
-				// but is stored as a single rune.
-				str = append(str, '\'')
+				// An escaped quote consumes two source columns. Keep it
+				// doubled: the token value is its SQL text, and rendering
+				// a single quote here would corrupt the literal.
+				str = append(str, '\'', '\'')
 				t.Scanner.Next()
 				cols += 2
 			} else {

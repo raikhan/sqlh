@@ -97,6 +97,16 @@ func testFormatting(t *testing.T, testCases []formattingTestCase, options lsp.Fo
 			if err := tx.conn.Call(tx.ctx, "textDocument/formatting", formattingParams, &got); err != nil {
 				t.Fatal("conn.Call textDocument/formatting:", err)
 			}
+			// an empty golden file means formatting is skipped (see sqlsplit.FormatHazards)
+			if tt.want == "" {
+				if len(got) != 0 {
+					t.Errorf("expected formatting to be skipped, got %q", got[0].NewText)
+				}
+				return
+			}
+			if len(got) == 0 {
+				t.Fatalf("no edits returned, want %q", tt.want)
+			}
 			if diff := cmp.Diff(tt.want, got[0].NewText); diff != "" {
 				t.Errorf("unmatch (- want, + got):\n%s", diff)
 				t.Errorf("unmatch\nwant: %q\ngot : %q", tt.want, got[0].NewText)

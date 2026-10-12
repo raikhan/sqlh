@@ -18,6 +18,7 @@ package sqlsplit
 
 import (
 	"regexp"
+	"sort"
 	"strings"
 	"unicode"
 )
@@ -76,6 +77,14 @@ type scanner struct {
 	i    int
 	line int
 	col  int // UTF-16 units
+	// hazards, when non-nil, collects constructs found while scanning
+	hazards *[]Hazard
+}
+
+func (s *scanner) note(what string) {
+	if s.hazards != nil {
+		*s.hazards = append(*s.hazards, Hazard{Line: s.line, What: what})
+	}
 }
 
 func (s *scanner) eof() bool { return s.i >= len(s.src) }
@@ -155,8 +164,10 @@ func (s *scanner) skipQuoted(d Dialect) bool {
 		}
 		return true
 	case d == Oracle && (r == 'q' || r == 'Q') && s.peek(1) == '\'' && s.peek(2) != 0 && s.identBoundaryBefore():
+		s.note("Oracle q'...' string")
 		return s.skipQQuote(0)
 	case d == Oracle && (r == 'n' || r == 'N') && (s.peek(1) == 'q' || s.peek(1) == 'Q') && s.peek(2) == '\'' && s.peek(3) != 0 && s.identBoundaryBefore():
+		s.note("Oracle q'...' string")
 		s.advance()
 		return s.skipQQuote(0)
 	case r == '\'' || r == '"' || r == '`':
@@ -176,6 +187,7 @@ func (s *scanner) skipQuoted(d Dialect) bool {
 		return true
 	case d == PostgreSQL && r == '$':
 		if tag, ok := s.dollarTag(); ok {
+			s.note("dollar-quoted body ($$)")
 			for k := 0; k < len(tag); k++ {
 				s.advance()
 			}
@@ -259,7 +271,11 @@ func (s *scanner) dollarTag() ([]rune, bool) {
 
 // Split splits text into statements.
 func Split(text string, d Dialect) []Statement {
-	s := &scanner{src: []rune(text)}
+	return split(text, d, nil)
+}
+
+func split(text string, d Dialect, hazards *[]Hazard) []Statement {
+	s := &scanner{src: []rune(text), hazards: hazards}
 	var out []Statement
 
 	for {
@@ -280,6 +296,7 @@ func Split(text string, d Dialect) []Statement {
 			}
 			if d == Oracle {
 				if end, ok := s.slashLine(s.i); ok { // stray '/'
+					s.note("'/' terminator line")
 					for s.i < end {
 						s.advance()
 					}
@@ -303,6 +320,7 @@ func Split(text string, d Dialect) []Statement {
 		for !s.eof() {
 			if d == Oracle && s.peek(0) == '/' {
 				if lineEnd, ok := s.slashLine(s.i); ok {
+					s.note("'/' terminator line")
 					endIdx, end = lastSig, lastSigPos
 					for s.i < lineEnd {
 						s.advance()
@@ -397,4 +415,42 @@ func attached(text string, from, to int, prev *Statement) bool {
 		}
 	}
 	return true
+}
+
+// Hazard is a construct the SQL formatter cannot handle safely.
+type Hazard struct {
+	Line int // 0-based
+	What string
+}
+
+var (
+	// a transaction BEGIN (PostgreSQL/SQLite) is not a PL/SQL block
+	beginTxnRe = regexp.MustCompile(`(?is)^begin\s*(;|$|(transaction|work|isolation|read|deferred|immediate|exclusive)\b)`)
+	// triggers (any dialect) only carry a body when they have BEGIN/DECLARE;
+	// a PostgreSQL "... EXECUTE FUNCTION f()" trigger formats fine
+	triggerRe     = regexp.MustCompile(`(?is)^create\s+(or\s+replace\s+)?((editionable|noneditionable|temp|temporary)\s+)?trigger\b`)
+	triggerBodyRe = regexp.MustCompile(`(?is)\b(begin|declare)\b`)
+)
+
+// FormatHazards reports constructs that the formatter would corrupt: Oracle
+// '/' terminator lines, q'...' strings and PL/SQL blocks, PostgreSQL
+// dollar-quoted bodies and SQLite trigger bodies. It is dialect-agnostic
+// because a file is not necessarily written for the current connection.
+func FormatHazards(text string) []Hazard {
+	var hz []Hazard
+	split(text, Oracle, &hz)     // '/' lines, q-quotes
+	split(text, PostgreSQL, &hz) // dollar quotes
+	for _, st := range split(text, Generic, nil) {
+		head := st.SQL
+		switch {
+		case triggerRe.MatchString(head):
+			if triggerBodyRe.MatchString(head) {
+				hz = append(hz, Hazard{Line: st.Start.Line, What: "trigger body"})
+			}
+		case plsqlStartRe.MatchString(head) && !beginTxnRe.MatchString(head):
+			hz = append(hz, Hazard{Line: st.Start.Line, What: "PL/SQL block"})
+		}
+	}
+	sort.SliceStable(hz, func(i, j int) bool { return hz[i].Line < hz[j].Line })
+	return hz
 }

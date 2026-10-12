@@ -1,6 +1,7 @@
 package sqlsplit
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 )
@@ -103,5 +104,37 @@ func TestAtCursor(t *testing.T) {
 		if !ok || got.SQL != c.want {
 			t.Errorf("cursor %v: got %q want %q", c.cur, got.SQL, c.want)
 		}
+	}
+}
+
+func TestFormatHazards(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want []string // "line:what"
+	}{
+		{"plain select", "select a, b from t where x = '4,4''-mdi';", nil},
+		{"pg transaction begin", "begin;\nupdate t set a = 1;\ncommit;", nil},
+		{"begin transaction", "begin transaction;\nselect 1;\ncommit;", nil},
+		{"slash in string/comment", "select '/' from t; -- a / b\n/* \n/\n*/ select 1;", nil},
+		{"pg trigger without begin", "create trigger trg after insert on t for each row execute function f();", nil},
+		{"q quote in comment", "-- q'[x]'\nselect 1;", nil},
+		{"slash line", "select 1 from dual\n/\n", []string{"1:'/' terminator line"}},
+		{"q quote", "select 1;\nselect q'[a]' from dual;", []string{"1:Oracle q'...' string"}},
+		{"plsql", "select 1;\n\nbegin\n  null;\nend;", []string{"2:PL/SQL block"}},
+		{"create procedure", "create or replace procedure p as begin null; end;", []string{"0:PL/SQL block"}},
+		{"pg dollar", "do $$ begin perform 1; end $$;", []string{"0:dollar-quoted body ($$)"}},
+		{"sqlite trigger", "create trigger trg after insert on t begin update u set a = 1; end;", []string{"0:trigger body"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got []string
+			for _, h := range FormatHazards(tt.in) {
+				got = append(got, fmt.Sprintf("%d:%s", h.Line, h.What))
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("\n got: %q\nwant: %q", got, tt.want)
+			}
+		})
 	}
 }

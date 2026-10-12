@@ -48,3 +48,27 @@ func TestResolveSecrets(t *testing.T) {
 		t.Errorf("expected missing env error, got %v", err)
 	}
 }
+
+func TestValidateOracle(t *testing.T) {
+	ok := []*DBConfig{
+		{Driver: "oracle", Host: "h", DBName: "svc", User: "u", PasswdCmd: "echo x"}, // no proto/port
+		{Driver: "oracle", Host: "h", Port: 1522, DBName: "svc", User: "u", Passwd: "p"},
+		{Driver: "oracle", DataSourceName: "oracle://u:p@h:1521/svc"},
+	}
+	for i, c := range ok {
+		if err := c.Validate(); err != nil {
+			t.Errorf("ok[%d]: %v", i, err)
+		}
+	}
+	bad := []*DBConfig{
+		{Driver: "oracle", DBName: "svc", User: "u", Passwd: "p"}, // no host
+		{Driver: "oracle", Host: "h", User: "u", Passwd: "p"},     // no service
+		{Driver: "oracle", Host: "h", DBName: "svc", Passwd: "p"}, // no user
+		{Driver: "oracle", Host: "h", DBName: "svc", User: "u"},   // no password source
+	}
+	for i, c := range bad {
+		if err := c.Validate(); err == nil {
+			t.Errorf("bad[%d]: expected error", i)
+		}
+	}
+}

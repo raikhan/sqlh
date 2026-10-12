@@ -7,6 +7,7 @@ import (
 
 	"github.com/raikhan/sqlh/internal/formatter"
 	"github.com/raikhan/sqlh/internal/lsp"
+	"github.com/raikhan/sqlh/internal/sqlsplit"
 	"github.com/sourcegraph/jsonrpc2"
 )
 
@@ -23,6 +24,17 @@ func (s *Server) handleTextDocumentFormatting(ctx context.Context, conn *jsonrpc
 	f, ok := s.files[params.TextDocument.URI]
 	if !ok {
 		return nil, fmt.Errorf("document not found: %s", params.TextDocument.URI)
+	}
+
+	// The formatter's lexer does not understand some dialect constructs and
+	// would corrupt them; leave such documents untouched and say why.
+	if hz := sqlsplit.FormatHazards(f.Text); len(hz) > 0 {
+		msg := fmt.Sprintf("format skipped: %s on line %d", hz[0].What, hz[0].Line+1)
+		if len(hz) > 1 {
+			msg += fmt.Sprintf(" (+%d more)", len(hz)-1)
+		}
+		_ = lsp.NewMessenger(conn).ShowWarning(ctx, msg+"; the formatter would corrupt it")
+		return nil, nil
 	}
 
 	textEdits, err := formatter.Format(f.Text, params, s.getConfig())

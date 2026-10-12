@@ -215,7 +215,7 @@ select`,
 			out: []*Token{
 				{
 					Kind:  SingleQuotedString,
-					Value: "'a'b'",
+					Value: "'a''b'",
 					From:  Pos{Line: 0, Col: 0},
 					To:    Pos{Line: 0, Col: 6},
 				},

@@ -156,24 +156,20 @@ func (c *DBConfig) Validate() error {
 			}
 		}
 	case dialect.DatabaseDriverOracle:
-		if c.DataSourceName == "" && c.Proto == "" {
-			return errors.New("required: connections[].dataSourceName or connections[].proto")
-		}
+		// dataSourceName (a go-ora URL) or host + dbName (service) + user +
+		// passwd/passwdCmd. proto is not used; port defaults to 1521.
 		if c.DataSourceName == "" {
+			if c.Host == "" {
+				return errors.New("required: connections[].dataSourceName or connections[].host")
+			}
+			if c.DBName == "" {
+				return errors.New("required: connections[].dbName (service name)")
+			}
 			if c.User == "" {
 				return errors.New("required: connections[].user")
 			}
-			if c.Passwd == "" {
-				return errors.New("required: connections[].Passwd")
-			}
-			if c.Host == "" {
-				return errors.New("required: connections[].Host")
-			}
-			if c.Port <= 0 {
-				return errors.New("required: connections[].Port")
-			}
-			if c.DBName == "" {
-				return errors.New("required: connections[].DBName")
+			if c.Passwd == "" && c.PasswdCmd == "" {
+				return errors.New("required: connections[].passwd or connections[].passwdCmd")
 			}
 		}
 	case dialect.DatabaseDriverClickhouse:
