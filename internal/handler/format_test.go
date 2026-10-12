@@ -104,12 +104,16 @@ func testFormatting(t *testing.T, testCases []formattingTestCase, options lsp.Fo
 				}
 				return
 			}
-			if len(got) == 0 {
-				t.Fatalf("no edits returned, want %q", tt.want)
+			// The server returns one whole-document edit, or none when the
+			// document is already formatted; compare document text, ignoring
+			// the leading/trailing whitespace the server preserves.
+			gotText := tt.input
+			if len(got) > 0 {
+				gotText = got[0].NewText
 			}
-			if diff := cmp.Diff(tt.want, got[0].NewText); diff != "" {
+			if diff := cmp.Diff(strings.TrimSpace(tt.want), strings.TrimSpace(gotText)); diff != "" {
 				t.Errorf("unmatch (- want, + got):\n%s", diff)
-				t.Errorf("unmatch\nwant: %q\ngot : %q", tt.want, got[0].NewText)
+				t.Errorf("unmatch\nwant: %q\ngot : %q", tt.want, gotText)
 			}
 		})
 	}

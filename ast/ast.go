@@ -603,6 +603,9 @@ func findTo(node Node) token.Pos {
 func joinString(nodes []Node) string {
 	var strs []string
 	for _, n := range nodes {
+		if n == nil { // defensive: incomplete parses can leave nil children
+			continue
+		}
 		strs = append(strs, n.String())
 	}
 	return strings.Join(strs, "")
@@ -611,6 +614,9 @@ func joinString(nodes []Node) string {
 func joinRender(nodes []Node, opts *RenderOptions) string {
 	var strs []string
 	for _, n := range nodes {
+		if n == nil { // defensive: incomplete parses can leave nil children
+			continue
+		}
 		strs = append(strs, n.Render(opts))
 	}
 	return strings.Join(strs, "")

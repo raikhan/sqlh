@@ -160,6 +160,29 @@ Known limitations (not blocking):
 - [x] Format guard (`sqlsplit.FormatHazards`, dialect-agnostic): skip formatting and show a
       warning for Oracle `/` lines, `q'…'` strings, PL/SQL blocks, PG `$$` bodies, and trigger
       bodies (BEGIN/DECLARE). Transaction `BEGIN;` and body-less PG triggers still format.
+- [x] Verified formatting (`internal/formatter/verify.go`, `FormatVerified`). A 24-case
+      battery showed the raw sqls formatter drops comments, alters quoted identifiers, edits
+      half-written SQL, panics on `::`/`->>`/`(+)`/`:bind`/`@link`/`b.`, and oscillates
+      between layouts. Now every `:format` result is checked before it's applied:
+      - hazards skipped (above); formatter panics recovered → skip
+      - spacing inside statements canonicalised from the token sequence first (layout-
+        independent input; adjacency kept where meaningful: name+`(`, word+string, `.`, ops)
+      - result must have identical tokens to the source (comments/strings/quoted identifiers
+        exact, words case-insensitive, operators unsplit), else skip
+      - fixed point: up to 3 verified passes until formatting again changes nothing
+      - layout between statements (blank lines, `; -- note`, leading/trailing) restored from source
+      - one whole-document edit (Helix diffs it → cursor stays); no edit when unchanged
+      Result on the battery: 9 formatted, 1 unchanged, 13 skipped with a reason, 0 corrupted.
+- [x] Fix: formatter panicked whenever the parser left an operand nil — typed literals
+      (`d > DATE '2026-04-01'`), half-typed SQL (`b.`, `cadetst.`, `x = `). That was the
+      cause of every formatter crash in the battery. Formatter omits missing operands;
+      `ast.joinString/joinRender` skip nil nodes. Battery now: 14 formatted, 1 unchanged,
+      8 skipped, 0 crashes. The remaining "alter content" skips are real formatter bugs the
+      verifier catches: `-1, .5`→`-1.5`, `->>`→`- > >`, `limit 10offset`, `priorempno`
+      (candidates for Phase 5 fixes).
+      Safe for format-on-save (worst case: no-op + status-line warning).
+- [x] Fix: Oracle config validation required `proto`/`passwd`/`port` → rejected `passwdCmd`
+      configs; with `oracle_dev` first in the config sqlh failed to start.
 - Notes: `:format` = whole document via LSP; range formatting (`=`) is a no-op stub in
   sqls. Highlighting is Helix tree-sitter, not the LSP (a stale user grammar in
   `~/.config/helix/runtime/grammars` had broken it; rebuilt).
@@ -208,17 +231,19 @@ Known limitations (not blocking):
   allow-list, all-or-nothing connection switching, execution splitter, keychain password.
 
 - **2026-10-12** Phase 1.5: formatter no longer corrupts escaped quotes; skips (with a
-  warning) documents containing constructs it would break.
+  warning) documents containing constructs it would break. Then: verified formatting
+  (token-identical, stable, layout between statements kept) → format-on-save is safe.
 
 ## 6. Environment notes
 
 - Helix: `[language-server.sqlh] command = "sqlh"`, `args = ["-log", "/tmp/sqlh.log"]`
 - Binary: `~/.local/bin/sqlh` (`go build -o ~/.local/bin/sqlh .` from repo root)
 - Config: `~/.config/sqlh/config.yml` (example: `doc/config.example.yml`); connections
-  `pg_local`, `oracle_dev` (keychain `sqlh-oracle_dev`, schemas CADE+CADE500), `sqlite_scratch`
+  `oracle_dev` (default; keychain `sqlh-oracle_dev`, schemas CADE), `pg_local`, `sqlite_scratch`
 - Test files: `scratch/test.sql` (PG), `scratch/oracle.sql`, `scratch/sqlite.sql`
 - SQLite scratch DB: `/tmp/sqls-build/scratch.db` (customer/orders/big_orders)
 - Local PG: Docker `llm-sds-reader-postgres-1`, `admin`/`verysecret`, db `sdsai`, schema `cadetst`
 - Oracle dev: see `connection.toml` (gitignored); port 1521 reachable
-- Protocol test client: `/tmp/sqls-build/lspc.py` (+ `t_*.py` scenario scripts); Oracle
+- Protocol test client: `/tmp/sqls-build/lspc.py` (+ `t_*.py` scenario scripts;
+  `t_fmtsafety2.py` = formatter battery); Oracle
   repo probe: `scratch/oradbg/` (reads creds from env `H S U P`)

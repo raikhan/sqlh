@@ -406,7 +406,10 @@ func formatMemberIdentifier(node *ast.MemberIdentifier, env *formatEnvironment) 
 	results := []ast.Node{
 		Eval(node.Parent, env),
 		periodNode,
-		Eval(node.Child, env),
+	}
+	// Child is nil while typing ("select b. from t")
+	if node.Child != nil {
+		results = append(results, Eval(node.Child, env))
 	}
 	return &ast.ItemWith{Toks: results}
 }
@@ -417,7 +420,11 @@ func formatOperator(node *ast.Operator, env *formatEnvironment) ast.Node {
 		whitespaceNode,
 		node.Operator,
 		whitespaceNode,
-		Eval(node.Right, env),
+	}
+	// Right is nil when the parser does not recognise the operand, e.g. a
+	// typed literal (d > DATE '2026-04-01') or while typing (a = )
+	if node.Right != nil {
+		results = append(results, Eval(node.Right, env))
 	}
 	return &ast.ItemWith{Toks: results}
 }
@@ -428,7 +435,11 @@ func formatComparison(node *ast.Comparison, env *formatEnvironment) ast.Node {
 		whitespaceNode,
 		node.Comparison,
 		whitespaceNode,
-		Eval(node.Right, env),
+	}
+	// Right is nil when the parser does not recognise the operand, e.g. a
+	// typed literal (d > DATE '2026-04-01') or while typing (a = )
+	if node.Right != nil {
+		results = append(results, Eval(node.Right, env))
 	}
 	return &ast.ItemWith{Toks: results}
 }
