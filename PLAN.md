@@ -304,11 +304,16 @@ Known limitations (not blocking):
 - [x] `languages.toml` + `space i` keymap (`space q` is taken): `r` run, `v` run → VisiData,
       `l` limit prompt, `e` export, `o` open latest, `x` cancel, `t`/`c` insert table/columns,
       `C`/`D` connection/database pickers, `s` status, `u` refresh
-- [x] `~/.config/helix/sqlh.nu` helper: queries via async `:sh` (popup = summary or DB error;
-      `:sh` drops stderr on success, where `sqlh run` puts the summary); VisiData in a 70% Herdr
-      pane via `open-in-herdr-pane.nu`; pickers under `:pipe-to` + `:redraw`, handing their
-      outcome to the next `:sh` through a per-pane state file; limit prompt = fzf presets or a
-      typed number (`10` is 10, not the `100` preset), `all` = export
+- [x] `~/.config/helix/sqlh.nu` helper, status line only (`:sh` popups stick until Esc):
+      queries start detached (`trap "" HUP` + setsid, no inherited pipes) from `:pipe-to`; the
+      server reports progress/summary/errors to the editor, including errors before the job
+      starts (`controlRun` → `notifyEditorError`); cancel/refresh via `:lsp-workspace-command`;
+      VisiData in a 70% Herdr pane via `open-in-herdr-pane.nu`; pickers under `:pipe-to` /
+      `:insert-output` + `:redraw`; limit prompt = fzf presets or a typed number (`10` is 10,
+      not the `100` preset), `all` = export
+- [x] `sqlh notify [--error] MESSAGE` (hidden, control method `sqlh/notify`): Helix treats a
+      failed command's stderr as output (`:insert-output` would insert the error), so the
+      helper exits with empty stderr and relays the message to the status line
 - [ ] Decide `showDocument` focus behaviour (`takeFocus` vs background load) for non-CSV outputs
 
 ### Phase 5 — later / optional

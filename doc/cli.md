@@ -67,28 +67,32 @@ sqlh connect pg_local
 ## Helix
 
 Keybindings under `space i` (in `~/.config/helix/config.toml`) call the helper
-`~/.config/helix/sqlh.nu`, which wraps these commands so that queries run from an async `:sh`
-(Helix stays usable, `space i x` cancels) and every outcome shows in Helix's popup:
+`~/.config/helix/sqlh.nu`. Like code actions, they report in the status line, not popups:
+queries start in a detached process, so `:pipe-to` returns at once, and the server shows
+progress, the summary or the error in the editor.
 
 | Keys | |
 |---|---|
 | `space i r` / `v` / `e` | run the statement at the cursor → CSV (preview) / → VisiData pane / export all rows |
 | `space i l` | pick a row limit (preset, typed number, `all`), then run |
 | `space i o` | open the latest result in VisiData (Herdr pane) |
-| `space i x` | cancel the running query |
+| `space i x` | cancel the running query (`:lsp-workspace-command sqlh.cancel`) |
 | `space i t` / `c` | insert a table / columns (fzf) |
 | `space i C` / `D` | switch connection / database (fzf) |
-| `space i s` / `u` | status / reload schema metadata |
+| `space i s` / `u` | status (popup) / reload schema metadata (`sqlh.refresh`) |
 
-`space a` (code actions) does the same per statement, without the helper. The raw form:
+`space a` (code actions) does the same per statement, without the helper.
 
-```
-:sh sqlh run --limit 500 --file %{buffer_name} --line %{cursor_line}
-```
+Why the helper:
 
-(`:sh` shows only stdout on success, and `sqlh run` prints the summary on stderr — hence the
-helper. Pickers need the terminal, so they run under `:pipe-to`/`:insert-output`, followed
-by `:redraw`.)
+- Helix 25.07 handles a failed shell command's stderr as its *output*: `:pipe-to` discards
+  it, `:insert-output` inserts it into the buffer. The helper exits with empty stderr and
+  relays errors with `sqlh notify [--error] MESSAGE` (hidden command: shows MESSAGE in the
+  editor's status line via the server).
+- `:sh` shows output in a popup that only Esc/Ctrl-C closes, and sets "Command run" over any
+  status message, so queries aren't run from `:sh`.
+- Pickers need the terminal, so they run under `:pipe-to`/`:insert-output`, followed by
+  `:redraw`.
 
 ## Files
 

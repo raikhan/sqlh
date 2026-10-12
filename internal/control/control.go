@@ -31,6 +31,7 @@ const (
 	MethodColumns     = "sqlh/columns"
 	MethodDatabases   = "sqlh/databases"
 	MethodUseDatabase = "sqlh/useDatabase"
+	MethodNotify      = "sqlh/notify"
 )
 
 // SchemaItem is a schema; Default marks the connection's current schema.
@@ -68,6 +69,12 @@ type ColumnsParams struct {
 
 type SchemasParams struct {
 	All bool `json:"all,omitempty"`
+}
+
+// NotifyParams: a message for the editor's status line.
+type NotifyParams struct {
+	Message string `json:"message"`
+	Error   bool   `json:"error,omitempty"`
 }
 
 type DatabaseParams struct {

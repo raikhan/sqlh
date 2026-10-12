@@ -114,6 +114,17 @@ func (s *Server) handleControl(ctx context.Context, conn *jsonrpc2.Conn, req *js
 		return "no query is running", nil
 	case control.MethodRefresh:
 		return s.refreshCache(ctx)
+	case control.MethodNotify:
+		var p control.NotifyParams
+		if err := unmarshal(req, &p); err != nil {
+			return nil, err
+		}
+		if p.Error {
+			s.notifyEditorError(p.Message)
+		} else {
+			s.notifyEditor(p.Message)
+		}
+		return "ok", nil
 	case control.MethodSchemas:
 		var p control.SchemasParams
 		if err := unmarshal(req, &p); err != nil {
@@ -179,6 +190,12 @@ func (s *Server) notifyEditor(msg string) {
 	}
 }
 
+func (s *Server) notifyEditorError(msg string) {
+	if s.editor != nil {
+		_ = lsp.NewMessenger(s.editor).ShowError(context.Background(), msg)
+	}
+}
+
 func (s *Server) controlRun(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (interface{}, error) {
 	var p control.RunParams
 	if err := unmarshal(req, &p); err != nil {
@@ -202,6 +219,9 @@ func (s *Server) controlRun(ctx context.Context, conn *jsonrpc2.Conn, req *jsonr
 	j, err := s.startRun(ctx, rr)
 	s.mu.Unlock()
 	if err != nil {
+		// Also tell the editor: the CLI may run detached from a keybinding,
+		// with nowhere to print (job errors are reported by the job itself).
+		s.notifyEditorError(err.Error())
 		return nil, err
 	}
 	// Wait without holding s.mu; if the CLI goes away (Ctrl-C), cancel.

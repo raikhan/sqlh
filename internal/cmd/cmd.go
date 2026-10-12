@@ -88,6 +88,16 @@ func Commands() []*cli.Command {
 			Action: simpleCmd(control.MethodRefresh),
 		},
 		{
+			// For editor glue: commands started from a keybinding have no terminal
+			// (Helix :pipe-to discards their output), so they report through here.
+			Name:      "notify",
+			Usage:     "show MESSAGE in the editor's status line",
+			ArgsUsage: "MESSAGE",
+			Hidden:    true,
+			Flags:     []cli.Flag{dirFlag, &cli.BoolFlag{Name: "error", Usage: "as an error"}},
+			Action:    notifyCmd,
+		},
+		{
 			Name:   "latest",
 			Usage:  "print the path of the latest result CSV (e.g. vd $(sqlh latest))",
 			Flags:  []cli.Flag{dirFlag, &cli.StringFlag{Name: "conn", Usage: "standalone: connection `ALIAS` (for a results dir using {conn})"}},
@@ -385,6 +395,20 @@ func simpleCmd(method string) cli.ActionFunc {
 		fmt.Fprintln(os.Stderr, msg)
 		return nil
 	}
+}
+
+func notifyCmd(c *cli.Context) error {
+	msg := strings.TrimSpace(strings.Join(c.Args().Slice(), " "))
+	if msg == "" {
+		return errors.New("usage: sqlh notify [--error] MESSAGE")
+	}
+	cl, _, err := server(c)
+	if err != nil {
+		return err
+	}
+	defer cl.Close()
+	var ok string
+	return call(cl, control.MethodNotify, control.NotifyParams{Message: msg, Error: c.Bool("error")}, &ok)
 }
 
 func latestCmd(c *cli.Context) error {
