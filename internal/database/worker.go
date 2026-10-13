@@ -45,7 +45,7 @@ func (w *Worker) changed() {
 	}
 }
 
-func (w *Worker) setSecondary(col map[string][]*ColumnDesc, synonyms map[string][]string) {
+func (w *Worker) setSecondary(col map[string][]*ColumnDesc, synonyms map[string][]string, functions *FunctionCatalog) {
 	w.lock.Lock()
 	if w.dbCache != nil {
 		// Swap in a copy so that readers holding the previous
@@ -53,6 +53,9 @@ func (w *Worker) setSecondary(col map[string][]*ColumnDesc, synonyms map[string]
 		newCache := *w.dbCache
 		newCache.ColumnsWithParent = col
 		newCache.Synonyms = synonyms
+		if functions != nil {
+			newCache.Functions = functions
+		}
 		newCache.SecondaryLoaded = true
 		w.dbCache = &newCache
 	}
@@ -82,7 +85,16 @@ func (w *Worker) Start() {
 						synonyms = nil
 					}
 				}
-				w.setSecondary(col, synonyms)
+				var functions *FunctionCatalog
+				if fl, ok := w.dbRepo.(FunctionLister); ok {
+					if fns, err := fl.Functions(context.Background()); err != nil {
+						log.Println("functions:", err) // built-ins only
+					} else {
+						functions = NewFunctionCatalog(w.dbRepo.Driver(), fns)
+						log.Printf("db worker: %d function signatures loaded", len(fns))
+					}
+				}
+				w.setSecondary(col, synonyms, functions)
 				log.Println("db worker: Update db cache secondary complete")
 			}
 		}

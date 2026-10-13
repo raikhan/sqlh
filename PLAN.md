@@ -340,6 +340,43 @@ Known limitations (not blocking):
   really missing from CADE (other schemas/versions); hand-written queries 0 findings; PG
   llm-sds-reader 0 false positives. 490 KB script: 64 ms.
 
+### Phase 6 — completion depth (after a lazydb comparison)
+
+Probe of 16 positions against lazydb's LSP (same `pg_local`): sqlh ahead everywhere except
+function completion (`DataBaseFunctions` returned `[]` for PG/SQLite and Oracle's *reserved
+words*), and both failed on CTE columns. A wider probe found more subquery bugs.
+
+- [x] Scope resolution rewrite (`parser/parseutil/scope.go`): query levels = statement +
+      enclosing subqueries; each level sees its own `FROM`/`JOIN` (not those of nested
+      subqueries, CTE bodies, function arguments like `extract(year from …)`), the branch of a
+      `UNION`/`INTERSECT`/`EXCEPT`/`MINUS` containing the cursor, and the enclosing levels'
+      tables as `Outer` (qualified use only). Replaces the sqls heuristics (first `FROM` of the
+      whole statement; subqueries *after* the cursor), which leaked a CTE body's tables into the
+      main query and returned nothing for CTE references.
+- [x] Select-list columns never fail: functions/expressions/casts/`CASE` with an alias,
+      `DISTINCT [ON]`, `TOP n`, `*` and `t.*` (expanded through derived tables/CTEs), origins
+      tracked through nesting (`cid` ← `city.id`). Before: a `count(*) as n` in a subquery made
+      the whole completion request fail.
+- [x] CTEs: `WITH [RECURSIVE] x [(cols)] AS [[NOT] MATERIALIZED] (…)`, also `x(cols)` without
+      a space; referenced/aliased in FROM/JOIN; CTEs built on CTEs; CTE names in `FROM` ranked
+      first; `x.` filtered to that relation (before: all subqueries' columns for any parent).
+- [x] `FULL [OUTER] JOIN`, `NATURAL … JOIN`, `LATERAL`, `ONLY` recognised.
+- [x] Functions: `dialect.Function` + curated built-ins (PG 128, Oracle 96, SQLite 77 entries,
+      text tables in `dialect/functions.go`), `FunctionLister` loaded with the background
+      cache (PG `pg_proc` minus I/O/operator/support/stats internals: 1256 signatures in 9 ms;
+      Oracle `ALL_ARGUMENTS` of the allowed schemas minus object-type methods: 210 on CADE),
+      merged in `database.FunctionCatalog` (curated summary first, exact overloads after).
+      Completion only with a typed prefix (or after `pkg.`), snippet `name($0)`; Oracle names
+      lower-cased with `lowercaseIdentifiers`.
+- [x] Signature help for calls: lexer-light scan (`completer.FunctionCallAt`; strings,
+      quoted identifiers and comments skipped, works on unclosed calls), overloads with
+      parameter offsets (`[start, end]`, so `(text, text)` highlights the right one), optional
+      groups `a [, b]` split into `[b]`; variadic last parameter stays active.
+- [x] Hover/docs for CTE and derived-table columns (type + origin column); go-to-definition
+      for WITH query names. `SubqueryDoc` (nil `ParentTable` panic) replaced by `RelationDoc`.
+- Verified: unit tests (+ `-race`), live PG + Oracle (CADE packages, PL/SQL `begin pkg.|`),
+  formatter battery output byte-identical.
+
 ### Phase 5 — later / optional
 
 - [ ] `EXPLAIN` to buffer
@@ -372,6 +409,9 @@ Known limitations (not blocking):
 
 - **2026-10-12** Phase 3.5: JSON key completion (PG operators/jsonpath, Oracle SQL/JSON via
   dataguide) and CLI pickers for tables/columns/schemas/databases.
+
+- **2026-10-13** Phase 6: scope rewrite (CTEs, derived tables, UNION branches, correlated
+  subqueries), function completion + signature help from curated built-ins and the database.
 
 ## 6. Environment notes
 

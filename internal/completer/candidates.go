@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/raikhan/sqlh/dialect"
 	"github.com/raikhan/sqlh/internal/database"
 	"github.com/raikhan/sqlh/internal/lsp"
 	"github.com/raikhan/sqlh/parser/parseutil"
@@ -25,7 +26,9 @@ func (c *Completer) keywordCandidates(lower bool, keywords []string) []lsp.Compl
 	return candidates
 }
 
-func (c *Completer) functionCandidates(lower bool, keywords []string) []lsp.CompletionItem {
+// legacyFunctionCandidates: name-only function lists of dialects without a
+// curated catalog (MySQL).
+func (c *Completer) legacyFunctionCandidates(lower bool, keywords []string) []lsp.CompletionItem {
 	candidates := []lsp.CompletionItem{}
 	for _, k := range keywords {
 		candidate := lsp.CompletionItem{
@@ -41,12 +44,98 @@ func (c *Completer) functionCandidates(lower bool, keywords []string) []lsp.Comp
 	return candidates
 }
 
+// functionCatalog: the connection's functions, or the dialect's built-ins.
+func (c *Completer) functionCatalog() *database.FunctionCatalog {
+	if c.DBCache != nil && c.DBCache.Functions != nil {
+		return c.DBCache.Functions
+	}
+	return database.NewFunctionCatalog(c.Driver, nil)
+}
+
+// functionCandidates lists the functions callable with qualifier ("" =
+// unqualified). parenFollows: the cursor is right before "(", so only the
+// name is inserted.
+func (c *Completer) functionCandidates(qualifier string, lowercaseKeywords, parenFollows bool) []lsp.CompletionItem {
+	candidates := []lsp.CompletionItem{}
+	for _, group := range c.functionCatalog().Names(qualifier) {
+		if len(group) == 0 {
+			continue
+		}
+		candidates = append(candidates, c.functionItem(group, lowercaseKeywords, parenFollows))
+	}
+	return candidates
+}
+
+// LowercaseSignature renders f.Signature() with an upper-case name (Oracle)
+// in lower case, as inserted with lowercaseIdentifiers.
+func LowercaseSignature(f *dialect.Function) string {
+	cp := *f
+	if cp.Name == strings.ToUpper(cp.Name) {
+		cp.Name = strings.ToLower(cp.Name)
+	}
+	return cp.Signature()
+}
+
+func (c *Completer) functionItem(group []*dialect.Function, lowercaseKeywords, parenFollows bool) lsp.CompletionItem {
+	first := group[0]
+	builtin := false
+	noParens, noArgs := true, true
+	for _, f := range group {
+		builtin = builtin || f.Builtin
+		if !f.NoParens {
+			noParens = false
+		}
+		if f.NoParens || f.Args != "" || f.Suffix != "" {
+			noArgs = false
+		}
+	}
+	name := first.Name
+	switch {
+	case builtin && lowercaseKeywords:
+		name = strings.ToLower(name)
+	case builtin:
+		name = strings.ToUpper(name)
+	case c.LowercaseIdentifiers && name == strings.ToUpper(name):
+		name = strings.ToLower(name)
+	}
+	detail := first.Signature()
+	if !builtin && c.LowercaseIdentifiers {
+		detail = LowercaseSignature(first)
+	}
+	if len(group) > 1 {
+		detail += fmt.Sprintf("  (+%d)", len(group)-1)
+	}
+	item := lsp.CompletionItem{
+		Label:  name,
+		Kind:   lsp.FunctionCompletion,
+		Detail: detail,
+		Documentation: &lsp.MarkupContent{
+			Kind:  lsp.Markdown,
+			Value: database.FunctionDoc(group),
+		},
+	}
+	switch {
+	case noParens || parenFollows:
+		item.InsertText = name
+	case noArgs:
+		item.InsertText = name + "()"
+	default:
+		item.InsertText = name + "($0)"
+		item.InsertTextFormat = lsp.SnippetTextFormat
+	}
+	return item
+}
+
 func (c *Completer) columnCandidates(targetTables []*parseutil.TableInfo, parent *completionParent) []lsp.CompletionItem {
 	candidates := []lsp.CompletionItem{}
 
 	switch parent.Type {
 	case ParentTypeNone:
 		for _, table := range targetTables {
+			if table.Outer {
+				// enclosing query: qualify to use (keeps unqualified lists short)
+				continue
+			}
 			if table.DatabaseSchema != "" && table.Name != "" {
 				columns, ok := c.DBCache.ColumnDatabase(table.DatabaseSchema, table.Name)
 				if !ok {
@@ -65,7 +154,7 @@ func (c *Completer) columnCandidates(targetTables []*parseutil.TableInfo, parent
 		// pass
 	case ParentTypeTable:
 		for _, table := range targetTables {
-			if table.Name != parent.Name && table.Alias != parent.Name {
+			if !strings.EqualFold(table.Name, parent.Name) && !strings.EqualFold(table.Alias, parent.Name) {
 				continue
 			}
 			var (
@@ -395,72 +484,95 @@ func generateTableCandidatesByInfos(tables []*parseutil.TableInfo, dbCache *data
 	return candidates
 }
 
+// SubQueryCandidates: the names of the derived tables and CTE references in
+// scope, as qualifiers.
 func (c *Completer) SubQueryCandidates(infos []*parseutil.SubQueryInfo) []lsp.CompletionItem {
 	candidates := []lsp.CompletionItem{}
+	seen := map[string]bool{}
 	for _, info := range infos {
-		candidate := lsp.CompletionItem{
-			Label:  info.Name,
-			Kind:   lsp.FieldCompletion,
-			Detail: "subquery",
-			Documentation: &lsp.MarkupContent{
-				Kind:  lsp.Markdown,
-				Value: database.SubqueryDoc(info.Name, info.Views, c.DBCache),
-			},
+		if info.Name == "" || seen[strings.ToUpper(info.Name)] {
+			continue
 		}
-		candidates = append(candidates, candidate)
-	}
-	return candidates
-}
-
-func (c *Completer) SubQueryColumnCandidates(infos []*parseutil.SubQueryInfo) []lsp.CompletionItem {
-	candidates := []lsp.CompletionItem{}
-	for _, info := range infos {
-		for _, view := range info.Views {
-			for _, col := range view.SubQueryColumns {
-				if col.ColumnName == "*" {
-					tableCols, ok := c.DBCache.ColumnDescs(col.ParentTable.Name)
-					if !ok {
-						continue
-					}
-					for _, tableCol := range tableCols {
-						candidate := lsp.CompletionItem{
-							Label:  tableCol.Name,
-							Kind:   lsp.FieldCompletion,
-							Detail: subQueryColumnDetail(info.Name),
-							Documentation: &lsp.MarkupContent{
-								Kind:  lsp.Markdown,
-								Value: database.SubqueryColumnDoc(tableCol.Name, info.Views, c.DBCache),
-							},
-						}
-						candidates = append(candidates, candidate)
-					}
-				} else {
-					candidate := lsp.CompletionItem{
-						Label:  col.DisplayName(),
-						Kind:   lsp.FieldCompletion,
-						Detail: subQueryColumnDetail(info.Name),
-						Documentation: &lsp.MarkupContent{
-							Kind:  lsp.Markdown,
-							Value: database.SubqueryColumnDoc(col.DisplayName(), info.Views, c.DBCache),
-						},
-					}
-					candidates = append(candidates, candidate)
-				}
+		seen[strings.ToUpper(info.Name)] = true
+		detail := "subquery"
+		if info.Kind == parseutil.SubQueryCTE {
+			detail = "CTE"
+			if !strings.EqualFold(info.CTE, info.Name) {
+				detail = "CTE " + info.CTE
 			}
 		}
+		candidates = append(candidates, lsp.CompletionItem{
+			Label:  info.Name,
+			Kind:   lsp.ClassCompletion,
+			Detail: detail,
+			Documentation: &lsp.MarkupContent{
+				Kind:  lsp.Markdown,
+				Value: database.RelationDoc(info, c.DBCache),
+			},
+		})
 	}
 	return candidates
 }
 
-func subQueryColumnDetail(subQueryAliasName string) string {
-	detail := strings.Join(
-		[]string{
-			"subquery column from",
-			"\"" + subQueryAliasName + "\"",
-		},
-		" ",
-	)
-	return detail
+// CTECandidates: the WITH queries visible at the position, as table names.
+func (c *Completer) CTECandidates(ctes []*parseutil.SubQueryInfo) []lsp.CompletionItem {
+	candidates := []lsp.CompletionItem{}
+	for _, info := range ctes {
+		candidates = append(candidates, lsp.CompletionItem{
+			Label:    info.Name,
+			Kind:     lsp.ClassCompletion,
+			SortText: "05", // before the database's tables
+			Detail:   "CTE",
+			Documentation: &lsp.MarkupContent{
+				Kind:  lsp.Markdown,
+				Value: database.RelationDoc(info, c.DBCache),
+			},
+		})
+	}
+	return candidates
+}
+
+// SubQueryColumnCandidates: the columns of the derived tables and CTE
+// references in scope; with a qualifier, only those of that relation.
+func (c *Completer) SubQueryColumnCandidates(infos []*parseutil.SubQueryInfo, parent *completionParent) []lsp.CompletionItem {
+	candidates := []lsp.CompletionItem{}
+	for _, info := range infos {
+		switch parent.Type {
+		case ParentTypeTable:
+			if !strings.EqualFold(info.Name, parent.Name) {
+				continue
+			}
+		case ParentTypeNone:
+			if info.Outer {
+				continue
+			}
+		default:
+			continue
+		}
+		detail := subQueryColumnDetail(info)
+		for _, col := range database.RelationColumns(info, c.DBCache) {
+			candidates = append(candidates, lsp.CompletionItem{
+				Label:  col.Name,
+				Kind:   lsp.FieldCompletion,
+				Detail: detail,
+				Documentation: &lsp.MarkupContent{
+					Kind:  lsp.Markdown,
+					Value: database.RelationColumnDoc(info, col),
+				},
+			})
+		}
+	}
+	return candidates
+}
+
+func subQueryColumnDetail(info *parseutil.SubQueryInfo) string {
+	if info.Kind == parseutil.SubQueryCTE {
+		return "column from CTE \"" + info.Name + "\""
+	}
+	if info.Name == "" {
+		return "subquery column"
+	}
+	return "subquery column from \"" + info.Name + "\""
 }
 
 func (c *Completer) SchemaCandidates() []lsp.CompletionItem {

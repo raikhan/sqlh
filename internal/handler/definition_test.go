@@ -9,12 +9,14 @@ import (
 	"github.com/raikhan/sqlh/internal/lsp"
 )
 
-var definitionTestCases = []struct {
+type definitionTestCase struct {
 	name  string
 	input string
 	pos   lsp.Position
 	want  lsp.Definition
-}{
+}
+
+var definitionTestCases = []definitionTestCase{
 	{
 		name:  "subquery",
 		input: "SELECT it.ID, it.Name FROM (SELECT ci.ID, ci.Name, ci.CountryCode, ci.District, ci.Population FROM city AS ci) as it",
@@ -84,6 +86,33 @@ var definitionTestCases = []struct {
 			},
 		},
 	},
+}
+
+func cteLocation(line, from, to int) []lsp.Location {
+	return []lsp.Location{{
+		URI: testFileURI,
+		Range: lsp.Range{
+			Start: lsp.Position{Line: line, Character: from},
+			End:   lsp.Position{Line: line, Character: to},
+		},
+	}}
+}
+
+func init() {
+	definitionTestCases = append(definitionTestCases,
+		definitionTestCase{
+			name:  "CTE reference in FROM",
+			input: "with recent as (select ID from city) select r.ID from recent r",
+			pos:   lsp.Position{Line: 0, Character: 59},
+			want:  lsp.Definition(cteLocation(0, 5, 11)),
+		},
+		definitionTestCase{
+			name:  "CTE with column list referenced in a later CTE",
+			input: "with a(x) as (select 1), b as (select x from a) select * from b",
+			pos:   lsp.Position{Line: 0, Character: 45},
+			want:  lsp.Definition(cteLocation(0, 5, 6)),
+		},
+	)
 }
 
 func TestDefinition(t *testing.T) {

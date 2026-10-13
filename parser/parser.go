@@ -262,7 +262,8 @@ var multiKeywordMap = map[string][]string{
 	"OUTER":   {"JOIN"},
 	"LEFT":    {"OUTER", "JOIN"},
 	"RIGHT":   {"OUTER", "JOIN"},
-	"NATURAL": {"LEFT", "RIGHT", "OUTER", "JOIN"},
+	"FULL":    {"OUTER", "JOIN"},
+	"NATURAL": {"LEFT", "RIGHT", "FULL", "OUTER", "JOIN"},
 }
 
 func genMultiKeywordPrefixMatcher() astutil.NodeMatcher {

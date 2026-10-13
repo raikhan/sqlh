@@ -57,6 +57,8 @@ func (u *DBCacheGenerator) GenerateDBCachePrimary(ctx context.Context) (*DBCache
 	if err != nil {
 		return nil, err
 	}
+	// built-ins now; the database's functions come with the background load
+	dbCache.Functions = NewFunctionCatalog(u.repo.Driver(), nil)
 	return dbCache, nil
 }
 
@@ -138,6 +140,9 @@ type DBCache struct {
 	Synonyms map[string][]string
 	// SecondaryLoaded: the background load (all columns, synonyms) is done.
 	SecondaryLoaded bool
+	// Functions: callable functions (built-ins, then also the database's
+	// once the background load is done). Nil for caches built by hand.
+	Functions *FunctionCatalog
 }
 
 func (dc *DBCache) Database(dbName string) (db string, ok bool) {

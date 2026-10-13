@@ -52,13 +52,14 @@ func definition(url, text string, params lsp.DefinitionParams, dbCache *database
 		return nil, nil
 	}
 
-	aliases := parseutil.ExtractAliased(parsed)
-	if len(aliases) == 0 {
-		return nil, nil
-	}
+	// a WITH query name visible at the position
+	define := parseutil.CTEDefinition(parsed, pos, currentVariable.String())
 
-	var define ast.Node
+	aliases := parseutil.ExtractAliased(parsed)
 	for _, v := range aliases {
+		if define != nil {
+			break
+		}
 		alias, _ := v.(*ast.Aliased)
 		if alias.AliasedName.String() == currentVariable.String() {
 			define = alias.AliasedName

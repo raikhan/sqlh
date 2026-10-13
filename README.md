@@ -36,13 +36,37 @@ templates, synonyms not loaded yet, …) it says nothing. Turn off with `diagnos
 
 - DML(Data Manipulation Language)
     - [x] SELECT
-        - [x] Sub Query
+        - [x] Sub Query (derived tables: `s.` lists the subquery's columns, incl. aliased
+              expressions such as `count(*) as n`)
+        - [x] WITH queries (CTEs): names in `FROM`/`JOIN` (listed first), `x.` and unqualified
+              columns, explicit column lists `x (a, b)`, CTEs built on CTEs, `RECURSIVE`
+        - [x] Scoping per query level: an inner subquery's or CTE body's `FROM` doesn't leak
+              into the outer query; `UNION` branches are separate; correlated subqueries see
+              the enclosing query's aliases (`b.` inside `EXISTS (…)`)
     - [x] INSERT
     - [x] UPDATE
     - [x] DELETE
 - DDL(Data Definition Language)
     - [ ] CREATE TABLE
     - [ ] ALTER TABLE
+
+#### Functions
+
+Typing a prefix offers functions with their signature and description; accepting inserts
+`name()` / `name($0)` (just the name before an existing `(`; `CURRENT_DATE`, `SYSDATE` without
+parentheses).
+
+- Built-ins for PostgreSQL, Oracle and SQLite (curated: syntax forms like `COALESCE`,
+  `TRIM(… FROM …)`, `LISTAGG … WITHIN GROUP`, analytic/window functions).
+- PostgreSQL: every function of the server (`pg_proc`, ~1000 names with all overloads and
+  their descriptions, extensions and your own schemas included; other schemas as `schema.fn`),
+  loaded in the background after connecting.
+- Oracle: functions, procedures and package members of the allowed schemas; `pkg.` lists the
+  package's members (also inside PL/SQL blocks), with argument names, types, `OUT` and
+  defaulted (`[…]`) parameters.
+
+Signature help inside a call shows the overloads with the argument being typed highlighted
+(the first overload that takes that many arguments is selected).
 
 #### Join completion
 If the tables are connected with a foreign key sqlh can complete ```JOIN``` statements
@@ -61,6 +85,12 @@ If the tables are connected with a foreign key sqlh can complete ```JOIN``` stat
 #### Hover
 
 ![hover](./imgs/sqls_hover.gif)
+
+Columns of CTEs and derived tables show their type and the table column they come from.
+
+#### Go to definition
+
+Table aliases and WITH query names jump to their definition.
 
 #### Signature Help
 

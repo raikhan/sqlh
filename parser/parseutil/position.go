@@ -94,6 +94,9 @@ func CheckSyntaxPosition(nw *NodeWalker) SyntaxPosition {
 		"RIGHT JOIN",
 		"LEFT OUTER JOIN",
 		"RIGHT OUTER JOIN",
+		"FULL JOIN",
+		"FULL OUTER JOIN",
+		"NATURAL JOIN",
 	})):
 		res = getJoinCondition(nw)
 	case isInsertColumns(nw):

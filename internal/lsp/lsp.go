@@ -397,8 +397,10 @@ type DocumentRangeFormattingParams struct {
 }
 
 type ParameterInformation struct {
-	Label         string `json:"label"`
-	Documentation string `json:"documentation,omitempty"`
+	// Label: a substring of the signature label, or [start, end] UTF-16
+	// offsets into it.
+	Label         interface{} `json:"label"`
+	Documentation string      `json:"documentation,omitempty"`
 }
 
 type SignatureInformation struct {

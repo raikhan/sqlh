@@ -340,14 +340,18 @@ func tableHoverInfo(tableName string, cols []*database.ColumnDesc) *lsp.MarkupCo
 func subqueryHoverInfo(subQuery *parseutil.SubQueryInfo, dbCache *database.DBCache) *lsp.MarkupContent {
 	return &lsp.MarkupContent{
 		Kind:  lsp.Markdown,
-		Value: database.SubqueryDoc(subQuery.Name, subQuery.Views, dbCache),
+		Value: database.RelationDoc(subQuery, dbCache),
 	}
 }
 
 func subqueryColumnHoverInfo(identName string, subQuery *parseutil.SubQueryInfo, dbCache *database.DBCache) *lsp.MarkupContent {
+	col := database.FindRelationColumn(subQuery, dbCache, identName)
+	if col == nil {
+		return nil
+	}
 	return &lsp.MarkupContent{
 		Kind:  lsp.Markdown,
-		Value: database.SubqueryColumnDoc(identName, subQuery.Views, dbCache),
+		Value: database.RelationColumnDoc(subQuery, col),
 	}
 }
 

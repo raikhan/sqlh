@@ -34,6 +34,7 @@ const (
 	CompletionTypeSchema
 	CompletionTypeJoin
 	CompletionTypeJoinOn
+	CompletionTypeCTE
 )
 
 func (ct completionType) String() string {
@@ -64,6 +65,8 @@ func (ct completionType) String() string {
 		return "Join clause"
 	case CompletionTypeJoinOn:
 		return "Join On condition"
+	case CompletionTypeCTE:
+		return "CTE"
 	default:
 		return ""
 	}
@@ -115,6 +118,12 @@ func (c *Completer) Complete(text string, params lsp.CompletionParams, lowercase
 	if err != nil {
 		return nil, err
 	}
+	var ctes []*parseutil.SubQueryInfo
+	if completionTypeIs(ctx.types, CompletionTypeCTE) {
+		if ctes, err = parseutil.ExtractCTEs(parsed, pos); err != nil {
+			return nil, err
+		}
+	}
 
 	lastWord := getLastWord(text, params.Position.Line+1, params.Position.Character)
 	withBackQuote := strings.HasPrefix(lastWord, "`")
@@ -154,6 +163,13 @@ func (c *Completer) Complete(text string, params lsp.CompletionParams, lowercase
 			}
 			items = append(items, candidates...)
 		}
+		if completionTypeIs(ctx.types, CompletionTypeCTE) {
+			candidates := c.CTECandidates(ctes)
+			if withBackQuote {
+				candidates = toQuotedCandidates(candidates)
+			}
+			items = append(items, candidates...)
+		}
 		if completionTypeIs(ctx.types, CompletionTypeSubQuery) {
 			candidates := c.SubQueryCandidates(definedSubQueries)
 			if withBackQuote {
@@ -162,7 +178,7 @@ func (c *Completer) Complete(text string, params lsp.CompletionParams, lowercase
 			items = append(items, candidates...)
 		}
 		if completionTypeIs(ctx.types, CompletionTypeSubQueryColumn) {
-			candidates := c.SubQueryColumnCandidates(definedSubQueries)
+			candidates := c.SubQueryColumnCandidates(definedSubQueries, ctx.parent)
 			if withBackQuote {
 				candidates = toQuotedCandidates(candidates)
 			}
@@ -191,8 +207,18 @@ func (c *Completer) Complete(text string, params lsp.CompletionParams, lowercase
 		items = append(items, c.keywordCandidates(lowercaseKeywords, drivers)...)
 	}
 	if completionTypeIs(ctx.types, CompletionTypeFunction) {
-		drivers := dialect.DataBaseFunctions(c.Driver)
-		items = append(items, c.functionCandidates(lowercaseKeywords, drivers)...)
+		parenFollows := charAfterCursor(text, params.Position.Line, params.Position.Character) == '('
+		switch {
+		case ctx.parent.Type == ParentTypeTable:
+			// pkg.function (Oracle packages, owners; PostgreSQL schemas)
+			items = append(items, c.functionCandidates(ctx.parent.Name, lowercaseKeywords, parenFollows)...)
+		case lastWord == "":
+			// hundreds of functions: only once a prefix is typed
+		case dialect.BuiltinFunctions(c.Driver) == nil && isMySQL(c.Driver):
+			items = append(items, c.legacyFunctionCandidates(lowercaseKeywords, dialect.DataBaseFunctions(c.Driver))...)
+		default:
+			items = append(items, c.functionCandidates("", lowercaseKeywords, parenFollows)...)
+		}
 	}
 
 	if c.LowercaseIdentifiers {
@@ -229,9 +255,14 @@ func lowercaseIdentifierItems(items []lsp.CompletionItem) {
 }
 
 // Override the sort text for each completion item.
+// A SortText set by a candidate generator is kept as the prefix (rank).
 func populateSortText(items []lsp.CompletionItem) {
 	for i := range items {
-		items[i].SortText = getSortTextPrefix(items[i].Kind) + items[i].Label
+		prefix := items[i].SortText
+		if prefix == "" {
+			prefix = getSortTextPrefix(items[i].Kind)
+		}
+		items[i].SortText = prefix + items[i].Label
 	}
 }
 
@@ -315,6 +346,7 @@ func getCompletionTypes(nw *parseutil.NodeWalker) *CompletionContext {
 				CompletionTypeColumn,
 				CompletionTypeSubQueryColumn,
 				CompletionTypeView,
+				CompletionTypeFunction,
 			}
 			p = &completionParent{
 				Type: ParentTypeTable,
@@ -342,6 +374,7 @@ func getCompletionTypes(nw *parseutil.NodeWalker) *CompletionContext {
 				CompletionTypeColumn,
 				CompletionTypeView,
 				CompletionTypeSubQueryColumn,
+				CompletionTypeFunction,
 			}
 			p = &completionParent{
 				Type: ParentTypeTable,
@@ -377,7 +410,7 @@ func getCompletionTypes(nw *parseutil.NodeWalker) *CompletionContext {
 				CompletionTypeReferencedTable,
 				CompletionTypeSchema,
 				CompletionTypeView,
-				CompletionTypeSubQuery,
+				CompletionTypeCTE,
 			}
 		}
 	case syntaxPos == parseutil.WhereCondition:
@@ -388,6 +421,7 @@ func getCompletionTypes(nw *parseutil.NodeWalker) *CompletionContext {
 				CompletionTypeColumn,
 				CompletionTypeView,
 				CompletionTypeSubQueryColumn,
+				CompletionTypeFunction,
 			}
 			p = &completionParent{
 				Type: ParentTypeTable,
@@ -423,7 +457,7 @@ func getCompletionTypes(nw *parseutil.NodeWalker) *CompletionContext {
 				CompletionTypeReferencedTable,
 				CompletionTypeSchema,
 				CompletionTypeView,
-				CompletionTypeSubQuery,
+				CompletionTypeCTE,
 			}
 		}
 	case syntaxPos == parseutil.JoinOn:
@@ -440,8 +474,17 @@ func getCompletionTypes(nw *parseutil.NodeWalker) *CompletionContext {
 			CompletionTypeView,
 		}
 	default:
-		t = []completionType{
-			CompletionTypeKeyword,
+		// elsewhere (PL/SQL blocks, DDL, …): keywords, and functions once a
+		// prefix is typed; pkg.| lists the package's functions
+		if nw.CurNodeIs(memberIdentifierMatcher) {
+			mi := nw.CurNodeTopMatched(memberIdentifierMatcher).(*ast.MemberIdentifier)
+			t = []completionType{CompletionTypeFunction}
+			p = &completionParent{Type: ParentTypeTable, Name: mi.Parent.String()}
+		} else {
+			t = []completionType{
+				CompletionTypeKeyword,
+				CompletionTypeFunction,
+			}
 		}
 	}
 	return &CompletionContext{
@@ -458,6 +501,28 @@ func filterCandidates(candidates []lsp.CompletionItem, lastWord string) []lsp.Co
 		}
 	}
 	return filtered
+}
+
+func isMySQL(d dialect.DatabaseDriver) bool {
+	switch d {
+	case dialect.DatabaseDriverMySQL, dialect.DatabaseDriverMySQL8,
+		dialect.DatabaseDriverMySQL57, dialect.DatabaseDriverMySQL56:
+		return true
+	}
+	return false
+}
+
+// charAfterCursor returns the first non-space character after the cursor on
+// its line (0 if none).
+func charAfterCursor(text string, line, char int) rune {
+	l := getLine(text, line+1)
+	rest := l[byteOffsetForUTF16(l, char):]
+	for _, r := range rest {
+		if r != ' ' && r != '\t' {
+			return r
+		}
+	}
+	return 0
 }
 
 func getLine(text string, line int) string {
