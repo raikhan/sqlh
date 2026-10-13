@@ -243,6 +243,88 @@ type ViewDef struct {
 	// from the database's dependency catalog. Nil when the database has none
 	// (then they are taken from Query).
 	Uses []string
+	// DDL: the whole CREATE statement when the database keeps it (SQLite);
+	// else CreateStatement builds one from Query.
+	DDL string
+	// Writes: the DML the view accepts, by itself or through INSTEAD OF
+	// triggers/rules; nil when unknown.
+	Writes *ViewWrites
+}
+
+// ViewWrites tells which statements can write through a view.
+type ViewWrites struct{ Insert, Update, Delete bool }
+
+// ReadOnly: no INSERT, UPDATE or DELETE.
+func (w *ViewWrites) ReadOnly() bool { return w != nil && !w.Insert && !w.Update && !w.Delete }
+
+// Allows reports whether op (INSERT, UPDATE, DELETE; MERGE: any of them) is
+// accepted; unknown writes allow everything.
+func (w *ViewWrites) Allows(op string) bool {
+	if w == nil {
+		return true
+	}
+	switch strings.ToUpper(op) {
+	case "INSERT":
+		return w.Insert
+	case "UPDATE":
+		return w.Update
+	case "DELETE":
+		return w.Delete
+	}
+	return w.Insert || w.Update || w.Delete
+}
+
+// Summary: "read-only", "no INSERT", "only UPDATE" …; "" when every write
+// works or it is unknown.
+func (w *ViewWrites) Summary() string {
+	if w == nil {
+		return ""
+	}
+	var yes, no []string
+	for _, op := range []struct {
+		name string
+		ok   bool
+	}{{"INSERT", w.Insert}, {"UPDATE", w.Update}, {"DELETE", w.Delete}} {
+		if op.ok {
+			yes = append(yes, op.name)
+		} else {
+			no = append(no, op.name)
+		}
+	}
+	switch {
+	case len(no) == 0:
+		return ""
+	case len(yes) == 0:
+		return "read-only"
+	case len(no) == 1:
+		return "no " + no[0]
+	}
+	return "only " + yes[0]
+}
+
+// CreateStatement is a CREATE statement for the view (its definition as a
+// file), ending with ";".
+func (v *ViewDef) CreateStatement() string {
+	stmt := strings.TrimSpace(v.DDL)
+	if stmt == "" {
+		name := v.Name
+		if v.Schema != "" {
+			name = v.Schema + "." + name
+		}
+		create := "CREATE OR REPLACE VIEW"
+		if v.Materialized {
+			create = "CREATE MATERIALIZED VIEW"
+		}
+		q := strings.TrimRight(v.Query, " \t\r\n")
+		if strings.TrimSpace(q) == "" {
+			q = "  -- the query is not available"
+		}
+		stmt = create + " " + name + " AS\n" + strings.TrimLeft(q, "\r\n")
+	}
+	if !strings.HasSuffix(stmt, ";") {
+		stmt += ";"
+	}
+	return stmt + "\n"
 }
 
 // ViewDescriber is implemented by repositories that can list a schema's views
@@ -271,7 +353,13 @@ func (dc *DBCache) TableDoc(tableName string, cols []*ColumnDesc) string {
 	kind := g.Kind(tableName)
 	doc := TableDoc(tableName, cols)
 	if kind != RelTable {
-		doc = strings.Replace(doc, "` table", "` "+string(kind), 1)
+		title := string(kind)
+		if v := g.View(tableName); v != nil {
+			if w := v.Writes.Summary(); w != "" {
+				title += " (" + w + ")"
+			}
+		}
+		doc = strings.Replace(doc, "` table", "` "+title, 1)
 	}
 	if g == nil {
 		return doc
@@ -325,4 +413,3 @@ func joinCapped(names []string, n int) string {
 	}
 	return strings.Join(names[:n], ", ") + fmt.Sprintf(", … %d more", len(names)-n)
 }
-

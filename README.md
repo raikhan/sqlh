@@ -28,7 +28,11 @@ sqlh aims to provide advanced intelligence for you to edit sql in your own edito
 Obvious mistakes are underlined as you type, checked against the cached schema (no queries):
 an alias or table that isn't in the statement (`fm.*` with only `fd` in FROM), unknown tables
 and columns, with "did you mean" suggestions. When sqlh can't be sure (PL/SQL, dynamic SQL,
-templates, synonyms not loaded yet, …) it says nothing. Turn off with `diagnostics: false`.
+templates, synonyms not loaded yet, …) it says nothing. Writing to a view the database can't
+write through is flagged too (`UPDATE v_batch_document …`: "a read-only view"; `DELETE FROM` a
+materialized view), from the database's own catalog (PostgreSQL `pg_relation_is_updatable`,
+Oracle `ALL_UPDATABLE_COLUMNS`, INSTEAD OF triggers and rules included). Turn off with
+`diagnostics: false`.
 
 #### Auto Completion
 
@@ -105,7 +109,14 @@ Columns of CTEs and derived tables show their type and the table column they com
 
 #### Go to definition
 
-Table aliases and WITH query names jump to their definition.
+Table aliases and WITH query names jump to their definition. A view — its name, or one of its
+columns (`d.batch_name`, `v.col`, or an unqualified column only a view of the statement has) —
+opens its definition from the database: a read-only file
+`<runtime dir>/views/<workspace key>/<connection>/<schema>.<view>.sql` (`CREATE OR REPLACE VIEW … AS …`,
+rewritten on every request), at the line defining the column. Hover, go to definition and the
+CLI pickers (`sqlh tables -p --file …`: the directory maps back to the workspace's server) work
+inside it, so views on views can be followed down. Hover marks views that can't be written
+(`view (read-only)`, `no INSERT`).
 
 #### Signature Help
 

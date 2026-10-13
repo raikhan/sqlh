@@ -140,6 +140,9 @@ type checker struct {
 	// unsure: the statement has constructs that may introduce names the
 	// checker doesn't see; unknown qualifiers aren't reported then.
 	unsure bool
+	// target: the statement writing to the next table reference (INSERT,
+	// UPDATE, DELETE, MERGE)
+	target string
 	diags  []Diagnostic
 }
 
@@ -271,6 +274,9 @@ func (c *checker) collectRefs() bool {
 			if prev.is("DISTINCT") { // IS [NOT] DISTINCT FROM
 				continue
 			}
+			if prev.is("DELETE") {
+				c.target = "DELETE"
+			}
 			i = c.tableRef(i+1, false, true)
 		case t.is("JOIN"):
 			i = c.tableRef(i+1, false, false)
@@ -281,19 +287,25 @@ func (c *checker) collectRefs() bool {
 			i = c.tableRef(i+1, false, true)
 		case t.is("UPDATE"):
 			if i == 0 || prev.kind == token.RParen {
+				c.target = "UPDATE"
 				i = c.tableRef(i+1, false, false)
 			}
 		case t.is("DELETE"):
 			if (i == 0 || prev.kind == token.RParen) && !c.at(i+1).is("FROM") {
+				c.target = "DELETE"
 				i = c.tableRef(i+1, false, false) // Oracle: DELETE t WHERE …
 			}
 		case t.is("RETURNING"):
 			seenReturning = true
 		case t.is("INTO"):
 			if (kind == "INSERT" || kind == "MERGE" || kind == "WITH") && !seenReturning {
+				if prev.is("INSERT", "MERGE") {
+					c.target = prev.upper
+				}
 				i = c.tableRef(i+1, true, false)
 			}
 		}
+		c.target = "" // only for the reference right after the keyword
 	}
 	return len(c.pending) == 0
 }
@@ -407,10 +419,42 @@ func (c *checker) resolveTable(parts []tok) ref {
 		return r
 	}
 	r.res = res
+	if c.target != "" && !c.doc.created[last.upper] {
+		c.checkWrite(c.target, res, parts[0], last)
+	}
 	if _, ok := c.cat.columnsOf(res); ok && !c.doc.altered[last.upper] {
 		r.columns = true
 	}
 	return r
+}
+
+// checkWrite reports writing to a view that doesn't accept it.
+func (c *checker) checkWrite(op string, res resolved, first, last tok) {
+	w, ok := c.cat.writes[res.schema+"\t"+res.table]
+	if !ok {
+		return
+	}
+	var allowed []string
+	for _, x := range []struct {
+		op string
+		ok bool
+	}{{"INSERT", w.insert}, {"UPDATE", w.update}, {"DELETE", w.delete}} {
+		if x.ok {
+			allowed = append(allowed, x.op)
+		}
+	}
+	if (op == "MERGE" && len(allowed) > 0) || contains(allowed, op) {
+		return
+	}
+	name := strings.ToLower(res.table)
+	switch {
+	case w.materialized:
+		c.report(first.from, last.to, "%s is a materialized view: it can't be written (refresh it instead)", name)
+	case len(allowed) == 0:
+		c.report(first.from, last.to, "%s is a read-only view: the database can't write through it", name)
+	default:
+		c.report(first.from, last.to, "view %s doesn't accept %s (only %s)", name, op, strings.Join(allowed, ", "))
+	}
 }
 
 // implicitTable: names available without being in the cache.

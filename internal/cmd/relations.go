@@ -148,7 +148,11 @@ func describeText(rel *control.RelationsResult, cols []control.ColumnItem) strin
 
 func (t textStyle) describe(rel *control.RelationsResult, cols []control.ColumnItem) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s %s\n\n", rel.Insert, rel.Kind)
+	kind := rel.Kind
+	if rel.Writes != "" {
+		kind += " (" + rel.Writes + ")"
+	}
+	fmt.Fprintf(&b, "%s %s\n\n", rel.Insert, kind)
 	w := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(w, "Name\tType\tPK")
 	for _, col := range cols {

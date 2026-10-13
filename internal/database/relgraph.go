@@ -181,6 +181,19 @@ func (g *RelGraph) View(name string) *ViewDef {
 	return g.views[strings.ToUpper(name)]
 }
 
+// Views lists the views' definitions (none before the views are loaded).
+func (g *RelGraph) Views() []*ViewDef {
+	if g == nil {
+		return nil
+	}
+	out := make([]*ViewDef, 0, len(g.views))
+	for _, v := range g.views {
+		out = append(out, v)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
 // Edges returns the edges listed for a relation: declared foreign keys first,
 // then those exposed by views (for views), guesses, and view dependencies.
 func (g *RelGraph) Edges(name string) []*Edge {

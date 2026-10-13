@@ -93,3 +93,38 @@ func TestSocketPathTooLong(t *testing.T) {
 		t.Errorf("want a clear error, got %v", err)
 	}
 }
+
+func TestFindFromViewsDir(t *testing.T) {
+	t.Setenv("SQLH_RUNTIME_DIR", shortDir(t))
+	t.Setenv("SQLH_SOCK", "")
+	ws := t.TempDir()
+	views := filepath.Join(ViewsDir(ws), "pg_local")
+	os.MkdirAll(views, 0o700)
+	if _, _, err := Find(views); !errors.Is(err, ErrNoServer) {
+		t.Fatalf("no server: want ErrNoServer, got %v", err)
+	}
+	l, err := Listen(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer l.Close()
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	sock, got, err := Find(views)
+	if err != nil || sock != SocketPath(ws) || Canonical(got) != Canonical(ws) {
+		t.Errorf("Find(views) = %q %q %v", sock, got, err)
+	}
+	// another workspace's views: not this server
+	other := filepath.Join(ViewsDir(t.TempDir()), "pg_local")
+	os.MkdirAll(other, 0o700)
+	if _, _, err := Find(other); !errors.Is(err, ErrNoServer) {
+		t.Errorf("other workspace: want ErrNoServer, got %v", err)
+	}
+}

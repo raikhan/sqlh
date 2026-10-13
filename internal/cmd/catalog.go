@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"text/tabwriter"
 
@@ -54,7 +53,7 @@ func (s serverCatalog) relations(table string) (out *control.RelationsResult, er
 	return
 }
 func (s serverCatalog) context(file string, line, col int) (out *control.ContextResult, err error) {
-	abs, err := filepath.Abs(file)
+	abs, err := absPath(file)
 	if err != nil {
 		return nil, err
 	}
@@ -96,7 +95,7 @@ func (s *standaloneCatalog) relations(table string) (*control.RelationsResult, e
 	return catalog.Relations(s.src, table, s.opt, s.cfg.Relations.MaybeEnabled())
 }
 func (s *standaloneCatalog) context(file string, line, col int) (*control.ContextResult, error) {
-	b, err := os.ReadFile(file)
+	b, err := os.ReadFile(expandHome(file))
 	if err != nil {
 		return nil, err
 	}

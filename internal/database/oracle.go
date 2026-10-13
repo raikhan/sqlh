@@ -346,6 +346,72 @@ func (db *OracleDBRepository) Query(ctx context.Context, query string) (*sql.Row
 	return db.Conn.QueryContext(ctx, query)
 }
 
+// viewWrites sets which statements can write through the views: per column
+// from ALL_UPDATABLE_COLUMNS (key-preserved tables), INSTEAD OF triggers, and
+// updatable materialized views.
+func (db *OracleDBRepository) viewWrites(ctx context.Context, schemaName string, byName map[string]*ViewDef) error {
+	scan := func(query string, set func(name string, vals []string)) error {
+		rows, err := db.Conn.QueryContext(ctx, query, schemaName)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			vals := make([]sql.NullString, 4)
+			ptrs := make([]any, 0, 4)
+			cols, _ := rows.Columns()
+			for i := range cols {
+				ptrs = append(ptrs, &vals[i])
+			}
+			if err := rows.Scan(ptrs...); err != nil {
+				return err
+			}
+			strs := make([]string, len(cols))
+			for i := range cols {
+				strs[i] = vals[i].String
+			}
+			set(strs[0], strs[1:])
+		}
+		return rows.Err()
+	}
+	err := scan(`
+SELECT u.TABLE_NAME, MAX(u.INSERTABLE), MAX(u.UPDATABLE), MAX(u.DELETABLE)
+  FROM ALL_UPDATABLE_COLUMNS u
+  JOIN ALL_VIEWS v ON v.OWNER = u.OWNER AND v.VIEW_NAME = u.TABLE_NAME
+ WHERE u.OWNER = :1
+ GROUP BY u.TABLE_NAME`, func(name string, v []string) {
+		if d := byName[name]; d != nil && !d.Materialized {
+			d.Writes = &ViewWrites{Insert: v[0] == "YES", Update: v[1] == "YES", Delete: v[2] == "YES"}
+		}
+	})
+	if err != nil {
+		return err
+	}
+	err = scan(`
+SELECT TABLE_NAME, TRIGGERING_EVENT
+  FROM ALL_TRIGGERS
+ WHERE TABLE_OWNER = :1 AND TRIGGER_TYPE = 'INSTEAD OF' AND BASE_OBJECT_TYPE = 'VIEW' AND STATUS = 'ENABLED'`,
+		func(name string, v []string) {
+			d := byName[name]
+			if d == nil || d.Writes == nil {
+				return
+			}
+			ev := strings.ToUpper(v[0])
+			d.Writes.Insert = d.Writes.Insert || strings.Contains(ev, "INSERT")
+			d.Writes.Update = d.Writes.Update || strings.Contains(ev, "UPDATE")
+			d.Writes.Delete = d.Writes.Delete || strings.Contains(ev, "DELETE")
+		})
+	if err != nil {
+		return err
+	}
+	return scan(`SELECT MVIEW_NAME, UPDATABLE FROM ALL_MVIEWS WHERE OWNER = :1`, func(name string, v []string) {
+		if d := byName[name]; d != nil && d.Materialized {
+			u := v[0] == "Y"
+			d.Writes = &ViewWrites{Insert: u, Update: u, Delete: u}
+		}
+	})
+}
+
 // DescribeViews lists the schema's views and materialized views with their
 // query text (LONG columns, fetched whole) and the objects of the same schema
 // they read (ALL_DEPENDENCIES).
@@ -381,6 +447,9 @@ func (db *OracleDBRepository) DescribeViews(ctx context.Context, schemaName stri
 	}
 	if len(views) == 0 {
 		return views, nil
+	}
+	if err := db.viewWrites(ctx, schemaName, byName); err != nil {
+		log.Println("view updatability:", err)
 	}
 	rows, err := db.Conn.QueryContext(ctx, `
 SELECT DISTINCT NAME, REFERENCED_NAME

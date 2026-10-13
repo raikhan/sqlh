@@ -196,3 +196,55 @@ func TestPositions(t *testing.T) {
 		t.Errorf("got %v, want start 0:17", ds)
 	}
 }
+
+func TestViewWrites(t *testing.T) {
+	cat := NewCatalog(sqlsplit.PostgreSQL, "cadetst").
+		Table("cadetst", "batch", []string{"id", "name"}).
+		Table("cadetst", "v_doc", []string{"id", "batch_name"}).
+		Table("cadetst", "v_model", []string{"id", "tag"}).
+		Table("cadetst", "v_noins", []string{"id"}).
+		Table("cadetst", "mv_sum", []string{"batch_id", "documents"}).
+		Writes("cadetst", "v_doc", false, false, false, false).
+		Writes("cadetst", "v_model", false, true, true, true).
+		Writes("cadetst", "v_noins", false, false, true, true).
+		Writes("cadetst", "mv_sum", true, false, false, false).
+		Complete(true).Build()
+	flagged := []struct{ sql, want string }{
+		{"insert into v_doc (id) values (1)", "v_doc is a read-only view: the database can't write through it"},
+		{"update v_doc set batch_name = 'x'", "v_doc is a read-only view"},
+		{"update only v_doc set batch_name = 'x'", "v_doc is a read-only view"},
+		{"delete from cadetst.v_doc where id = 1", "v_doc is a read-only view"},
+		{"with x as (select 1) insert into v_doc (id) select 1 from x", "v_doc is a read-only view"},
+		{"merge into v_doc d using batch b on b.id = d.id when matched then update set batch_name = b.name", "v_doc is a read-only view"},
+		{"insert into v_noins (id) values (1)", "view v_noins doesn't accept INSERT (only UPDATE, DELETE)"},
+		{"refresh materialized view mv_sum; delete from mv_sum", "mv_sum is a materialized view: it can't be written (refresh it instead)"},
+	}
+	for _, c := range flagged {
+		got := messages(t, cat, c.sql)
+		if len(got) != 1 || got[0] != c.want && !strings.HasPrefix(got[0], c.want) {
+			t.Errorf("%s\n  got  %q\n  want %q", c.sql, got, c.want)
+		}
+	}
+	quiet := []string{
+		"select * from v_doc",
+		"insert into batch (id, name) select id, batch_name from v_doc",
+		"update batch b set name = d.batch_name from v_doc d where d.id = b.id",
+		"delete from batch b using v_doc d where d.id = b.id",
+		"insert into v_model (id, tag) values (1, 'x')",
+		"update v_model set tag = 'y'",
+		"delete from v_noins where id = 1",
+		"merge into v_noins n using batch b on b.id = n.id when matched then delete",
+		"insert into batch (id, name) values (1, 'a') on conflict (id) do update set name = excluded.name",
+		"create view v_doc2 as select * from v_doc; insert into v_doc2 (id) values (1)",
+	}
+	for _, sql := range quiet {
+		if got := messages(t, cat, sql); len(got) > 0 {
+			t.Errorf("%s: unexpected %q", sql, got)
+		}
+	}
+	// the name is underlined
+	ds := Check("delete from v_doc", cat)
+	if len(ds) != 1 || ds[0].Start.Char != 12 || ds[0].End.Char != 17 {
+		t.Errorf("range: %+v", ds)
+	}
+}

@@ -102,6 +102,7 @@ type RelationsResult struct {
 	// the server's background load).
 	ViewsLoaded bool   `json:"viewsLoaded"`
 	Definition  string `json:"definition,omitempty"` // a view's query
+	Writes      string `json:"writes,omitempty"`     // a view's: "read-only", "no INSERT", …
 	Note        string `json:"note,omitempty"`
 }
 
@@ -242,6 +243,12 @@ func key(workspace string) string {
 // SocketPath is the socket of the server for a workspace root.
 func SocketPath(workspace string) string { return filepath.Join(Dir(), key(workspace)+".sock") }
 
+// ViewsDir holds the files a workspace's server writes for the editor to open
+// (view definitions). Find maps a directory under it back to that server.
+func ViewsDir(workspace string) string { return filepath.Join(viewsRoot(), key(workspace)) }
+
+func viewsRoot() string { return filepath.Join(Dir(), "views") }
+
 // InfoPath is the sidecar describing that server.
 func InfoPath(workspace string) string { return filepath.Join(Dir(), key(workspace)+".json") }
 
@@ -263,6 +270,9 @@ func Find(start string) (sock, workspace string, err error) {
 		return s, "", nil
 	}
 	dir := Canonical(start)
+	if sock, ws, ok := findForViews(dir); ok {
+		return sock, ws, nil
+	}
 	for {
 		p := SocketPath(dir)
 		if _, err := os.Stat(p); err == nil && alive(p) {
@@ -274,6 +284,26 @@ func Find(start string) (sock, workspace string, err error) {
 		}
 		dir = parent
 	}
+}
+
+// findForViews: a directory under ViewsDir belongs to the server of the
+// workspace it is keyed by (a view definition opened by go to definition is
+// outside the workspace).
+func findForViews(dir string) (sock, workspace string, ok bool) {
+	rel, err := filepath.Rel(Canonical(viewsRoot()), dir)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return "", "", false
+	}
+	k := strings.SplitN(rel, string(filepath.Separator), 2)[0]
+	sock = filepath.Join(Dir(), k+".sock")
+	if !alive(sock) {
+		return "", "", false
+	}
+	var info Info
+	if b, err := os.ReadFile(filepath.Join(Dir(), k+".json")); err == nil {
+		_ = json.Unmarshal(b, &info)
+	}
+	return sock, info.Workspace, true
 }
 
 func alive(sock string) bool {

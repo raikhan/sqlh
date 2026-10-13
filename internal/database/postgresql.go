@@ -543,7 +543,8 @@ func pgDSNWithDB(dsn, db string) (string, error) {
 // the same schema they read (pg_depend through the view's rewrite rule).
 func (db *PostgreSQLDBRepository) DescribeViews(ctx context.Context, schemaName string) ([]*ViewDef, error) {
 	rows, err := db.Conn.QueryContext(ctx, `
-	SELECT c.relname, c.relkind = 'm', COALESCE(pg_get_viewdef(c.oid), '')
+	SELECT c.relname, c.relkind = 'm', COALESCE(pg_get_viewdef(c.oid), ''),
+	       pg_relation_is_updatable(c.oid::regclass, true) -- bits: 4 UPDATE, 8 INSERT, 16 DELETE
 	  FROM pg_class c
 	  JOIN pg_namespace n ON n.oid = c.relnamespace
 	 WHERE n.nspname = $1 AND c.relkind IN ('v', 'm')
@@ -556,9 +557,11 @@ func (db *PostgreSQLDBRepository) DescribeViews(ctx context.Context, schemaName 
 	byName := map[string]*ViewDef{}
 	for rows.Next() {
 		v := &ViewDef{Schema: schemaName, Uses: []string{}}
-		if err := rows.Scan(&v.Name, &v.Materialized, &v.Query); err != nil {
+		var events int
+		if err := rows.Scan(&v.Name, &v.Materialized, &v.Query, &events); err != nil {
 			return nil, err
 		}
+		v.Writes = &ViewWrites{Insert: events&8 != 0, Update: events&4 != 0, Delete: events&16 != 0}
 		views = append(views, v)
 		byName[v.Name] = v
 	}

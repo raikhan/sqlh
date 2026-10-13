@@ -15,6 +15,8 @@ type Catalog struct {
 	schemas       map[string]bool            // upper
 	tables        map[string]map[string]bool // schema → table (upper)
 	columns       map[string]map[string]bool // "SCHEMA\tTABLE" → column (upper)
+	// writes: "SCHEMA\tTABLE" → what can write through a view
+	writes map[string]viewWrites
 	// unqualified: further names usable without a schema (Oracle synonyms).
 	unqualified map[string]bool
 	// unqualifiedComplete: every name usable without a schema is known, so an
@@ -32,6 +34,7 @@ func NewCatalog(d sqlsplit.Dialect, defaultSchema string) *CatalogBuilder {
 		schemas:       map[string]bool{},
 		tables:        map[string]map[string]bool{},
 		columns:       map[string]map[string]bool{},
+		writes:        map[string]viewWrites{},
 		unqualified:   map[string]bool{},
 	}}
 }
@@ -56,6 +59,17 @@ func (b *CatalogBuilder) Table(schema, table string, columns []string) *CatalogB
 		}
 		b.c.columns[s+"\t"+t] = m
 	}
+	return b
+}
+
+type viewWrites struct {
+	materialized           bool
+	insert, update, delete bool
+}
+
+// Writes records which statements can write through a view.
+func (b *CatalogBuilder) Writes(schema, view string, materialized, insert, update, delete bool) *CatalogBuilder {
+	b.c.writes[strings.ToUpper(schema)+"\t"+strings.ToUpper(view)] = viewWrites{materialized, insert, update, delete}
 	return b
 }
 

@@ -439,7 +439,18 @@ Decided: no separate TUI; the table picker and `describe` cover it. Schemas are 
       title; markdown hard breaks instead of an aligned code block), the preview in cyan
       with dimmed notes.
 - [ ] Lineage for `UNION` views when every branch takes a column from the same table column.
-- [ ] Views in the LSP beyond this: go-to-definition of a view (its query), diagnostics.
+- [x] Views in the LSP: go to definition of a view or a view's column opens a read-only file
+      with its `CREATE` statement (`<runtime dir>/views/<workspace key>/<conn>/<schema>.<view>.sql`; `control.Find` maps
+      that directory back to the workspace's server, so the Helix glue works there; the
+      column's line found in the first select list; Helix reuses the running server for it,
+      so hover/gd work inside). `ViewDef.Writes`: PG `pg_relation_is_updatable(oid, true)`
+      (triggers, rules), Oracle `ALL_UPDATABLE_COLUMNS` (0.16 s for 656 CADE views) +
+      `INSTEAD OF` triggers + `ALL_MVIEWS.UPDATABLE`, SQLite `INSTEAD OF` triggers; a
+      diagnostic for INSERT/UPDATE/DELETE/MERGE into a view that refuses it, "read-only"/
+      "no INSERT" in hover and `describe`. Test views in pg_local: `scratch/views_pg.sql`
+      (`v_batch_document` read-only, `v_excluded_document` on it, `v_openai_model`
+      updatable, `mv_batch_summary`). CADE: 513 read-only, 143 writable views.
+- [ ] Go to definition of a table: generated DDL (columns, keys) the same way.
 
 ### Phase 5 — later / optional
 
@@ -479,7 +490,8 @@ Decided: no separate TUI; the table picker and `describe` cover it. Schemas are 
 
 - **2026-10-13** Phase 7: relationship graph (FKs, view lineage, "maybe" guesses, view
   dependencies), `describe`/`relations`, cursor-aware table picker with JOIN clauses and
-  drill-down, join completion and hover for views.
+  drill-down, join completion and hover for views. Go to definition of views (read-only
+  definition files), diagnostics for writes to read-only views and materialized views.
 
 ## 6. Environment notes
 
@@ -498,4 +510,6 @@ Decided: no separate TUI; the table picker and `describe` cover it. Schemas are 
   repo probe: `scratch/oradbg/` (reads creds from env `H S U P`)
 - Relationships: `CFG=<config> go run ./scratch/relg ALIAS [TABLE…]` prints the graph
   (`MAYBE=1`: all guesses); PG test schema with views: `scratch/relations_pg.sql`;
+  views and their writability: `go run ./scratch/viewprobe ALIAS [all]`; pg_local test views
+  (cadetst): `scratch/views_pg.sql`;
   scenario scripts `/tmp/sqls-build/t_rel*.py` (`t_rel_pty.py` drives real fzf in a pty)

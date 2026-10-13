@@ -106,13 +106,29 @@ func Commands() []*cli.Command {
 	}, append(catalogCommands(), relationCommands()...)...)
 }
 
+// expandHome expands a leading "~" (editors abbreviate paths: Helix's
+// %{buffer_name} is ~/… for files under the home directory).
+func expandHome(p string) string {
+	if p != "~" && !strings.HasPrefix(p, "~/") {
+		return p
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return p
+	}
+	return filepath.Join(home, p[1:])
+}
+
+// absPath is p made absolute, "~" expanded.
+func absPath(p string) (string, error) { return filepath.Abs(expandHome(p)) }
+
 // startDir is where workspace/server resolution starts.
 func startDir(c *cli.Context) string {
 	if d := c.String("dir"); d != "" {
-		return d
+		return expandHome(d)
 	}
 	if c.IsSet("file") {
-		if abs, err := filepath.Abs(c.String("file")); err == nil {
+		if abs, err := absPath(c.String("file")); err == nil {
 			return filepath.Dir(abs)
 		}
 	}
@@ -180,14 +196,14 @@ func runParams(c *cli.Context, all bool) (control.RunParams, error) {
 		p.SQL = s
 	}
 	if f := c.String("file"); f != "" {
-		abs, err := filepath.Abs(f)
+		abs, err := absPath(f)
 		if err != nil {
 			return p, err
 		}
 		p.File = abs
 	}
 	if o := c.String("out"); o != "" {
-		abs, err := filepath.Abs(o)
+		abs, err := absPath(o)
 		if err != nil {
 			return p, err
 		}

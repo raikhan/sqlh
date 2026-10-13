@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"regexp"
+	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/raikhan/sqlh/dialect"
@@ -190,23 +191,43 @@ var sqliteViewRe = regexp.MustCompile(`(?is)^\s*CREATE\s+(?:TEMP\s+|TEMPORARY\s+
 // DescribeViews lists the views; their dependencies come from parsing the
 // query (SQLite keeps no dependency catalog).
 func (db *SQLite3DBRepository) DescribeViews(ctx context.Context, schemaName string) ([]*ViewDef, error) {
-	rows, err := db.Conn.QueryContext(ctx, `SELECT name, COALESCE(sql, '') FROM sqlite_master WHERE type = 'view' ORDER BY name`)
+	rows, err := db.Conn.QueryContext(ctx, `SELECT type, name, tbl_name, COALESCE(sql, '') FROM sqlite_master WHERE type IN ('view', 'trigger') ORDER BY type DESC, name`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var views []*ViewDef
+	byName := map[string]*ViewDef{}
 	for rows.Next() {
-		var name, ddl string
-		if err := rows.Scan(&name, &ddl); err != nil {
+		var typ, name, table, ddl string
+		if err := rows.Scan(&typ, &name, &table, &ddl); err != nil {
 			return nil, err
 		}
-		v := &ViewDef{Schema: schemaName, Name: name}
+		if typ == "trigger" { // views come first
+			if v := byName[strings.ToLower(table)]; v != nil {
+				if m := sqliteInsteadOfRe.FindStringSubmatch(ddl); m != nil {
+					switch strings.ToUpper(m[1]) {
+					case "INSERT":
+						v.Writes.Insert = true
+					case "UPDATE":
+						v.Writes.Update = true
+					case "DELETE":
+						v.Writes.Delete = true
+					}
+				}
+			}
+			continue
+		}
+		// views are read-only unless INSTEAD OF triggers write for them
+		v := &ViewDef{Schema: schemaName, Name: name, DDL: ddl, Writes: &ViewWrites{}}
 		if m := sqliteViewRe.FindStringSubmatch(ddl); m != nil && m[1] == "" {
 			// with an explicit column list the names would not match the query's
 			v.Query = m[2]
 		}
 		views = append(views, v)
+		byName[strings.ToLower(name)] = v
 	}
 	return views, rows.Err()
 }
+
+var sqliteInsteadOfRe = regexp.MustCompile(`(?is)\bINSTEAD\s+OF\s+(INSERT|UPDATE|DELETE)\b`)

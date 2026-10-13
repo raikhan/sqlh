@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"errors"
+	"os"
 	"strings"
 	"testing"
 
@@ -185,5 +186,20 @@ func TestChooseInsert(t *testing.T) {
 	st.Ctx = control.ContextResult{InJoin: false, NeedSpace: true, Tables: ctx.Tables}
 	if got := chooseInsert(st, customer, false); got != " customer" {
 		t.Errorf("not after JOIN → %q", got)
+	}
+}
+
+func TestExpandHome(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	for in, want := range map[string]string{
+		"~/Library/x.sql": home + "/Library/x.sql",
+		"~":               home,
+		"/abs/x.sql":      "/abs/x.sql",
+		"~other/x.sql":    "~other/x.sql",
+		"rel/~/x":         "rel/~/x",
+	} {
+		if got := expandHome(in); got != want {
+			t.Errorf("expandHome(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

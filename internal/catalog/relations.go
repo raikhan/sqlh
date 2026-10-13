@@ -58,6 +58,7 @@ func Relations(src Source, table string, opt Options, maybe bool) (*control.Rela
 	res.ViewsLoaded = g.ViewsLoaded
 	if v := g.View(name); v != nil {
 		res.Definition = strings.TrimSpace(v.Query)
+		res.Writes = v.Writes.Summary()
 	}
 	for _, r := range g.Related(name, maybe) {
 		item := control.RelationItem{

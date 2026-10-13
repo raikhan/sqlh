@@ -156,6 +156,11 @@ func buildCatalog(cache *database.DBCache, d sqlsplit.Dialect) *lint.Catalog {
 			b.Table(schema, t, cols)
 		}
 	}
+	for _, v := range cache.Relations.Views() {
+		if w := v.Writes; w != nil {
+			b.Writes(v.Schema, v.Name, v.Materialized, w.Insert, w.Update, w.Delete)
+		}
+	}
 	switch d {
 	case sqlsplit.PostgreSQL, sqlsplit.SQLite:
 		b.Complete(true)
