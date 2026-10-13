@@ -71,6 +71,9 @@ type Server struct {
 type File struct {
 	LanguageID string
 	Text       string
+	// Version: the client's document version (didOpen/didChange), echoed in
+	// versioned workspace edits so the client accepts them.
+	Version int
 }
 
 func NewServer() *Server {
@@ -296,6 +299,7 @@ func (s *Server) handleTextDocumentDidOpen(ctx context.Context, conn *jsonrpc2.C
 	if err := s.updateFile(params.TextDocument.URI, params.TextDocument.Text); err != nil {
 		return nil, err
 	}
+	s.files[params.TextDocument.URI].Version = params.TextDocument.Version
 	s.scheduleLint(params.TextDocument.URI)
 	return nil, nil
 }
@@ -316,6 +320,7 @@ func (s *Server) handleTextDocumentDidChange(ctx context.Context, conn *jsonrpc2
 	if err := s.updateFile(params.TextDocument.URI, params.ContentChanges[0].Text); err != nil {
 		return nil, err
 	}
+	s.files[params.TextDocument.URI].Version = params.TextDocument.Version
 	s.scheduleLint(params.TextDocument.URI)
 	return nil, nil
 }

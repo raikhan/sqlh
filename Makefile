@@ -7,6 +7,8 @@ CURRENT_REVISION := $(shell git rev-parse --short HEAD)
 BUILD_LDFLAGS := "-s -w -X main.revision=$(CURRENT_REVISION)"
 GOOS := $(shell go env GOOS)
 GOBIN ?= $(shell go env GOPATH)/bin
+# where `make install` puts the binary (the editor starts `sqlh` from PATH)
+INSTALL_DIR ?= $(HOME)/.local/bin
 export GO111MODULE=on
 
 .PHONY: all
@@ -23,7 +25,12 @@ release: $(GOBIN)/gobump
 
 .PHONY: install
 install:
-	go install -ldflags=$(BUILD_LDFLAGS) .
+	@mkdir -p $(INSTALL_DIR)
+	go build -ldflags=$(BUILD_LDFLAGS) -o $(INSTALL_DIR)/$(BIN) .
+	@echo "installed $(INSTALL_DIR)/$(BIN)"
+	@if [ "$$(command -v $(BIN))" != "$(INSTALL_DIR)/$(BIN)" ]; then \
+		echo "warning: '$(BIN)' on PATH resolves to '$$(command -v $(BIN))', not $(INSTALL_DIR)/$(BIN)"; \
+	fi
 
 .PHONY: show-version
 show-version: $(GOBIN)/gobump

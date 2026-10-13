@@ -29,22 +29,26 @@ func (s *Server) handleTextDocumentRename(ctx context.Context, conn *jsonrpc2.Co
 		return nil, fmt.Errorf("document not found: %s", params.TextDocument.URI)
 	}
 
-	res, err := rename(f.Text, params)
+	res, err := rename(f.Text, f.Version, params)
 	if err != nil {
 		return nil, err
 	}
 	return res, nil
 }
 
-func rename(text string, params lsp.RenameParams) (*lsp.WorkspaceEdit, error) {
+// version: the document's current version, which the edit is made against.
+func rename(text string, version int, params lsp.RenameParams) (*lsp.WorkspaceEdit, error) {
 	parsed, err := parser.Parse(text)
 	if err != nil {
 		return nil, err
 	}
 
+	// +1: the cursor is on the character after the LSP position, so that a
+	// position on an identifier's first character resolves to the identifier
+	// and not the preceding token (as in definition/references)
 	pos := token.Pos{
 		Line: params.Position.Line,
-		Col:  params.Position.Character,
+		Col:  params.Position.Character + 1,
 	}
 
 	// Get the identifier on focus
@@ -96,7 +100,7 @@ func rename(text string, params lsp.RenameParams) (*lsp.WorkspaceEdit, error) {
 		DocumentChanges: []lsp.TextDocumentEdit{
 			{
 				TextDocument: lsp.OptionalVersionedTextDocumentIdentifier{
-					Version: 0,
+					Version: int32(version),
 					TextDocumentIdentifier: lsp.TextDocumentIdentifier{
 						URI: params.TextDocument.URI,
 					},

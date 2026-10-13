@@ -178,3 +178,80 @@ func TestRenameMain(t *testing.T) {
 		})
 	}
 }
+
+// The cursor on the first character of a one-letter alias (e.g. "p" in
+// "p.id") still renames the alias, not the whitespace before it.
+func TestRenameAliasFirstChar(t *testing.T) {
+	input := "select\n" +
+		"    p.id,\n" +
+		"    am.model_tag\n" +
+		"from\n" +
+		"    ai_extraction_process p\n" +
+		"join ai_model am\n" +
+		"    on am.id = p.model_id"
+	params := lsp.RenameParams{
+		TextDocument: lsp.TextDocumentIdentifier{URI: testFileURI},
+		Position:     lsp.Position{Line: 1, Character: 4},
+		NewName:      "proc",
+	}
+	got, err := rename(input, 0, params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || len(got.DocumentChanges) != 1 {
+		t.Fatalf("no edits: %+v", got)
+	}
+	want := []lsp.Position{{Line: 1, Character: 4}, {Line: 4, Character: 26}, {Line: 6, Character: 15}}
+	edits := got.DocumentChanges[0].Edits
+	if len(edits) != len(want) {
+		t.Fatalf("got %d edits, want %d: %+v", len(edits), len(want), edits)
+	}
+	for i, e := range edits {
+		if e.Range.Start != want[i] || e.Range.End.Character != want[i].Character+1 || e.NewText != "proc" {
+			t.Errorf("edit %d: got %+v, want start %+v", i, e, want[i])
+		}
+	}
+}
+
+// A rename after the document changed is made against its new version
+// (clients reject edits for an outdated version, e.g. Helix's "outdated
+// workspace edit").
+func TestRenameTracksDocumentVersion(t *testing.T) {
+	tx := newTestContext()
+	tx.setup(t)
+	defer tx.tearDown()
+	tx.addWorkspaceConfig(t, &config.Config{Connections: []*database.DBConfig{{Driver: "mock"}}})
+
+	renameAt := func(newName string) int32 {
+		t.Helper()
+		var got lsp.WorkspaceEdit
+		params := lsp.RenameParams{
+			TextDocument: lsp.TextDocumentIdentifier{URI: testFileURI},
+			Position:     lsp.Position{Line: 0, Character: 7},
+			NewName:      newName,
+		}
+		if err := tx.conn.Call(tx.ctx, "textDocument/rename", params, &got); err != nil {
+			t.Fatal("conn.Call textDocument/rename:", err)
+		}
+		if len(got.DocumentChanges) != 1 {
+			t.Fatalf("no edits: %+v", got)
+		}
+		return got.DocumentChanges[0].TextDocument.Version
+	}
+
+	tx.textDocumentDidOpen(t, testFileURI, "SELECT c.ID FROM city c")
+	if v := renameAt("ct"); v != 0 {
+		t.Errorf("first rename: version %d, want 0", v)
+	}
+
+	change := lsp.DidChangeTextDocumentParams{
+		TextDocument:   lsp.VersionedTextDocumentIdentifier{URI: testFileURI, Version: 3},
+		ContentChanges: []lsp.TextDocumentContentChangeEvent{{Text: "SELECT ct.ID FROM city ct"}},
+	}
+	if err := tx.conn.Call(tx.ctx, "textDocument/didChange", change, nil); err != nil {
+		t.Fatal("conn.Call textDocument/didChange:", err)
+	}
+	if v := renameAt("x"); v != 3 {
+		t.Errorf("rename after change: version %d, want 3", v)
+	}
+}
