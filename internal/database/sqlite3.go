@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/raikhan/sqlh/dialect"
@@ -162,7 +163,8 @@ func (db *SQLite3DBRepository) DescribeForeignKeysBySchema(ctx context.Context, 
        m.name,
        p."from",
        p."table",
-       p."to"
+       -- REFERENCES t without columns: the parent's primary key
+       COALESCE(p."to", (SELECT k.name FROM pragma_table_info(p."table") k WHERE k.pk = p."seq" + 1))
 	FROM sqlite_master m
 			 JOIN pragma_foreign_key_list(m.name) p ON m.name != p."table"
 	WHERE m.type = 'table'
@@ -181,4 +183,30 @@ func (db *SQLite3DBRepository) Exec(ctx context.Context, query string) (sql.Resu
 
 func (db *SQLite3DBRepository) Query(ctx context.Context, query string) (*sql.Rows, error) {
 	return db.Conn.QueryContext(ctx, query)
+}
+
+var sqliteViewRe = regexp.MustCompile(`(?is)^\s*CREATE\s+(?:TEMP\s+|TEMPORARY\s+)?VIEW\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:"[^"]*"|\x60[^\x60]*\x60|\[[^\]]*\]|[^\s(]+)\s*(\([^)]*\))?\s*AS\s+(.*)$`)
+
+// DescribeViews lists the views; their dependencies come from parsing the
+// query (SQLite keeps no dependency catalog).
+func (db *SQLite3DBRepository) DescribeViews(ctx context.Context, schemaName string) ([]*ViewDef, error) {
+	rows, err := db.Conn.QueryContext(ctx, `SELECT name, COALESCE(sql, '') FROM sqlite_master WHERE type = 'view' ORDER BY name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var views []*ViewDef
+	for rows.Next() {
+		var name, ddl string
+		if err := rows.Scan(&name, &ddl); err != nil {
+			return nil, err
+		}
+		v := &ViewDef{Schema: schemaName, Name: name}
+		if m := sqliteViewRe.FindStringSubmatch(ddl); m != nil && m[1] == "" {
+			// with an explicit column list the names would not match the query's
+			v.Query = m[2]
+		}
+		views = append(views, v)
+	}
+	return views, rows.Err()
 }

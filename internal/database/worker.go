@@ -45,7 +45,7 @@ func (w *Worker) changed() {
 	}
 }
 
-func (w *Worker) setSecondary(col map[string][]*ColumnDesc, synonyms map[string][]string, functions *FunctionCatalog) {
+func (w *Worker) setSecondary(col map[string][]*ColumnDesc, synonyms map[string][]string, functions *FunctionCatalog, views []*ViewDef) {
 	w.lock.Lock()
 	if w.dbCache != nil {
 		// Swap in a copy so that readers holding the previous
@@ -59,7 +59,20 @@ func (w *Worker) setSecondary(col map[string][]*ColumnDesc, synonyms map[string]
 		newCache.SecondaryLoaded = true
 		w.dbCache = &newCache
 	}
+	cache := w.dbCache
 	w.lock.Unlock()
+	if cache != nil {
+		// outside the lock: parsing view definitions takes a moment
+		rel := cache.BuildRelations(views)
+		w.lock.Lock()
+		if w.dbCache == cache {
+			newCache := *cache
+			newCache.Relations = rel
+			w.dbCache = &newCache
+		}
+		w.lock.Unlock()
+		log.Printf("db worker: relationships: %d views, %d edges", len(views), len(rel.AllEdges()))
+	}
 	w.changed()
 }
 
@@ -94,7 +107,14 @@ func (w *Worker) Start() {
 						log.Printf("db worker: %d function signatures loaded", len(fns))
 					}
 				}
-				w.setSecondary(col, synonyms, functions)
+				var views []*ViewDef
+				if c := w.Cache(); c != nil {
+					if views, err = generator.GenerateViews(context.Background(), c.DefaultSchema()); err != nil {
+						log.Println("views:", err) // tables and foreign keys only
+						views = []*ViewDef{}
+					}
+				}
+				w.setSecondary(col, synonyms, functions, views)
 				log.Println("db worker: Update db cache secondary complete")
 			}
 		}

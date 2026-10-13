@@ -42,6 +42,7 @@ func (s *Server) handleTextDocumentCompletion(ctx context.Context, conn *jsonrpc
 
 	c := completer.NewCompleter(s.worker.Cache())
 	c.LowercaseIdentifiers = s.getConfig().LowercaseIdentifiers
+	c.HideMaybe = !s.getConfig().Relations.MaybeEnabled()
 	if s.dbConn != nil {
 		c.Driver = s.dbConn.Driver
 	} else {

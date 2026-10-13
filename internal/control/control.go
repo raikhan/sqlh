@@ -32,6 +32,8 @@ const (
 	MethodDatabases   = "sqlh/databases"
 	MethodUseDatabase = "sqlh/useDatabase"
 	MethodNotify      = "sqlh/notify"
+	MethodRelations   = "sqlh/relations"
+	MethodContext     = "sqlh/context"
 )
 
 // SchemaItem is a schema; Default marks the connection's current schema.
@@ -65,6 +67,71 @@ type TablesParams struct {
 
 type ColumnsParams struct {
 	Table string `json:"table"` // table, schema.table, or a TableItem.Insert
+}
+
+type RelationsParams struct {
+	Table string `json:"table"` // table, schema.table, or a TableItem.Insert
+}
+
+// RelationItem is one relationship of a table, seen from it.
+type RelationItem struct {
+	Table  string `json:"table"`  // the related table or view (database spelling)
+	Insert string `json:"insert"` // how to type it
+	Kind   string `json:"kind"`   // table | view | materialized view
+	// Edge: fk (declared foreign key), view (a view exposes a base table's
+	// relationship), maybe (guessed from column names), uses (view dependency).
+	Edge   string `json:"edge"`
+	Marker string `json:"marker"` // → this table references it, ← it references this table, ◇ view dependency
+	Out    bool   `json:"out"`
+	Maybe  bool   `json:"maybe,omitempty"`
+	// Cols: join columns as (this table's column, its column), as typed in SQL.
+	// Empty when the two can't be joined on columns (most view dependencies).
+	Cols      [][2]string `json:"cols,omitempty"`
+	Condition string      `json:"condition,omitempty"` // other.col = col [and …]
+	Note      string      `json:"note,omitempty"`      // via orders, maybe, 1:1, nullable, reads, …
+}
+
+// RelationsResult describes a table or view and its relationships.
+type RelationsResult struct {
+	Table     string         `json:"table"`
+	Schema    string         `json:"schema"`
+	Insert    string         `json:"insert"`
+	Kind      string         `json:"kind"`
+	Relations []RelationItem `json:"relations"`
+	// ViewsLoaded: view dependencies and lineage are included (they come with
+	// the server's background load).
+	ViewsLoaded bool   `json:"viewsLoaded"`
+	Definition  string `json:"definition,omitempty"` // a view's query
+	Note        string `json:"note,omitempty"`
+}
+
+// ContextParams locates a cursor: 1-based line and column (Helix
+// %{cursor_line}, %{cursor_column}).
+type ContextParams struct {
+	File string `json:"file"`
+	Line int    `json:"line"`
+	Col  int    `json:"col"`
+}
+
+// ScopeTable is a database table used by the statement at the cursor.
+type ScopeTable struct {
+	Name   string `json:"name"`
+	Schema string `json:"schema,omitempty"`
+	Alias  string `json:"alias,omitempty"`
+	Ref    string `json:"ref"` // how the statement refers to it: alias, else the name
+}
+
+// ContextResult describes the statement at a cursor for the table picker.
+type ContextResult struct {
+	InJoin    bool         `json:"inJoin"` // the cursor is where a JOIN's table goes
+	Tables    []ScopeTable `json:"tables"` // with InJoin: the tables before the cursor
+	Focus     string       `json:"focus,omitempty"`
+	NeedSpace bool         `json:"needSpace,omitempty"`
+	Indent    string       `json:"indent,omitempty"`
+	// settings
+	LowercaseKeywords bool   `json:"lowercaseKeywords"`
+	Insert            string `json:"insert"` // relations.insert: join | name
+	Maybe             bool   `json:"maybe"`  // relations.maybe
 }
 
 type SchemasParams struct {

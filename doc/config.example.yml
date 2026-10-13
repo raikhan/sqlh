@@ -7,6 +7,11 @@ lowercaseKeywords: true
 # Mixed-case names are left alone.
 lowercaseIdentifiers: true
 
+# Relationships between tables (table picker, join completion)
+relations:
+  insert: join   # after JOIN the table picker inserts "t alias ON …" (join) or the name (name)
+  maybe: true    # also offer relationships guessed from column names (customer_id → customer.id)
+
 # Query results ("Run → CSV" / "Export → CSV" code actions)
 results:
   # {workspace} = the editor's project root; also {home}, {conn}, "~"

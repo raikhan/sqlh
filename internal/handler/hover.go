@@ -254,7 +254,7 @@ func hoverContentFromIdent(ctx *hoverContext, identName string, dbCache *databas
 		// find table
 		cols, ok := dbCache.ColumnDescs(tableName)
 		if ok {
-			return tableHoverInfo(tableName, cols)
+			return tableHoverInfo(dbCache, tableName, cols)
 		}
 	}
 	if hoverTypeIs(ctx.types, hoverTypeSubQueryColumn) {
@@ -281,7 +281,7 @@ func hoverContentFromParentIdent(ctx *hoverContext, identName string, dbCache *d
 		}
 		columns, ok := dbCache.ColumnDescs(tableName)
 		if ok {
-			return tableHoverInfo(tableName, columns)
+			return tableHoverInfo(dbCache, tableName, columns)
 		}
 	case parentTypeSubQuery:
 		subQueryName := identName
@@ -301,7 +301,7 @@ func hoverContentFromChildIdent(ctx *hoverContext, identName string, dbCache *da
 	case parentTypeSchema:
 		columns, ok := dbCache.ColumnDescs(identName)
 		if ok {
-			return tableHoverInfo(identName, columns)
+			return tableHoverInfo(dbCache, identName, columns)
 		}
 	case parentTypeTable:
 		tableName := ctx.parent.Name
@@ -330,10 +330,10 @@ func columnHoverInfo(tableName, colName string, colDesc *database.ColumnDesc) *l
 	}
 }
 
-func tableHoverInfo(tableName string, cols []*database.ColumnDesc) *lsp.MarkupContent {
+func tableHoverInfo(dbCache *database.DBCache, tableName string, cols []*database.ColumnDesc) *lsp.MarkupContent {
 	return &lsp.MarkupContent{
 		Kind:  lsp.Markdown,
-		Value: database.TableDoc(tableName, cols),
+		Value: dbCache.TableDoc(tableName, cols),
 	}
 }
 

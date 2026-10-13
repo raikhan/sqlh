@@ -419,6 +419,12 @@ func (s *queryScope) collect(nodes []ast.Node) {
 			if ref == nil {
 				return
 			}
+			if p, ok := ref.(*ast.Parenthesis); ok && !isSubQueryList(p) {
+				// join group: FROM (a JOIN b ON …), as PostgreSQL prints view definitions
+				s.collectJoinGroup(p, isJoin)
+				i = j
+				continue
+			}
 			s.addRef(ref, isJoin)
 			if isJoin && len(s.joined) > 0 {
 				if k, on := nextNonWS(nodes, j); on != nil && isKeyword(on, "ON") {
@@ -441,6 +447,22 @@ func (s *queryScope) collect(nodes []ast.Node) {
 			s.collect(list.GetTokens())
 		}
 	}
+}
+
+// collectJoinGroup gathers the references of a parenthesised join, whose first
+// table follows no keyword: (a JOIN b ON …), ((a JOIN b …) JOIN c …).
+func (s *queryScope) collectJoinGroup(p *ast.Parenthesis, joined bool) {
+	nodes := innerNodes(p)
+	i, first := nextNonWS(nodes, -1)
+	if first == nil {
+		return
+	}
+	if inner, ok := first.(*ast.Parenthesis); ok && !isSubQueryList(inner) {
+		s.collectJoinGroup(inner, joined)
+	} else {
+		s.addRef(first, joined)
+	}
+	s.collect(nodes[i+1:])
 }
 
 func (s *queryScope) addRef(n ast.Node, joined bool) {

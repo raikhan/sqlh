@@ -155,6 +155,31 @@ func (s *Server) handleControl(ctx context.Context, conn *jsonrpc2.Conn, req *js
 			return nil, err
 		}
 		return catalog.Columns(src, p.Table, opt)
+	case control.MethodRelations:
+		var p control.RelationsParams
+		if err := unmarshal(req, &p); err != nil {
+			return nil, err
+		}
+		src, opt, err := s.catalog(false)
+		if err != nil {
+			return nil, err
+		}
+		return catalog.Relations(src, p.Table, opt, s.getConfig().Relations.MaybeEnabled())
+	case control.MethodContext:
+		var p control.ContextParams
+		if err := unmarshal(req, &p); err != nil {
+			return nil, err
+		}
+		_, text, err := s.documentText(p.File)
+		if err != nil {
+			return nil, err
+		}
+		res := catalog.Context(text, p.Line, p.Col)
+		cfg := s.getConfig()
+		res.LowercaseKeywords = cfg.LowercaseKeywords
+		res.Insert = cfg.Relations.InsertMode()
+		res.Maybe = cfg.Relations.MaybeEnabled()
+		return res, nil
 	case control.MethodDatabases:
 		repo, err := s.newDBRepository(ctx)
 		if err != nil {

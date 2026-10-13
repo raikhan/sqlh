@@ -258,7 +258,8 @@ func (c *Completer) joinCandidates(lastTable *parseutil.TableInfo,
 	targetTables, allTables []*parseutil.TableInfo,
 	joinOn, lowercaseKeywords bool) []lsp.CompletionItem {
 	var candidates []lsp.CompletionItem
-	if len(c.DBCache.ForeignKeys) == 0 {
+	joinKeys := c.DBCache.JoinKeys(!c.HideMaybe)
+	if len(joinKeys) == 0 {
 		return candidates
 	}
 
@@ -277,7 +278,7 @@ func (c *Completer) joinCandidates(lastTable *parseutil.TableInfo,
 	fkMap := make(map[string][][]*database.ForeignKey)
 	if lastTable == nil {
 		for t := range tMap {
-			for k, v := range c.DBCache.ForeignKeys[t] {
+			for k, v := range joinKeys[t] {
 				fkMap[k] = append(fkMap[k], v)
 			}
 		}
@@ -288,7 +289,7 @@ func (c *Completer) joinCandidates(lastTable *parseutil.TableInfo,
 			rTab = resolveTables(lastTable, c.DBCache)
 		}
 		for _, lt := range rTab {
-			for k, v := range c.DBCache.ForeignKeys[lt.Name] {
+			for k, v := range joinKeys[lt.Name] {
 				if _, ok := tMap[k]; ok {
 					fkMap[lt.Name] = append(fkMap[lt.Name], v)
 				}
@@ -312,12 +313,28 @@ func (c *Completer) joinCandidates(lastTable *parseutil.TableInfo,
 	for k, v := range fkMap {
 		for _, fks := range v {
 			for _, fk := range fks {
-				candidates = append(candidates, generateForeignKeyCandidate(k, tMap, aliases,
-					fk, joinOn, lowercaseKeywords))
+				item := generateForeignKeyCandidate(k, tMap, aliases, fk, joinOn, lowercaseKeywords)
+				if e := c.DBCache.Relations.EdgeOf(fk); e != nil {
+					describeJoinEdge(&item, e)
+				}
+				candidates = append(candidates, item)
 			}
 		}
 	}
 	return candidates
+}
+
+// describeJoinEdge labels a join snippet by where the condition comes from;
+// guesses sort after the others.
+func describeJoinEdge(item *lsp.CompletionItem, e *database.Edge) {
+	switch {
+	case e.Inferred:
+		item.Detail = "Join generator: maybe (guessed from column names)"
+		item.SortText = "00~~" // after the snippets of foreign keys ("00")
+	case e.Kind == database.EdgeViaView:
+		item.Detail = "Join generator: view column from " + e.Via
+		item.SortText = "00~"
+	}
 }
 
 // canonicalTable returns a copy of t whose Name uses the cached spelling.
@@ -444,13 +461,13 @@ func generateTableCandidates(tables []string, dbCache *database.DBCache) []lsp.C
 		candidate := lsp.CompletionItem{
 			Label:  tableName,
 			Kind:   lsp.ClassCompletion,
-			Detail: "table",
+			Detail: string(dbCache.Relations.Kind(tableName)),
 		}
 		cols, ok := dbCache.ColumnDescs(tableName)
 		if ok {
 			candidate.Documentation = &lsp.MarkupContent{
 				Kind:  lsp.Markdown,
-				Value: database.TableDoc(tableName, cols),
+				Value: dbCache.TableDoc(tableName, cols),
 			}
 		}
 		candidates = append(candidates, candidate)

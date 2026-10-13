@@ -53,10 +53,13 @@ func (u *DBCacheGenerator) GenerateDBCachePrimary(ctx context.Context) (*DBCache
 	if err != nil {
 		return nil, err
 	}
-	dbCache.ForeignKeys, err = u.genForeignKeysCache(ctx, dbCache.defaultSchema)
+	dbCache.foreignKeyList, err = u.repo.DescribeForeignKeysBySchema(ctx, dbCache.defaultSchema)
 	if err != nil {
 		return nil, err
 	}
+	dbCache.ForeignKeys = genForeignKeysMap(dbCache.foreignKeyList)
+	// views come with the background load
+	dbCache.Relations = dbCache.BuildRelations(nil)
 	// built-ins now; the database's functions come with the background load
 	dbCache.Functions = NewFunctionCatalog(u.repo.Driver(), nil)
 	return dbCache, nil
@@ -94,13 +97,22 @@ func (u *DBCacheGenerator) genColumnCacheAll(ctx context.Context) (map[string][]
 	return genColumnMap(columnDescs), nil
 }
 
-func (u *DBCacheGenerator) genForeignKeysCache(ctx context.Context, schemaName string) (map[string]map[string][]*ForeignKey, error) {
-	retVal := make(map[string]map[string][]*ForeignKey)
-	fk, err := u.repo.DescribeForeignKeysBySchema(ctx, schemaName)
-	if err != nil {
-		return nil, err
+// GenerateViews lists the views of a schema with their definitions; empty
+// when the database can't.
+func (u *DBCacheGenerator) GenerateViews(ctx context.Context, schemaName string) ([]*ViewDef, error) {
+	vd, ok := u.repo.(ViewDescriber)
+	if !ok {
+		return []*ViewDef{}, nil
 	}
+	views, err := vd.DescribeViews(ctx, schemaName)
+	if views == nil {
+		views = []*ViewDef{}
+	}
+	return views, err
+}
 
+func genForeignKeysMap(fk []*ForeignKey) map[string]map[string][]*ForeignKey {
+	retVal := make(map[string]map[string][]*ForeignKey)
 	for _, cur := range fk {
 		elem := (*cur)[0]
 		refs, ok := retVal[elem[0].Table]
@@ -117,7 +129,7 @@ func (u *DBCacheGenerator) genForeignKeysCache(ctx context.Context, schemaName s
 		refs[elem[0].Table] = append(refs[elem[0].Table], cur)
 		retVal[elem[1].Table] = refs
 	}
-	return retVal, nil
+	return retVal
 }
 
 func genColumnMap(columnDescs []*ColumnDesc) map[string][]*ColumnDesc {
@@ -135,6 +147,10 @@ type DBCache struct {
 	SchemaTables      map[string][]string
 	ColumnsWithParent map[string][]*ColumnDesc
 	ForeignKeys       map[string]map[string][]*ForeignKey
+	foreignKeyList    []*ForeignKey
+	// Relations: the default schema's relationship graph (foreign keys, views,
+	// guesses). Views are added by the background load.
+	Relations *RelGraph
 	// Synonyms: owner → names (Oracle; loaded in the background, nil until then
 	// or when the database has none).
 	Synonyms map[string][]string
@@ -213,4 +229,29 @@ func (dc *DBCache) Column(tableName, colName string) (*ColumnDesc, bool) {
 
 func columnDatabaseKey(dbName, tableName string) string {
 	return strings.ToUpper(dbName) + "\t" + strings.ToUpper(tableName)
+}
+
+// BuildRelations builds the default schema's relationship graph from the
+// cache; views nil: not loaded yet.
+func (dc *DBCache) BuildRelations(views []*ViewDef) *RelGraph {
+	schema := dc.defaultSchema
+	return BuildRelGraph(RelGraphInput{
+		Schema: schema,
+		Tables: dc.SchemaTables[strings.ToUpper(schema)],
+		Columns: func(t string) []*ColumnDesc {
+			cols, _ := dc.ColumnDatabase(schema, t)
+			return cols
+		},
+		ForeignKeys: dc.foreignKeyList,
+		Views:       views,
+	})
+}
+
+// JoinKeys maps table → related table → join conditions for join completion:
+// the relationship graph's (maybe: with guesses), else the foreign keys.
+func (dc *DBCache) JoinKeys(maybe bool) map[string]map[string][]*ForeignKey {
+	if dc.Relations != nil {
+		return dc.Relations.JoinKeys(maybe)
+	}
+	return dc.ForeignKeys
 }

@@ -213,6 +213,16 @@ func TestScope(t *testing.T) {
 			input:  "select | from a full outer join b on a.id = b.id",
 			tables: "a, b",
 		},
+		{
+			name:   "parenthesised join (PostgreSQL view definitions)",
+			input:  "select | from (orders o join customer c on ((c.id = o.customer_id)))",
+			tables: "orders o, customer c",
+		},
+		{
+			name:   "nested parenthesised joins",
+			input:  "select | from ((a join b on a.id = b.a_id) left join c on c.id = b.c_id) join d on true",
+			tables: "a, b, c, d",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

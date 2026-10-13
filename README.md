@@ -73,6 +73,21 @@ If the tables are connected with a foreign key sqlh can complete ```JOIN``` stat
 
 ![join_completion](imgs/sqlh-fk_joins.gif)
 
+Views join too: a view column taken from a table column inherits its foreign keys
+(`v_orders.customer_id` → `customer.id`, "view column from orders"), and a view exposing a
+table's primary key joins back to it. Relationships guessed from column names (`customer_id` →
+`customer.id` without a declared foreign key) are offered last, labelled "maybe"
+(`relations.maybe: false` to hide them).
+
+#### Relationships
+
+Hover and table completion show a table's or view's relationships: foreign keys both ways,
+those exposed through views, guesses, the tables a view reads and the views reading a table.
+From the CLI, `sqlh describe TABLE` / `sqlh relations TABLE`, and the table picker
+(`sqlh tables -p --file F --line L --col C`) lists the tables related to the statement at the
+cursor first and, after `JOIN`, inserts the whole join clause; Ctrl-R drills into a table's
+relationships and inserts the join chain. See [doc/cli.md](doc/cli.md#relationships).
+
 #### CodeAction
 
 ![code_actions](https://github.com/raikhan/sqlh.vim/blob/master/imgs/sqls_vim_demo.gif)
@@ -136,6 +151,11 @@ lowercaseKeywords: false
 # Underline unknown tables, aliases and columns, checked against the schema cache
 # (never the database). Default: true.
 diagnostics: true
+relations:
+  # After JOIN, the table picker inserts "table alias ON …" (join) or the name (name).
+  insert: join
+  # Offer relationships guessed from column names ("maybe"). Default: true.
+  maybe: true
 connections:
   - alias: dsn_mysql
     driver: mysql

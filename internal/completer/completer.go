@@ -76,6 +76,8 @@ type Completer struct {
 	DBCache              *database.DBCache
 	Driver               dialect.DatabaseDriver
 	LowercaseIdentifiers bool
+	// HideMaybe leaves out join conditions guessed from column names.
+	HideMaybe bool
 }
 
 func NewCompleter(dbCache *database.DBCache) *Completer {

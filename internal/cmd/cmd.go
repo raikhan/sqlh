@@ -103,7 +103,7 @@ func Commands() []*cli.Command {
 			Flags:  []cli.Flag{dirFlag, &cli.StringFlag{Name: "conn", Usage: "standalone: connection `ALIAS` (for a results dir using {conn})"}},
 			Action: latestCmd,
 		},
-	}, catalogCommands()...)
+	}, append(catalogCommands(), relationCommands()...)...)
 }
 
 // startDir is where workspace/server resolution starts.

@@ -242,8 +242,18 @@ func (db *PostgreSQLDBRepository) DescribeDatabaseTable(ctx context.Context) ([]
 		END,
 		c.column_default,
 		''
-	FROM
-		information_schema.columns c
+	FROM (
+		SELECT table_schema::text, table_name::text, column_name::text, data_type::text,
+		       is_nullable::text, column_default::text, ordinal_position::int
+		  FROM information_schema.columns
+		UNION ALL -- materialized views are not in information_schema
+		SELECT n.nspname::text, m.relname::text, a.attname::text, format_type(a.atttypid, a.atttypmod),
+		       CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END, NULL, a.attnum::int
+		  FROM pg_attribute a
+		  JOIN pg_class m ON m.oid = a.attrelid
+		  JOIN pg_namespace n ON n.oid = m.relnamespace
+		 WHERE m.relkind = 'm' AND a.attnum > 0 AND NOT a.attisdropped
+	) c
 	LEFT JOIN (
 		SELECT
 			ccu.table_schema as table_schema,
@@ -309,8 +319,18 @@ func (db *PostgreSQLDBRepository) DescribeDatabaseTableBySchema(ctx context.Cont
 		END,
 		c.column_default,
 		''
-	FROM
-		information_schema.columns c
+	FROM (
+		SELECT table_schema::text, table_name::text, column_name::text, data_type::text,
+		       is_nullable::text, column_default::text, ordinal_position::int
+		  FROM information_schema.columns
+		UNION ALL -- materialized views are not in information_schema
+		SELECT n.nspname::text, m.relname::text, a.attname::text, format_type(a.atttypid, a.atttypmod),
+		       CASE WHEN a.attnotnull THEN 'NO' ELSE 'YES' END, NULL, a.attnum::int
+		  FROM pg_attribute a
+		  JOIN pg_class m ON m.oid = a.attrelid
+		  JOIN pg_namespace n ON n.oid = m.relnamespace
+		 WHERE m.relkind = 'm' AND a.attnum > 0 AND NOT a.attisdropped
+	) c
 	LEFT JOIN (
 		SELECT
 			ccu.table_schema as table_schema,
@@ -363,30 +383,31 @@ func (db *PostgreSQLDBRepository) DescribeDatabaseTableBySchema(ctx context.Cont
 	return tableInfos, nil
 }
 
+// DescribeForeignKeysBySchema reads foreign keys between tables of the schema
+// from pg_constraint (information_schema matches constraints by name, which
+// PostgreSQL only makes unique per table). References to other schemas are
+// left out: schemas are boundaries.
 func (db *PostgreSQLDBRepository) DescribeForeignKeysBySchema(ctx context.Context, schemaName string) ([]*ForeignKey, error) {
 	rows, err := db.Conn.QueryContext(
 		ctx,
 		`
-	select kcu.CONSTRAINT_NAME,
-       kcu.TABLE_NAME,
-       kcu.COLUMN_NAME,
-       rel_kcu.TABLE_NAME,
-       rel_kcu.COLUMN_NAME
-	from INFORMATION_SCHEMA.TABLE_CONSTRAINTS tco
-			 join INFORMATION_SCHEMA.KEY_COLUMN_USAGE kcu
-				  on tco.CONSTRAINT_SCHEMA = kcu.CONSTRAINT_SCHEMA
-					  and tco.CONSTRAINT_NAME = kcu.CONSTRAINT_NAME
-			 join INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS rco
-				  on tco.CONSTRAINT_SCHEMA = rco.CONSTRAINT_SCHEMA
-					  and tco.CONSTRAINT_NAME = rco.CONSTRAINT_NAME
-			 join INFORMATION_SCHEMA.KEY_COLUMN_USAGE rel_kcu
-				  on rco.UNIQUE_CONSTRAINT_SCHEMA = rel_kcu.CONSTRAINT_SCHEMA
-					  and rco.UNIQUE_CONSTRAINT_NAME = rel_kcu.CONSTRAINT_NAME
-					  and kcu.ORDINAL_POSITION = rel_kcu.ORDINAL_POSITION
-	where tco.CONSTRAINT_TYPE = 'FOREIGN KEY'
-	  and tco.CONSTRAINT_SCHEMA = $1
-	order by kcu.CONSTRAINT_NAME,
-			 kcu.ORDINAL_POSITION
+	SELECT con.oid::text,
+	       cl.relname,
+	       a.attname,
+	       rcl.relname,
+	       ra.attname
+	  FROM pg_constraint con
+	  JOIN pg_class cl ON cl.oid = con.conrelid
+	  JOIN pg_namespace n ON n.oid = cl.relnamespace
+	  JOIN pg_class rcl ON rcl.oid = con.confrelid
+	  JOIN pg_namespace rn ON rn.oid = rcl.relnamespace
+	 CROSS JOIN LATERAL unnest(con.conkey, con.confkey) WITH ORDINALITY AS k(attnum, refattnum, ord)
+	  JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum
+	  JOIN pg_attribute ra ON ra.attrelid = con.confrelid AND ra.attnum = k.refattnum
+	 WHERE con.contype = 'f'
+	   AND n.nspname = $1
+	   AND rn.nspname = $1
+	 ORDER BY cl.relname, con.conname, con.oid, k.ord
 		`, schemaName)
 	if err != nil {
 		return nil, err
@@ -515,4 +536,63 @@ func pgDSNWithDB(dsn, db string) (string, error) {
 	}
 	// key=value: a repeated keyword takes the last value
 	return dsn + " dbname=" + quotePostgresParam(db), nil
+}
+
+// DescribeViews lists the schema's views and materialized views, their
+// definitions (pg_get_viewdef: columns qualified by table) and the relations of
+// the same schema they read (pg_depend through the view's rewrite rule).
+func (db *PostgreSQLDBRepository) DescribeViews(ctx context.Context, schemaName string) ([]*ViewDef, error) {
+	rows, err := db.Conn.QueryContext(ctx, `
+	SELECT c.relname, c.relkind = 'm', COALESCE(pg_get_viewdef(c.oid), '')
+	  FROM pg_class c
+	  JOIN pg_namespace n ON n.oid = c.relnamespace
+	 WHERE n.nspname = $1 AND c.relkind IN ('v', 'm')
+	 ORDER BY 1`, schemaName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var views []*ViewDef
+	byName := map[string]*ViewDef{}
+	for rows.Next() {
+		v := &ViewDef{Schema: schemaName, Uses: []string{}}
+		if err := rows.Scan(&v.Name, &v.Materialized, &v.Query); err != nil {
+			return nil, err
+		}
+		views = append(views, v)
+		byName[v.Name] = v
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(views) == 0 {
+		return views, nil
+	}
+	deps, err := db.Conn.QueryContext(ctx, `
+	SELECT DISTINCT v.relname, t.relname
+	  FROM pg_rewrite r
+	  JOIN pg_class v ON v.oid = r.ev_class
+	  JOIN pg_namespace vn ON vn.oid = v.relnamespace
+	  JOIN pg_depend d ON d.objid = r.oid
+	   AND d.classid = 'pg_rewrite'::regclass AND d.refclassid = 'pg_class'::regclass
+	  JOIN pg_class t ON t.oid = d.refobjid
+	  JOIN pg_namespace tn ON tn.oid = t.relnamespace
+	 WHERE vn.nspname = $1 AND tn.nspname = $1
+	   AND v.relkind IN ('v', 'm') AND t.relkind IN ('r', 'p', 'v', 'm', 'f')
+	   AND t.oid <> v.oid
+	 ORDER BY 1, 2`, schemaName)
+	if err != nil {
+		return nil, err
+	}
+	defer deps.Close()
+	for deps.Next() {
+		var view, table string
+		if err := deps.Scan(&view, &table); err != nil {
+			return nil, err
+		}
+		if v, ok := byName[view]; ok {
+			v.Uses = append(v.Uses, table)
+		}
+	}
+	return views, deps.Err()
 }

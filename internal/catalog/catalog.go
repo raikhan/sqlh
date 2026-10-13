@@ -168,3 +168,6 @@ func (s CacheSource) SchemaTables() map[string][]string {
 func (s CacheSource) Columns(schema, table string) ([]*database.ColumnDesc, bool) {
 	return s.C.ColumnDatabase(schema, table)
 }
+
+// Relations returns the cache's relationship graph.
+func (s CacheSource) Relations() (*database.RelGraph, error) { return s.C.Relations, nil }

@@ -12,7 +12,12 @@ type pickOpts struct {
 	prompt  string
 	header  string
 	multi   bool
-	preview string // fzf --preview command; {1} is the value field
+	preview string   // fzf --preview command; {1} is the value field
+	expect  []string // keys that also accept; pickKey reports which one
+	binds   []string // extra --bind specs
+	// display: the field shown and matched (default 2.., after the value);
+	// it may contain ANSI colours.
+	display string
 }
 
 // pick runs fzf over lines of "value\tdisplay" and returns the chosen values
@@ -21,14 +26,27 @@ type pickOpts struct {
 // from Helix's :insert-output as well as from a terminal. SQLH_FZF_ARGS adds
 // fzf arguments (e.g. --filter=x for scripted use).
 func pick(lines []string, o pickOpts) ([]string, error) {
+	_, vals, err := pickKey(lines, o)
+	return vals, err
+}
+
+// pickKey is pick, also returning the key that accepted ("" for Enter) when
+// o.expect is set.
+func pickKey(lines []string, o pickOpts) (string, []string, error) {
 	fzf, err := exec.LookPath("fzf")
 	if err != nil {
-		return nil, errors.New("fzf not found: install it, or use the list output (without -p)")
+		return "", nil, errors.New("fzf not found: install it, or use the list output (without -p)")
 	}
 	if len(lines) == 0 {
-		return nil, errors.New("nothing to pick from")
+		return "", nil, errors.New("nothing to pick from")
 	}
-	args := []string{"--height=80%", "--delimiter=\t", "--with-nth=2..", "--no-sort", "--reverse"}
+	display := o.display
+	if display == "" {
+		display = "2.."
+	}
+	// Ranked by match quality once a query is typed; the input order (e.g.
+	// related tables first) holds while it is empty.
+	args := []string{"--height=80%", "--delimiter=\t", "--with-nth=" + display, "--ansi", "--reverse"}
 	if o.prompt != "" {
 		args = append(args, "--prompt="+o.prompt+"> ")
 	}
@@ -39,7 +57,14 @@ func pick(lines []string, o pickOpts) ([]string, error) {
 		args = append(args, "--multi", "--bind=ctrl-a:select-all")
 	}
 	if o.preview != "" {
-		args = append(args, "--preview="+o.preview, "--preview-window=right,50%,wrap")
+		// wrapped preview lines: at word boundaries, indented instead of fzf's ↳
+		args = append(args, "--preview="+o.preview, "--preview-window=right,50%,wrap-word", "--preview-wrap-sign=    ")
+	}
+	if len(o.expect) > 0 {
+		args = append(args, "--expect="+strings.Join(o.expect, ","))
+	}
+	for _, b := range o.binds {
+		args = append(args, "--bind="+b)
 	}
 	extra := strings.Fields(os.Getenv("SQLH_FZF_ARGS"))
 	args = append(args, extra...)
@@ -62,17 +87,22 @@ func pick(lines []string, o pickOpts) ([]string, error) {
 	if err != nil {
 		var ee *exec.ExitError
 		if errors.As(err, &ee) && (ee.ExitCode() == 1 || ee.ExitCode() == 130) {
-			return nil, nil // no match / cancelled: insert nothing
+			return "", nil, nil // no match / cancelled: insert nothing
 		}
-		return nil, err
+		return "", nil, err
+	}
+	outLines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	key := ""
+	if len(o.expect) > 0 && len(outLines) > 0 && !scripted { // --filter prints no key line
+		key, outLines = outLines[0], outLines[1:]
 	}
 	var vals []string
-	for _, l := range strings.Split(strings.TrimRight(string(out), "\n"), "\n") {
+	for _, l := range outLines {
 		if l != "" {
 			vals = append(vals, strings.SplitN(l, "\t", 2)[0])
 		}
 	}
-	return vals, nil
+	return key, vals, nil
 }
 
 func kitty(seq string) {

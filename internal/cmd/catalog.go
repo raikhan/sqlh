@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 
 	"github.com/urfave/cli/v2"
 
 	"github.com/raikhan/sqlh/internal/catalog"
+	"github.com/raikhan/sqlh/internal/config"
 	"github.com/raikhan/sqlh/internal/control"
 	"github.com/raikhan/sqlh/internal/database"
 )
@@ -22,6 +24,10 @@ type catalogAPI interface {
 	tables(schema string, all bool) ([]control.TableItem, error)
 	columns(table string) ([]control.ColumnItem, error)
 	databases() ([]string, error)
+	relations(table string) (*control.RelationsResult, error)
+	context(file string, line, col int) (*control.ContextResult, error)
+	// notify shows a message in the editor's status line (standalone: stderr)
+	notify(msg string)
 	close()
 }
 
@@ -43,6 +49,22 @@ func (s serverCatalog) databases() (out []string, err error) {
 	err = call(s.cl, control.MethodDatabases, nil, &out)
 	return
 }
+func (s serverCatalog) relations(table string) (out *control.RelationsResult, err error) {
+	err = call(s.cl, control.MethodRelations, control.RelationsParams{Table: table}, &out)
+	return
+}
+func (s serverCatalog) context(file string, line, col int) (out *control.ContextResult, err error) {
+	abs, err := filepath.Abs(file)
+	if err != nil {
+		return nil, err
+	}
+	err = call(s.cl, control.MethodContext, control.ContextParams{File: abs, Line: line, Col: col}, &out)
+	return
+}
+func (s serverCatalog) notify(msg string) {
+	var ok string
+	_ = call(s.cl, control.MethodNotify, control.NotifyParams{Message: msg}, &ok)
+}
 func (s serverCatalog) close() { s.cl.Close() }
 
 // standaloneCatalog reads metadata through a repository on its own connection.
@@ -51,6 +73,7 @@ type standaloneCatalog struct {
 	repo database.DBRepository
 	src  *repoSource
 	opt  catalog.Options
+	cfg  *config.Config
 }
 
 func (s *standaloneCatalog) schemas(all bool) ([]control.SchemaItem, error) {
@@ -69,7 +92,22 @@ func (s *standaloneCatalog) columns(table string) ([]control.ColumnItem, error) 
 func (s *standaloneCatalog) databases() ([]string, error) {
 	return s.repo.Databases(context.Background())
 }
-func (s *standaloneCatalog) close() { s.conn.Close() }
+func (s *standaloneCatalog) relations(table string) (*control.RelationsResult, error) {
+	return catalog.Relations(s.src, table, s.opt, s.cfg.Relations.MaybeEnabled())
+}
+func (s *standaloneCatalog) context(file string, line, col int) (*control.ContextResult, error) {
+	b, err := os.ReadFile(file)
+	if err != nil {
+		return nil, err
+	}
+	res := catalog.Context(string(b), line, col)
+	res.LowercaseKeywords = s.cfg.LowercaseKeywords
+	res.Insert = s.cfg.Relations.InsertMode()
+	res.Maybe = s.cfg.Relations.MaybeEnabled()
+	return &res, nil
+}
+func (s *standaloneCatalog) notify(msg string) { fmt.Fprintln(os.Stderr, msg) }
+func (s *standaloneCatalog) close()            { s.conn.Close() }
 
 // repoSource implements catalog.Source with lazy, per-schema column loading.
 type repoSource struct {
@@ -79,6 +117,27 @@ type repoSource struct {
 	byTable map[string][]string
 	cols    map[string]map[string][]*database.ColumnDesc // UPPER schema → UPPER table
 	err     error
+	graph   *database.RelGraph
+}
+
+// Relations builds the default schema's relationship graph (as the server's
+// cache does, views included; this takes a few seconds on big schemas).
+func (r *repoSource) Relations() (*database.RelGraph, error) {
+	if r.graph != nil {
+		return r.graph, nil
+	}
+	ctx := context.Background()
+	gen := database.NewDBCacheUpdater(r.repo)
+	cache, err := gen.GenerateDBCachePrimary(ctx)
+	if err != nil {
+		return nil, err
+	}
+	views, err := gen.GenerateViews(ctx, cache.DefaultSchema())
+	if err != nil {
+		views = []*database.ViewDef{}
+	}
+	r.graph = cache.BuildRelations(views)
+	return r.graph, nil
 }
 
 func (r *repoSource) DefaultSchema() string             { return r.def }
@@ -139,7 +198,7 @@ func openStandaloneCatalog(c *cli.Context) (*standaloneCatalog, error) {
 		dbc.Close()
 		return nil, err
 	}
-	return &standaloneCatalog{conn: dbc, repo: repo, src: src,
+	return &standaloneCatalog{conn: dbc, repo: repo, src: src, cfg: cfg,
 		opt: catalog.Options{Driver: conn.Driver, Lower: cfg.LowercaseIdentifiers}}, nil
 }
 
@@ -190,12 +249,12 @@ func catalogCommands() []*cli.Command {
 	return []*cli.Command{
 		{
 			Name:      "tables",
-			Usage:     "list tables and views as you would type them (-p: pick one, columns preview)",
+			Usage:     "list tables and views as you would type them (-p: pick one; with --file/--line/--col related tables first, JOIN clauses after JOIN)",
 			ArgsUsage: " ",
-			Flags: catalogFlags(
+			Flags: catalogFlags(append([]cli.Flag{
 				&cli.StringFlag{Name: "schema", Aliases: []string{"s"}, Usage: "only `SCHEMA`"},
 				&cli.BoolFlag{Name: "all", Usage: "include system schemas"},
-			),
+			}, tablePickFlags()...)...),
 			Action: tablesCmd,
 		},
 		{
@@ -244,20 +303,22 @@ func tablesCmd(c *cli.Context) error {
 	case c.Bool("json"):
 		return printJSON(tables)
 	case c.Bool("pick"):
-		lines := make([]string, len(tables))
-		for i, t := range tables {
-			where := t.Schema
-			if t.Default {
-				where = "default schema"
+		st := &navState{Related: c.Bool("related"), Schema: c.String("schema")}
+		if f := c.String("file"); f != "" && c.Int("line") > 0 {
+			ctx, err := api.context(f, c.Int("line"), max(c.Int("col"), 1))
+			if err != nil {
+				return err
 			}
-			lines[i] = fmt.Sprintf("%s\t%-40s %s · %d cols", t.Insert, t.Insert, where, t.Columns)
+			st.Ctx = *ctx
+			if ctx.Focus != "" && !ctx.InJoin {
+				// on a table of the statement: start with its relationships
+				// (Ctrl-O: the full list); accepting copies the name, since
+				// inserting at the cursor would split the one under it
+				st.Path = []navItem{{Table: focusName(ctx)}}
+				st.Copy = true
+			}
 		}
-		vals, err := pick(lines, pickOpts{prompt: "table", header: "Enter: insert · Esc: cancel",
-			preview: self() + " columns --long" + passThrough(c) + " {1}"})
-		if err != nil {
-			return err
-		}
-		emit(vals, "\n")
+		return runTablePicker(c, api, st)
 	case c.Bool("long"):
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 		for _, t := range tables {
@@ -292,7 +353,7 @@ func columnsCmd(c *cli.Context) error {
 			lines[i] = fmt.Sprintf("%s\t%-40s %d cols", t.Insert, t.Insert, t.Columns)
 		}
 		vals, err := pick(lines, pickOpts{prompt: "table", header: "pick a table, then its columns",
-			preview: self() + " columns --long" + passThrough(c) + " {1}"})
+			preview: self() + " describe" + passThrough(c) + " {1}"})
 		if err != nil || len(vals) == 0 {
 			return err
 		}
@@ -443,4 +504,14 @@ func dbCmd(c *cli.Context) error {
 	}
 	fmt.Fprintln(os.Stderr, msg)
 	return nil
+}
+
+// focusName is the focused table as the statement names it (schema.table).
+func focusName(ctx *control.ContextResult) string {
+	for _, t := range ctx.Tables {
+		if strings.EqualFold(t.Name, ctx.Focus) && t.Schema != "" {
+			return t.Schema + "." + t.Name
+		}
+	}
+	return ctx.Focus
 }

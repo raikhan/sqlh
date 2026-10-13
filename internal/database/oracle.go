@@ -328,6 +328,7 @@ func (db *OracleDBRepository) DescribeForeignKeysBySchema(ctx context.Context, s
 		AND b.POSITION = a.POSITION
 	WHERE c.CONSTRAINT_TYPE = 'R'
 	  AND a.OWNER = :1
+	  AND c.R_OWNER = c.OWNER -- schemas are boundaries: no cross-schema joins
 	ORDER BY a.CONSTRAINT_NAME, a.POSITION
 		`, schemaName)
 	if err != nil {
@@ -343,4 +344,65 @@ func (db *OracleDBRepository) Exec(ctx context.Context, query string) (sql.Resul
 
 func (db *OracleDBRepository) Query(ctx context.Context, query string) (*sql.Rows, error) {
 	return db.Conn.QueryContext(ctx, query)
+}
+
+// DescribeViews lists the schema's views and materialized views with their
+// query text (LONG columns, fetched whole) and the objects of the same schema
+// they read (ALL_DEPENDENCIES).
+func (db *OracleDBRepository) DescribeViews(ctx context.Context, schemaName string) ([]*ViewDef, error) {
+	var views []*ViewDef
+	byName := map[string]*ViewDef{}
+	add := func(query string, materialized bool) error {
+		rows, err := db.Conn.QueryContext(ctx, query, schemaName)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var name string
+			var text sql.NullString
+			if err := rows.Scan(&name, &text); err != nil {
+				return err
+			}
+			if _, dup := byName[name]; dup {
+				continue
+			}
+			v := &ViewDef{Schema: schemaName, Name: name, Materialized: materialized, Query: text.String, Uses: []string{}}
+			views = append(views, v)
+			byName[name] = v
+		}
+		return rows.Err()
+	}
+	if err := add(`SELECT VIEW_NAME, TEXT FROM ALL_VIEWS WHERE OWNER = :1`, false); err != nil {
+		return nil, err
+	}
+	if err := add(`SELECT MVIEW_NAME, QUERY FROM ALL_MVIEWS WHERE OWNER = :1`, true); err != nil {
+		log.Println("materialized views:", err)
+	}
+	if len(views) == 0 {
+		return views, nil
+	}
+	rows, err := db.Conn.QueryContext(ctx, `
+SELECT DISTINCT NAME, REFERENCED_NAME
+  FROM ALL_DEPENDENCIES
+ WHERE OWNER = :1
+   AND TYPE IN ('VIEW', 'MATERIALIZED VIEW')
+   AND REFERENCED_OWNER = OWNER
+   AND REFERENCED_TYPE IN ('TABLE', 'VIEW', 'MATERIALIZED VIEW')
+   AND REFERENCED_NAME <> NAME
+ ORDER BY 1, 2`, schemaName)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var view, table string
+		if err := rows.Scan(&view, &table); err != nil {
+			return nil, err
+		}
+		if v, ok := byName[view]; ok {
+			v.Uses = append(v.Uses, table)
+		}
+	}
+	return views, rows.Err()
 }

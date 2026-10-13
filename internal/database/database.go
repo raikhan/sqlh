@@ -231,3 +231,98 @@ func parseForeignKeys(rows *sql.Rows, schemaName string) ([]*ForeignKey, error) 
 	}
 	return retVal, nil
 }
+
+// ViewDef is a view or materialized view of a schema.
+type ViewDef struct {
+	Schema       string
+	Name         string
+	Materialized bool
+	// Query is the view's SELECT ("" when unknown).
+	Query string
+	// Uses: the tables and views of the same schema the view reads directly,
+	// from the database's dependency catalog. Nil when the database has none
+	// (then they are taken from Query).
+	Uses []string
+}
+
+// ViewDescriber is implemented by repositories that can list a schema's views
+// with their definitions and dependencies.
+type ViewDescriber interface {
+	DescribeViews(ctx context.Context, schemaName string) ([]*ViewDef, error)
+}
+
+// IsPrimaryKey reports whether a ColumnDesc.Key marks a primary key column
+// (YES: PostgreSQL, Oracle, SQLite; PRI: MySQL).
+func IsPrimaryKey(key string) bool {
+	k := strings.ToUpper(key)
+	return k == "YES" || k == "PRI" || k == "P"
+}
+
+// maxDocRelations caps the relationships listed in a table's documentation.
+const maxDocRelations = 12
+
+// TableDoc documents a table or view: kind, columns and, when known, its
+// relationships (hover, completion).
+func (dc *DBCache) TableDoc(tableName string, cols []*ColumnDesc) string {
+	var g *RelGraph
+	if dc != nil {
+		g = dc.Relations
+	}
+	kind := g.Kind(tableName)
+	doc := TableDoc(tableName, cols)
+	if kind != RelTable {
+		doc = strings.Replace(doc, "` table", "` "+string(kind), 1)
+	}
+	if g == nil {
+		return doc
+	}
+	var joins, reads, usedBy []string
+	var rows []string
+	code := func(s string) string { return "`" + s + "`" } // highlighted like the title
+	for _, r := range g.Related(tableName, true) {
+		switch {
+		case r.Edge.Kind == EdgeUses && r.Out:
+			reads = append(reads, r.Other)
+		case r.Edge.Kind == EdgeUses:
+			usedBy = append(usedBy, r.Other)
+		default:
+			if len(rows) < maxDocRelations {
+				row := r.Marker() + " " + r.ConditionWith(code)
+				if n := r.Note(); n != "" {
+					row += "  (" + n + ")"
+				}
+				rows = append(rows, row)
+			}
+			joins = append(joins, r.Other)
+		}
+	}
+	buf := new(bytes.Buffer)
+	buf.WriteString(doc)
+	if len(rows) > 0 {
+		fmt.Fprintln(buf)
+		fmt.Fprintln(buf, "Relationships")
+		fmt.Fprintln(buf)
+		if n := len(joins) - len(rows); n > 0 {
+			rows = append(rows, fmt.Sprintf("… %d more (sqlh describe %s)", n, tableName))
+		}
+		// one per line: markdown hard breaks (two trailing spaces)
+		fmt.Fprintln(buf, strings.Join(rows, "  \n"))
+	}
+	if len(reads) > 0 {
+		fmt.Fprintln(buf)
+		fmt.Fprintln(buf, "Reads: "+joinCapped(reads, maxDocRelations))
+	}
+	if len(usedBy) > 0 {
+		fmt.Fprintln(buf)
+		fmt.Fprintln(buf, "Used by views: "+joinCapped(usedBy, maxDocRelations))
+	}
+	return buf.String()
+}
+
+func joinCapped(names []string, n int) string {
+	if len(names) <= n {
+		return strings.Join(names, ", ")
+	}
+	return strings.Join(names[:n], ", ") + fmt.Sprintf(", … %d more", len(names)-n)
+}
+

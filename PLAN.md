@@ -386,6 +386,61 @@ words*), and both failed on CTE columns. A wider probe found more subquery bugs.
 - [x] Fix: an indented first statement stayed indented — `restoreGaps` copied the document's
       leading whitespace verbatim; now only its newlines (like the gaps between statements).
 
+### Phase 7 — relationships between tables (DBeaver-like explorer, in fzf)
+
+Decided: no separate TUI; the table picker and `describe` cover it. Schemas are boundaries
+(no cross-schema relationships). A wrong connection is worse than none: guesses are labelled
+"maybe" and strict.
+
+- [x] Relationship graph of the default schema (`internal/database/relgraph.go`,
+      `DBCache.Relations`): declared FKs; view lineage (a view column that is a plain column
+      reference inherits that column's FKs; a view exposing a table's PK joins back to it;
+      views on views resolved down to tables; `UNION` views get none); guesses (`maybe`):
+      a column named `<table>_id`/`<table>id` for a single-column PK `id`, or the PK's own
+      name when it starts with the table name (`customer.customer_id`), only without a
+      declared FK, exactly one candidate table, same type family; view dependencies (`uses`).
+      View-derived edges are listed for the view only (`ViewOnly`): with them on the table side,
+      CADE's `CAPRODSYNONYM` listed ~130 views exposing `CAPRODUCT.PROD_ID` (14k edges).
+- [x] Views: `ViewDescriber` — PG `pg_get_viewdef` + `pg_depend` via `pg_rewrite`, Oracle
+      `ALL_VIEWS.TEXT`/`ALL_MVIEWS.QUERY` (LONG, fetched whole; 656 CADE views in 0.25 s) +
+      `ALL_DEPENDENCIES`, SQLite `sqlite_master.sql` (dependencies parsed). Loaded with the
+      background cache; graph rebuilt then (CADE: parse 1.2 s — the sqls parser —, 16.9k edges;
+      582/595 non-UNION views with lineage, 5062/6841 columns).
+- [x] FK queries: PG from `pg_constraint` (information_schema matched constraints by name,
+      unique only per table), same schema only; Oracle `R_OWNER = OWNER`; SQLite
+      `REFERENCES t` without columns (NULL `to`, used to fail the scan) → the parent's PK.
+      PG materialized view columns (not in information_schema) from `pg_attribute`.
+- [x] Scope: parenthesised joins `FROM (a JOIN b ON …)` (how PG prints view definitions)
+      were invisible to completion and lineage; `parseutil.ExtractQueryLineage`.
+- [x] LSP: join completion from the graph (view edges "view column from X", guesses "maybe",
+      sorted after FKs; `relations.maybe: false` hides them; a self-referencing FK was offered
+      twice), table/view kind in completion detail and hover, hover lists relationships,
+      the tables a view reads and the views reading a table.
+- [x] CLI: `describe TABLE` (picker preview), `relations TABLE`; control methods
+      `sqlh/relations`, `sqlh/context` (statement at a cursor: after JOIN?, tables before it,
+      table under the cursor, indentation). Table picker `tables -p --file --line --col`:
+      related tables first; after JOIN Enter inserts `t alias ON …` (`relations.insert`,
+      `--insert`; Ctrl-T the other); Ctrl-R drills into a table's relationships (state file
+      updated by the hidden `_nav` through fzf `transform`), accepting inserts the join chain;
+      Ctrl-O back. Standalone works too (builds the graph per call: slower).
+- [x] Helix `space i t` passes `--file/--line/--col` (`%{cursor_column}`).
+- Verified: unit tests, live PG (test schema with views/matview/UNION), Oracle CADE, SQLite;
+  real fzf driven through a pty (drill, back, Ctrl-T, Esc).
+- [x] Picker cleanup (feedback): the list showed `--with-nth=2..` of 3-field lines (name +
+      marker + condition, truncated) → names only (`--with-nth=3`, only names matched), the
+      join and the hover-style description in the preview (`_nav preview`); other tables
+      dimmed; a table listed twice shows the anchor's columns. Preview wrapped with fzf's `↳`
+      → `wrap-word` + indented wrap sign. Cursor on a statement's table → starts with its
+      relationships, and accepting copies the name to the clipboard (pbcopy/wl-copy/xclip/
+      xsel) with a status-line note instead of inserting into the name under the cursor. All pickers dropped `--no-sort` (typing ranks by match quality; the
+      input order holds while the query is empty).
+- [x] Relationship lines `→ other.col = col  notes` (related table first, once) in hover,
+      `describe` and the preview; hover marks the table as inline code (coloured like the
+      title; markdown hard breaks instead of an aligned code block), the preview in cyan
+      with dimmed notes.
+- [ ] Lineage for `UNION` views when every branch takes a column from the same table column.
+- [ ] Views in the LSP beyond this: go-to-definition of a view (its query), diagnostics.
+
 ### Phase 5 — later / optional
 
 - [ ] `EXPLAIN` to buffer
@@ -422,6 +477,10 @@ words*), and both failed on CTE columns. A wider probe found more subquery bugs.
 - **2026-10-13** Phase 6: scope rewrite (CTEs, derived tables, UNION branches, correlated
   subqueries), function completion + signature help from curated built-ins and the database.
 
+- **2026-10-13** Phase 7: relationship graph (FKs, view lineage, "maybe" guesses, view
+  dependencies), `describe`/`relations`, cursor-aware table picker with JOIN clauses and
+  drill-down, join completion and hover for views.
+
 ## 6. Environment notes
 
 - Helix: `[language-server.sqlh] command = "sqlh"`, `args = ["-log", "/tmp/sqlh.log"]`
@@ -437,3 +496,6 @@ words*), and both failed on CTE columns. A wider probe found more subquery bugs.
 - Protocol test client: `/tmp/sqls-build/lspc.py` (+ `t_*.py` scenario scripts;
   `t_fmtsafety2.py` = formatter battery); Oracle
   repo probe: `scratch/oradbg/` (reads creds from env `H S U P`)
+- Relationships: `CFG=<config> go run ./scratch/relg ALIAS [TABLE…]` prints the graph
+  (`MAYBE=1`: all guesses); PG test schema with views: `scratch/relations_pg.sql`;
+  scenario scripts `/tmp/sqls-build/t_rel*.py` (`t_rel_pty.py` drives real fzf in a pty)

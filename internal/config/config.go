@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/raikhan/sqlh/internal/database"
 	"gopkg.in/yaml.v2"
@@ -31,7 +32,30 @@ type Config struct {
 	// Diagnostics: underline unknown tables, aliases and columns (checked
 	// against the schema cache, never the database). Default: true.
 	Diagnostics *bool `json:"diagnostics" yaml:"diagnostics"`
+	// Relations: the table picker and join completion.
+	Relations RelationsConfig `json:"relations" yaml:"relations"`
 }
+
+// RelationsConfig controls how relationships between tables are used.
+type RelationsConfig struct {
+	// Insert: what the table picker inserts for a related table after JOIN:
+	// "join" (table, alias and ON condition; the default) or "name".
+	Insert string `json:"insert" yaml:"insert"`
+	// Maybe: also offer relationships guessed from column names (customer_id →
+	// customer.id, when no foreign key is declared). Default: true.
+	Maybe *bool `json:"maybe" yaml:"maybe"`
+}
+
+// InsertMode returns "join" or "name".
+func (r RelationsConfig) InsertMode() string {
+	if strings.EqualFold(r.Insert, "name") {
+		return "name"
+	}
+	return "join"
+}
+
+// MaybeEnabled reports whether guessed relationships are shown (the default).
+func (r RelationsConfig) MaybeEnabled() bool { return r.Maybe == nil || *r.Maybe }
 
 // DiagnosticsEnabled reports whether diagnostics are on (the default).
 func (c *Config) DiagnosticsEnabled() bool { return c.Diagnostics == nil || *c.Diagnostics }
