@@ -117,6 +117,9 @@ type Tokenizer struct {
 	// The scanner has one rune of lookahead, so the '@' is already consumed
 	// and the next token is that operator.
 	pendingAt bool
+
+	// afterPeriod: the previous token was '.', so a word now is a member name.
+	afterPeriod bool
 }
 
 func NewTokenizer(src io.Reader, dialect dialect.Dialect) *Tokenizer {
@@ -156,6 +159,13 @@ func (t *Tokenizer) NextToken() (*Token, error) {
 		return &Token{Kind: ILLEGAL, Value: "", From: pos, To: t.Pos()}, fmt.Errorf("tokenize failed: %w", err)
 	}
 
+	// A word glued to a '.' is a qualifier or member name (a.module,
+	// user.table, x.date), never a keyword.
+	if w, ok := str.(*SQLWord); ok && tok == SQLKeyword && w.QuoteStyle == 0 &&
+		(t.afterPeriod || t.Scanner.Peek() == '.') {
+		w.Kind = dialect.Unmatched
+	}
+	t.afterPeriod = tok == Period
 	return &Token{Kind: tok, Value: str, From: pos, To: t.Pos()}, nil
 }
 

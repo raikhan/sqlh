@@ -36,6 +36,12 @@ func TestFormatVerifiedFormats(t *testing.T) {
 		"json operators":     "select sds.raw_data->'language' as language, d->'a'->>'b' from t sds where d #>> '{a,b}' is not null;\n",
 		"pg operators":       "select a from t where tags @> '{\"x\":1}' and j ? 'k' and j ?| array['a'] and a || b = 'ab' and n !~* '^x';\n",
 		"sqlite placeholder": "insert into t (a, b) values (?, ?);\n",
+		"limit offset":       "select a from t limit 10 offset 5;\n", // was "10offset"
+		"numbers":            "select 1.5e10, -1, .5, 10 % 3, 2 * -3, 1 x from t;\n",
+		"midedit comma":      "select a, from t;\n",
+		"druid __time":       "select time_floor(__time, 'P1D') as \"d\" from t;\n",
+		"xml methods":        "select xmlagg(xmlelement(e, a).extract('//text()') order by b).getclobval() from t;\n",
+		"flyway placeholder": "alter table x add constraint f foreign key (a) references $<s>.y(p) on delete cascade;\n",
 	}
 	for name, src := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -89,13 +95,10 @@ func TestFormatVerifiedSkips(t *testing.T) {
 		"pg dollar":           "do $$ begin perform 1; end $$;",
 		"dropped comment":     "select a, -- trailing\n  b from t;",
 		"quoted ident space":  `select "with space" from t;`,
-		"trailing comma":      "select a, from t;",
 		"open paren":          "select * from t where (a = 1;",
 		"unterminated string": "select 'abc from t;\n",
 		// the raw formatter corrupts these; verification must catch it
-		"merges values":      "select -1, .5 from t;",                           // -> "-1.5"
-		"glues limit offset": "select a from t limit 10 offset 5;",              // -> "10offset"
-		"glues prior":        "select a from emp connect by prior empno = mgr;", // -> "priorempno"
+		"glues prior": "select a from emp connect by prior empno = mgr;", // -> "priorempno"
 	}
 	for name, src := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -197,6 +200,57 @@ func TestFormatOperatorSpacing(t *testing.T) {
 		}
 		if !strings.Contains(out, want) {
 			t.Errorf("%q: want %q in\n%s", src, want, out)
+		}
+	}
+}
+
+// Layout details from real queries (scratch/request_104429_…sql).
+func TestFormatLayout(t *testing.T) {
+	for _, c := range []struct{ src, want string }{
+		// keyword used as a column/table name after a '.'
+		{"select a.module, a.date, t.level from t a where a.module = 'P';", "a.module = 'P'"},
+		{"select a.date from t a;", "a.date"},
+		{"select * from user.tbl;", "user.tbl"},
+		// window specs: one clause inline, several one per line
+		{"select count(x) over (partition by g) from t;", "count(x) over (partition by g)"},
+		{"select row_number() over (partition by g order by d, e) rn from t;",
+			"over (\n    partition by g\n    order by d, e\n  ) rn"},
+		{"select sum(x) over (order by d rows between unbounded preceding and current row) from t;",
+			"over (\n    order by d\n    rows between unbounded preceding and current row\n  )"},
+		{"select listagg(n, ',') within group (order by n, m) from t;", "within group (order by n, m)"},
+		{"select rank() over (partition by upper(trim(a)), b order by nvl(c, 0) desc) from t;",
+			"partition by upper(trim(a)), b\n    order by nvl(c, 0) desc\n"},
+		// the query after a closing paren starts a new line
+		{"with a as (select 1 x from dual) select x from a;", "\n)\nselect\n"},
+		{"insert into t (a, b) select a, b from s;", "(\n  a,\n  b\n)\nselect\n"},
+	} {
+		out, err := verified(t, c.src)
+		if err != nil {
+			t.Errorf("%q: %v", c.src, err)
+			continue
+		}
+		if !strings.Contains(out, c.want) {
+			t.Errorf("%q: want %q in\n%s", c.src, c.want, out)
+		}
+	}
+	// a comment inside a window spec keeps the default layout, still verified
+	src := "select row_number() over (partition by g -- group\n order by d) from t;\n"
+	if _, err := verified(t, src); err != nil {
+		var se *SkipError
+		if !errors.As(err, &se) {
+			t.Fatalf("%v", err)
+		}
+	}
+}
+
+func TestFormatTrailingCommaSpacing(t *testing.T) {
+	for src, want := range map[string]string{
+		"select -1, .5 from t;": "-1, .5",
+		"select a, from t;":     "  a,\nfrom",
+	} {
+		out, err := verified(t, src)
+		if err != nil || !strings.Contains(out, want) {
+			t.Errorf("%q: want %q, got %q (%v)", src, want, out, err)
 		}
 	}
 }

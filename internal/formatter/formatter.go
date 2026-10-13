@@ -6,6 +6,7 @@ import (
 
 	"github.com/raikhan/sqlh/ast"
 	"github.com/raikhan/sqlh/ast/astutil"
+	"github.com/raikhan/sqlh/dialect"
 	"github.com/raikhan/sqlh/internal/config"
 	"github.com/raikhan/sqlh/internal/lsp"
 	"github.com/raikhan/sqlh/parser"
@@ -53,7 +54,8 @@ type formatEnvironment struct {
 	reader      *astutil.NodeReader
 	indentLevel int
 	options     lsp.FormattingOptions
-	lastKeyword string // Track last processed keyword
+	lastKeyword string   // Track last processed keyword
+	prev        ast.Node // previous sibling of the node being formatted
 }
 
 func (e *formatEnvironment) indentLevelReset() {
@@ -226,6 +228,13 @@ func formatItem(node ast.Node, env *formatEnvironment) ast.Node {
 		},
 	}
 	if linebreakBeforeMatcher.IsMatch(node) {
+		results = unshift(results, env.genIndent()...)
+		results = unshift(results, linebreakNode)
+	}
+
+	// The query after a closing paren starts a new line:
+	// "with a as (…)\nselect", "insert into t (a, b)\nselect".
+	if isKeyword(node, "SELECT") && endsWithRParen(env.prev) {
 		results = unshift(results, env.genIndent()...)
 		results = unshift(results, linebreakNode)
 	}
@@ -453,6 +462,9 @@ func formatComparison(node *ast.Comparison, env *formatEnvironment) ast.Node {
 }
 
 func formatParenthesis(node *ast.Parenthesis, env *formatEnvironment) ast.Node {
+	if w := formatWindowSpec(node, env); w != nil {
+		return w
+	}
 	results := []ast.Node{}
 	results = append(results, lparenNode)
 
@@ -546,10 +558,20 @@ func formatFunctionLiteral(node *ast.FunctionLiteral, env *formatEnvironment) as
 
 	// Default: format recursively
 	results := []ast.Node{}
-	for _, tok := range node.Toks {
+	for i, tok := range node.Toks {
 		results = append(results, Eval(tok, env))
+		// over(…) parsed as a call: write it as "over (…)"
+		if i == 0 && len(node.Toks) == 2 && isWindowKeyword(tok) {
+			results = append(results, whitespaceNode)
+		}
 	}
 	return &ast.ItemWith{Toks: results}
+}
+
+// isWindowKeyword: the keyword before a window spec, OVER (…) or
+// WITHIN GROUP (…).
+func isWindowKeyword(n ast.Node) bool {
+	return isKeyword(n, "OVER") || isKeyword(n, "GROUP")
 }
 
 func formatIdentifierList(identifierList *ast.IdentifierList, env *formatEnvironment) ast.Node {
@@ -562,15 +584,31 @@ func formatIdentifierList(identifierList *ast.IdentifierList, env *formatEnviron
 			results = append(results, env.genIndent()...)
 		}
 	}
+	// A trailing comma: the parser could not read the next item ("2, -1",
+	// or mid-edit "a, "). Keep it; the item follows as a sibling.
+	commas := 0
+	for _, t := range identifierList.GetTokens() {
+		if item, ok := t.(*ast.Item); ok && item.GetToken().Kind == token.Comma {
+			commas++
+		}
+	}
+	if len(idents) > 0 && commas >= len(idents) {
+		results = append(results, commaNode)
+	}
 	return &ast.ItemWith{Toks: results}
 }
 
 func formatTokenList(list ast.TokenList, env *formatEnvironment) ast.Node {
 	results := []ast.Node{}
 	reader := astutil.NewNodeReader(list)
+	var prev ast.Node
 	for reader.NextNode(true) {
 		env.reader = reader
+		env.prev = prev
 		formatted := Eval(reader.CurNode, env)
+		if !isWhitespace(reader.CurNode) {
+			prev = reader.CurNode
+		}
 		results = append(results, formatted)
 
 		// Add whitespace between adjacent tokens when needed
@@ -601,6 +639,29 @@ func shouldAddSpaceAfter(curNode ast.Node, reader *astutil.NodeReader, formatted
 	_, nextNode := reader.PeekNode(true)
 	if nextNode == nil {
 		return false
+	}
+
+	// "…)" + SELECT: the SELECT breaks the line itself
+	if isKeyword(nextNode, "SELECT") && endsWithRParen(curNode) {
+		return false
+	}
+
+	// A list ending in a comma the parser could not continue ("-1, .5")
+	if _, ok := curNode.(*ast.IdentifierList); ok && endsWithComma(formatted) {
+		item, ok := nextNode.(*ast.Item)
+		if !ok {
+			return true
+		}
+		switch item.GetToken().Kind {
+		case token.Comma, token.RParen, token.Semicolon:
+			return false
+		}
+		for _, kw := range []string{"FROM", "JOIN", "WHERE", "HAVING", "LIMIT", "UNION", "VALUES", "SET", "EXCEPT", "END", "ON", "AND", "OR", "WHEN", "ELSE"} {
+			if isKeyword(item, kw) {
+				return false
+			}
+		}
+		return true
 	}
 
 	// Don't add space before MultiKeyword (e.g., "GROUP BY") - always
@@ -691,7 +752,17 @@ func shouldAddSpaceAfter(curNode ast.Node, reader *astutil.NodeReader, formatted
 			}
 		}
 
-		// Only process SQL keywords
+		// Literals: 1 x, 'a' b (an alias or keyword after a literal)
+		if curTok.Kind == token.Number || curTok.Kind == token.SingleQuotedString ||
+			curTok.Kind == token.NationalStringLiteral {
+			switch next := nextNode.(type) {
+			case *ast.Identifier, *ast.MemberIdentifier, *ast.FunctionLiteral, *ast.Aliased:
+				return true
+			case *ast.Item:
+				return next.GetToken().Kind == token.SQLKeyword
+			}
+			return false
+		}
 		if curTok.Kind != token.SQLKeyword {
 			return false
 		}
@@ -704,9 +775,10 @@ func shouldAddSpaceAfter(curNode ast.Node, reader *astutil.NodeReader, formatted
 			}
 		}
 
-		// Don't add space before Parenthesis (e.g., VALUES(...))
+		// Don't add space before Parenthesis (e.g., VALUES(...)), except
+		// for window specs: over (…), within group (…)
 		if _, ok := nextNode.(*ast.Parenthesis); ok {
-			return false
+			return isWindowKeyword(curNode)
 		}
 
 		// Don't add space before punctuation (already checked above)
@@ -749,9 +821,11 @@ func shouldAddSpaceAfter(curNode ast.Node, reader *astutil.NodeReader, formatted
 		}
 	}
 
-	// Add space after FunctionLiteral if next is Item (keyword)
+	// Add space after FunctionLiteral if next is Item (keyword) or another
+	// call: count(x) over(…)
 	if _, ok := curNode.(*ast.FunctionLiteral); ok {
-		if _, ok := nextNode.(*ast.Item); ok {
+		switch nextNode.(type) {
+		case *ast.Item, *ast.FunctionLiteral:
 			return true
 		}
 	}
@@ -842,4 +916,186 @@ func operatorSpacing(n ast.Node) (spaced, isOperator bool) {
 		return true, true // placeholder before , or ) is handled as punctuation)
 	}
 	return false, false
+}
+
+// isKeyword reports whether n is the keyword kw.
+func isKeyword(n ast.Node, kw string) bool {
+	item, ok := n.(*ast.Item)
+	if !ok {
+		return false
+	}
+	tok := item.GetToken()
+	if tok.Kind != token.SQLKeyword {
+		return false
+	}
+	w, ok := tok.Value.(*token.SQLWord)
+	return ok && w.Kind != dialect.Unmatched && w.Keyword == kw
+}
+
+func isWhitespace(n ast.Node) bool {
+	item, ok := n.(*ast.Item)
+	return ok && item.GetToken().Kind == token.Whitespace
+}
+
+// endsWithRParen reports whether the last token of n is ')'.
+func endsWithRParen(n ast.Node) bool {
+	leaves := flattenLeaves(n)
+	for i := len(leaves) - 1; i >= 0; i-- {
+		if isWhitespace(leaves[i]) {
+			continue
+		}
+		item, ok := leaves[i].(*ast.Item)
+		return ok && item.GetToken().Kind == token.RParen
+	}
+	return false
+}
+
+// flattenLeaves returns the tokens of n in order. Only nodes that render as
+// the plain concatenation of their children are descended into.
+func flattenLeaves(n ast.Node) []ast.Node {
+	var out []ast.Node
+	var walk func(ast.Node)
+	walk = func(n ast.Node) {
+		switch n := n.(type) {
+		case nil:
+		case *ast.ItemWith, *ast.Operator, *ast.Comparison, *ast.Parenthesis,
+			*ast.ParenthesisInner, *ast.FunctionLiteral, *ast.Query,
+			*ast.Statement, *ast.IdentifierList, *ast.SwitchCase,
+			*ast.MemberIdentifier, *ast.Aliased:
+			for _, t := range n.(ast.TokenList).GetTokens() {
+				walk(t)
+			}
+		default:
+			out = append(out, n)
+		}
+	}
+	walk(n)
+	return out
+}
+
+// formatWindowSpec lays out a window specification, the parens after OVER
+// or WITHIN GROUP: one clause stays inline, "over (partition by a)"; several
+// clauses go one per line:
+//
+//	row_number() over (
+//	    partition by a
+//	    order by b, c
+//	)
+//
+// It returns nil when node is not a window spec or contains comments.
+func formatWindowSpec(node *ast.Parenthesis, env *formatEnvironment) ast.Node {
+	inner := node.Inner()
+	var first ast.Node
+	for _, t := range inner.GetTokens() {
+		if !isWhitespace(t) {
+			first = t
+			break
+		}
+	}
+	if mk, ok := first.(*ast.MultiKeyword); ok && len(mk.GetKeywords()) > 0 {
+		first = mk.GetKeywords()[0]
+	}
+	if !isKeyword(first, "PARTITION") && !isKeyword(first, "ORDER") {
+		return nil
+	}
+
+	// Format the inside as usual (casing, operators), then re-flow it.
+	saved := *env
+	formatted := Eval(inner, env)
+	env.indentLevel, env.lastKeyword = saved.indentLevel, saved.lastKeyword
+
+	// Tokens with single spaces, split into clauses at depth 0.
+	var clauses [][]ast.Node
+	var cur []ast.Node
+	space, depth := false, 0
+	leaves := flattenLeaves(formatted)
+	for i, n := range leaves {
+		if isWhitespace(n) {
+			space = len(cur) > 0
+			continue
+		}
+		item, _ := n.(*ast.Item)
+		var kind token.Kind
+		if item != nil {
+			kind = item.GetToken().Kind
+		}
+		if kind == token.Comment || kind == token.MultilineComment {
+			return nil
+		}
+		if depth == 0 && len(cur) > 0 && startsWindowClause(leaves, i) {
+			clauses = append(clauses, cur)
+			cur, space = nil, false
+		}
+		if space && kind != token.RParen && kind != token.Comma && !endsWithLParen(cur) {
+			cur = append(cur, whitespaceNode)
+		}
+		space = false
+		cur = append(cur, n)
+		switch kind {
+		case token.LParen:
+			depth++
+		case token.RParen:
+			depth--
+		}
+	}
+	if len(cur) > 0 {
+		clauses = append(clauses, cur)
+	}
+
+	results := []ast.Node{lparenNode}
+	if len(clauses) <= 1 {
+		for _, c := range clauses {
+			results = append(results, c...)
+		}
+		return &ast.ItemWith{Toks: append(results, rparenNode)}
+	}
+	env.indentLevelUp()
+	for _, c := range clauses {
+		results = append(results, linebreakNode)
+		results = append(results, env.genIndent()...)
+		results = append(results, c...)
+	}
+	env.indentLevel = saved.indentLevel
+	results = append(results, linebreakNode)
+	results = append(results, env.genIndent()...)
+	return &ast.ItemWith{Toks: append(results, rparenNode)}
+}
+
+func endsWithLParen(nodes []ast.Node) bool {
+	if len(nodes) == 0 {
+		return false
+	}
+	item, ok := nodes[len(nodes)-1].(*ast.Item)
+	return ok && item.GetToken().Kind == token.LParen
+}
+
+// startsWindowClause: PARTITION BY, ORDER BY, or a frame (ROWS/RANGE/GROUPS
+// BETWEEN|UNBOUNDED|CURRENT …) starts at leaves[i].
+func startsWindowClause(leaves []ast.Node, i int) bool {
+	next := func() ast.Node {
+		for _, n := range leaves[i+1:] {
+			if !isWhitespace(n) {
+				return n
+			}
+		}
+		return nil
+	}
+	n := leaves[i]
+	switch {
+	case isKeyword(n, "PARTITION"), isKeyword(n, "ORDER"):
+		return isKeyword(next(), "BY")
+	case isKeyword(n, "ROWS"), isKeyword(n, "RANGE"), isKeyword(n, "GROUPS"):
+		nx := next()
+		return isKeyword(nx, "BETWEEN") || isKeyword(nx, "UNBOUNDED") || isKeyword(nx, "CURRENT")
+	}
+	return false
+}
+
+func endsWithComma(n ast.Node) bool {
+	leaves := flattenLeaves(n)
+	if len(leaves) == 0 {
+		return false
+	}
+	item, ok := leaves[len(leaves)-1].(*ast.Item)
+	return ok && item.GetToken().Kind == token.Comma
 }
