@@ -552,6 +552,17 @@ type DefinitionParams struct {
 	PartialResultParams
 }
 
+type ReferenceParams struct {
+	TextDocumentPositionParams
+	WorkDoneProgressParams
+	PartialResultParams
+	Context ReferenceContext `json:"context"`
+}
+
+type ReferenceContext struct {
+	IncludeDeclaration bool `json:"includeDeclaration"`
+}
+
 type TypeDefinitionParams struct {
 	TextDocumentPositionParams
 	WorkDoneProgressParams
