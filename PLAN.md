@@ -376,6 +376,15 @@ words*), and both failed on CTE columns. A wider probe found more subquery bugs.
       for WITH query names. `SubqueryDoc` (nil `ParentTable` panic) replaced by `RelationDoc`.
 - Verified: unit tests (+ `-race`), live PG + Oracle (CADE packages, PL/SQL `begin pkg.|`),
   formatter battery output byte-identical.
+- [x] Fix: JSON key completion on a derived-table/CTE column (`tmp.raw_data->>'…'`): the
+      qualifier is resolved through the relation to its origin table column (also renamed
+      columns, unqualified, CTEs); expressions stay unresolved.
+- [x] Formatter: `j->>'k' like('%x%')` was glued (`'k'like(`): a call/name after an operator
+      expression gets a space; predicate keywords keep a space before `(` (`in ('a')`,
+      `like ('x')`, `exists (…)` — `in (` used to lose it); `BETWEEN a AND b` stays on one line
+      (the AND used to break like a condition; goldens updated).
+- [x] Fix: an indented first statement stayed indented — `restoreGaps` copied the document's
+      leading whitespace verbatim; now only its newlines (like the gaps between statements).
 
 ### Phase 5 — later / optional
 

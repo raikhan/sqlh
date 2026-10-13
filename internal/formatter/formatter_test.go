@@ -170,3 +170,46 @@ func TestFormat(t *testing.T) {
 		}
 	}
 }
+
+// The WHERE clause of a formatted query, on one line (indent stripped).
+func whereClause(t *testing.T, query string) string {
+	t.Helper()
+	edits, err := Format(query, lsp.DocumentFormattingParams{
+		Options: lsp.FormattingOptions{TabSize: 4, InsertSpaces: true},
+	}, &config.Config{LowercaseKeywords: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := edits[0].NewText
+	i := strings.Index(out, "where\n")
+	if i < 0 {
+		t.Fatalf("no where clause in %q", out)
+	}
+	lines := strings.Split(strings.TrimSpace(out[i+len("where\n"):]), "\n")
+	for j := range lines {
+		lines[j] = strings.TrimSpace(lines[j])
+	}
+	return strings.Join(lines, " | ")
+}
+
+func TestPredicateSpacing(t *testing.T) {
+	tests := []struct{ in, want string }{
+		// a call after a JSON operator expression was glued to it
+		{"select * from t where tmp.raw_data->>'supplierName' like('%Merck%')", "tmp.raw_data->>'supplierName' like ('%Merck%')"},
+		{"select * from t where j->>'k' like '%M%'", "j->>'k' like '%M%'"},
+		{"select * from t where x::text || y like 'a'", "x::text || y like 'a'"},
+		// predicates keep (or get) a space before their parenthesis
+		{"select * from t where x in ('a', 'b')", "x in ( | 'a', | 'b' | )"}, // lists are expanded (existing layout)
+		{"select * from t where x in('a')", "x in ('a')"},
+		{"select * from t where x not in (1)", "x not in (1)"},
+		// BETWEEN … AND is one predicate
+		{"select * from t where a between 1 and 2 and b = 1", "a between 1 and 2 | and b = 1"},
+		// calls are unchanged
+		{"select * from t where lower(x) = 'a'", "lower(x) = 'a'"},
+	}
+	for _, tt := range tests {
+		if got := whereClause(t, tt.in); got != tt.want {
+			t.Errorf("%s\n got %q\nwant %q", tt.in, got, tt.want)
+		}
+	}
+}

@@ -254,3 +254,19 @@ func TestFormatTrailingCommaSpacing(t *testing.T) {
 		}
 	}
 }
+
+func TestFormatVerifiedDropsLeadingIndent(t *testing.T) {
+	for src, want := range map[string]string{
+		"       select a from t\n":        "select\n  a\nfrom\n  t\n",
+		"\n\n   select a from t\n":        "\n\nselect\n  a\nfrom\n  t\n",
+		"  -- note\n  select a from t;\n": "-- note\nselect\n  a\nfrom\n  t;\n",
+	} {
+		out, err := verified(t, src)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out != want {
+			t.Errorf("%q:\n got %q\nwant %q", src, out, want)
+		}
+	}
+}

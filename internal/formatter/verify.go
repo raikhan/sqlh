@@ -454,7 +454,8 @@ func restoreGaps(formatted, ref string) string {
 		}
 	}
 	var b strings.Builder
-	b.WriteString(rLead)
+	// leading blank lines are kept, indentation of the first statement is not
+	b.WriteString(strings.Repeat("\n", strings.Count(rLead, "\n")))
 	for k, t := range fSig {
 		b.WriteString(t.text)
 		switch {

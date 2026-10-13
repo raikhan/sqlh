@@ -99,11 +99,18 @@ func (s *Server) jsonTarget(text string, pos lsp.Position, jc *jsoncomplete.Cont
 		return jsoncomplete.Target{}, "", false
 	}
 	var tables []*parseutil.TableInfo
+	var rels []*parseutil.SubQueryInfo
 	// The key's string is still open at the cursor (unless the editor
 	// auto-paired the quote) and would swallow the FROM clause: parse a copy
 	// with the string closed.
 	if parsed, err := parser.Parse(closeStringAt(text, pos)); err == nil {
-		tables, _ = parseutil.ExtractTable(parsed, token.Pos{Line: pos.Line, Col: pos.Character})
+		at := token.Pos{Line: pos.Line, Col: pos.Character}
+		tables, _ = parseutil.ExtractTable(parsed, at)
+		rels, _ = parseutil.ExtractSubQueryViews(parsed, at)
+	}
+	// a column of a derived table or CTE: follow it to its table column
+	if t, typ, ok := relationColumn(cache, rels, jc.Qualifier, jc.Column); ok {
+		return t, typ, true
 	}
 
 	var cands []*parseutil.TableInfo
@@ -142,6 +149,31 @@ func (s *Server) jsonTarget(text string, pos lsp.Position, jc *jsoncomplete.Cont
 			c := found[0]
 			return jsoncomplete.Target{Schema: c.Schema, Table: c.Table, Column: c.Name}, c.Type, true
 		}
+	}
+	return jsoncomplete.Target{}, "", false
+}
+
+// relationColumn resolves qualifier.column (or an unqualified column) of a
+// derived table/CTE in scope to the database column it is taken from.
+func relationColumn(cache *database.DBCache, rels []*parseutil.SubQueryInfo, qualifier, column string) (jsoncomplete.Target, string, bool) {
+	if strings.Contains(qualifier, ".") {
+		return jsoncomplete.Target{}, "", false
+	}
+	for _, r := range rels {
+		if qualifier == "" && r.Outer {
+			continue
+		}
+		if qualifier != "" && !strings.EqualFold(r.Name, qualifier) {
+			continue
+		}
+		col := database.FindRelationColumn(r, cache, column)
+		if col == nil {
+			continue
+		}
+		if c := col.Origin; c != nil {
+			return jsoncomplete.Target{Schema: c.Schema, Table: c.Table, Column: c.Name}, c.Type, true
+		}
+		return jsoncomplete.Target{}, "", false // an expression: type unknown
 	}
 	return jsoncomplete.Target{}, "", false
 }

@@ -56,6 +56,8 @@ type formatEnvironment struct {
 	options     lsp.FormattingOptions
 	lastKeyword string   // Track last processed keyword
 	prev        ast.Node // previous sibling of the node being formatted
+	// inBetween: a BETWEEN was written and its AND has not come yet
+	inBetween bool
 }
 
 func (e *formatEnvironment) indentLevelReset() {
@@ -227,7 +229,14 @@ func formatItem(node ast.Node, env *formatEnvironment) ast.Node {
 			"ELSE",
 		},
 	}
-	if linebreakBeforeMatcher.IsMatch(node) {
+	switch {
+	case isKeyword(node, "BETWEEN"):
+		env.inBetween = true
+	case isKeyword(node, "AND") && env.inBetween:
+		// x BETWEEN a AND b: the AND is part of the predicate
+		env.inBetween = false
+		results = unshift(results, whitespaceNode)
+	case linebreakBeforeMatcher.IsMatch(node):
 		results = unshift(results, env.genIndent()...)
 		results = unshift(results, linebreakNode)
 	}
@@ -530,6 +539,12 @@ func formatParenthesis(node *ast.Parenthesis, env *formatEnvironment) ast.Node {
 }
 
 func formatFunctionLiteral(node *ast.FunctionLiteral, env *formatEnvironment) ast.Node {
+	// like('%x%'), in('a'), exists(select …) parsed as calls: these are
+	// predicates, written with a space
+	if len(node.Toks) == 2 && isPredicateKeyword(node.Toks[0]) {
+		return &ast.ItemWith{Toks: []ast.Node{node.Toks[0], whitespaceNode, Eval(node.Toks[1], env)}}
+	}
+
 	// Check if this is a simple function call like SUM(x) or COUNT(y)
 	// In this case, keep it on one line
 	if len(node.Toks) == 2 {
@@ -566,6 +581,17 @@ func formatFunctionLiteral(node *ast.FunctionLiteral, env *formatEnvironment) as
 		}
 	}
 	return &ast.ItemWith{Toks: results}
+}
+
+// isPredicateKeyword: an operator keyword that may be followed by a
+// parenthesis, IN (…), LIKE (…), EXISTS (…), ANY (…).
+func isPredicateKeyword(n ast.Node) bool {
+	for _, kw := range []string{"IN", "LIKE", "ILIKE", "EXISTS", "ANY", "ALL", "SOME", "NOT", "AND", "OR"} {
+		if isKeyword(n, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 // isWindowKeyword: the keyword before a window spec, OVER (…) or
@@ -776,9 +802,9 @@ func shouldAddSpaceAfter(curNode ast.Node, reader *astutil.NodeReader, formatted
 		}
 
 		// Don't add space before Parenthesis (e.g., VALUES(...)), except
-		// for window specs: over (…), within group (…)
+		// for window specs, over (…), and predicates: in (…), exists (…)
 		if _, ok := nextNode.(*ast.Parenthesis); ok {
-			return isWindowKeyword(curNode)
+			return isWindowKeyword(curNode) || isPredicateKeyword(curNode)
 		}
 
 		// Don't add space before punctuation (already checked above)
@@ -817,6 +843,15 @@ func shouldAddSpaceAfter(curNode ast.Node, reader *astutil.NodeReader, formatted
 			return false
 		}
 		if _, ok := nextNode.(*ast.FunctionLiteral); ok {
+			return true
+		}
+	}
+
+	// After an operator expression (j->>'k', x::text, a + b): a following
+	// call, name or alias is a separate word
+	if _, ok := curNode.(*ast.Operator); ok {
+		switch nextNode.(type) {
+		case *ast.FunctionLiteral, *ast.Identifier, *ast.MemberIdentifier, *ast.Aliased:
 			return true
 		}
 	}
