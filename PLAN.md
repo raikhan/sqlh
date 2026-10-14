@@ -20,7 +20,7 @@ status lives in §4–§5.
 | Opening results            | **Save first, don't auto-open.** Viewing (vd in a Herdr pane) is wired on the Helix/Nu side later.                                                                                                          |
 | Preview limit              | Client-side row cap (read N rows, stop), statement never rewritten. PostgreSQL through a cursor (`DECLARE … FETCH N+1`): pgx otherwise reads the whole result on close.                                     |
 | Secrets                    | `passwdCmd` (e.g. macOS keychain) / `${ENV}` references in config; no plaintext for work DBs.                                                                                                               |
-| Config format              | YAML (sqls-compatible) for now; TOML deferred (see Phase 1).                                                                                                                                                |
+| Config format              | YAML (sqls-compatible), final. TOML dropped: cosmetic gain, nested config fits YAML, sqls users know it.                                                                                                    |
 | Execution splitting        | Own dialect-aware splitter (`internal/sqlsplit`); the completion parser is not used for execution.                                                                                                          |
 | Git                        | User pushes; agent commits only when asked. Commit email for this repo: GitHub no-reply.                                                                                                                    |
 
@@ -59,33 +59,10 @@ sqlh CLI ─────┤  • unix socket JSON-RPC (sourcegraph/jsonrpc2)│
                      Oracle · Postgres · SQLite
 ```
 
-### Config target (`~/.config/sqlh/config.toml`, overridable by `.sqlh.toml` up from workspace root)
+### Config
 
-```toml
-default = "pg_local"
-results_dir = "{workspace}/.sqlh/results"
-results_name = "{conn}_{stamp}.csv"
-default_limit = 100
-
-[connections.oracle_dev]
-driver = "oracle"
-host = "oracle.dev.example"
-port = 1521
-service = "CADEV1"
-user = "cade"
-password_cmd = "security find-generic-password -s sqlh-oracle_dev -w"
-schemas = ["CADE", "CADE500"]
-
-[connections.pg_local]
-driver = "postgresql"
-dsn = "postgres://admin@localhost:5432/sdsai?sslmode=disable&options=-c%20search_path%3Dcadetst,public"
-
-[connections.scratch]
-driver = "sqlite3"
-path = "./scratch.db"
-```
-
-(Target format sketch. Current config is sqls-style YAML — see `doc/config.example.yml`; TOML deferred.)
+`~/.config/sqlh/config.yml` (sqls-style YAML, or `-config <file>`). Annotated reference:
+`doc/config.example.yml`.
 
 ### Control plane (Phase 3)
 
@@ -150,7 +127,7 @@ s = [":lsp-workspace-command showConnections"]
 - [x] `showConnections`: marks current (`*`), describes host/port/service/path, masks passwords in DSNs, shows `schemas=`
 - [x] Secrets: `passwdCmd` (run at connect time) and `${NAME}` env expansion in `user`/`passwd`/`dataSourceName` (bare `$NAME` stays literal). `oracle_dev` password moved to the macOS keychain (`sqlh-oracle_dev`).
 - [x] `doc/config.example.yml`; Helix test files `scratch/oracle.sql`, `scratch/sqlite.sql`
-- [ ] ~~TOML config~~ → deferred: YAML works and is what sqls users know. Revisit in Phase 2 when `results_dir`/`default_limit` and per-project overrides are added.
+- [x] ~~TOML config~~ → dropped (2026-10-14): staying on YAML (see Decisions).
 - [ ] Drop MySQL/MSSQL/H2/Vertica/ClickHouse drivers (binary 52 MB)? Undecided, cosmetic — build tags if wanted.
 
 Known limitations (not blocking):
@@ -576,6 +553,8 @@ Decided:
 
 - **2026-10-14** Phase 8: connection header in query files (kept up to date by the editor),
   `sqlh dump` for running query files from the terminal, `space i d` with result reuse.
+
+- **2026-10-14** TOML config dropped: YAML stays the only config format.
 
 ## 6. Environment notes
 
