@@ -76,6 +76,8 @@ the background load a few seconds later (`(views are still loading)` until then)
   list starts with that table's relationships (Ctrl-O: the full list), and accepting
   **copies** the name to the clipboard instead of inserting it (inserting at the cursor
   would split the name under it); the editor's status line says so;
+- system schemas (`pg_catalog`, `information_schema`) are left out, unless they are all there is
+  (PostgreSQL's `postgres` database);
 - typing ranks by match quality (only the names are matched);
 - after `JOIN`, Enter inserts `customer c ON c.id = o.customer_id` (alias from the table's
   initials, numbered when taken; keyword case from `lowercaseKeywords`); elsewhere, or with

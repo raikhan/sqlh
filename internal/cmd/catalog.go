@@ -314,9 +314,13 @@ func tablesCmd(c *cli.Context) error {
 			if ctx.Focus != "" && !ctx.InJoin {
 				// on a table of the statement: start with its relationships
 				// (Ctrl-O: the full list); accepting copies the name, since
-				// inserting at the cursor would split the one under it
-				st.Path = []navItem{{Table: focusName(ctx)}}
-				st.Copy = true
+				// inserting at the cursor would split the one under it. A
+				// name that isn't a known table (a typo, a schema) gets the
+				// full list.
+				if _, err := api.relations(focusName(ctx)); err == nil {
+					st.Path = []navItem{{Table: focusName(ctx)}}
+					st.Copy = true
+				}
 			}
 		}
 		return runTablePicker(c, api, st)

@@ -203,3 +203,23 @@ func TestExpandHome(t *testing.T) {
 		}
 	}
 }
+
+// sysAPI has tables only in system schemas (PostgreSQL's postgres database).
+type sysAPI struct{ fakeAPI }
+
+func (s sysAPI) tables(_ string, all bool) ([]control.TableItem, error) {
+	if !all {
+		return nil, nil
+	}
+	return []control.TableItem{{Schema: "pg_catalog", Name: "pg_class", Insert: "pg_catalog.pg_class"}}, nil
+}
+
+func TestNavLinesSystemOnly(t *testing.T) {
+	lines, err := navLines(sysAPI{}, &navState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := display(lines); strings.Join(got, ",") != "pg_catalog.pg_class" {
+		t.Errorf("got %v", got)
+	}
+}

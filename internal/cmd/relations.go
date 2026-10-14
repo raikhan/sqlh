@@ -483,6 +483,13 @@ func navEntries(api catalogAPI, st *navState) ([]navEntry, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(all) == 0 && st.Schema == "" {
+		// only system schemas have tables (e.g. PostgreSQL's postgres
+		// database): list those rather than nothing
+		if all, err = api.tables("", true); err != nil {
+			return nil, err
+		}
+	}
 	for _, t := range all {
 		if t.Default && listed[strings.ToUpper(t.Name)] {
 			continue
