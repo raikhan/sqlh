@@ -24,12 +24,14 @@ jobs:
       uses: actions/setup-go@v4
       with:
         go-version: ${{ env.GO_VERSION }}
+    - name: Setup just
+      uses: extractions/setup-just@v3
     - name: Build amd64
       env:
         CGO_ENABLED: 1
         GOOS: linux
         GOARCH: amd64
-      run: make release
+      run: just release
     - name: Archive artifacts
       uses: actions/upload-artifact@v6
       with:
@@ -50,12 +52,14 @@ jobs:
       uses: actions/setup-go@v4
       with:
         go-version: ${{ env.GO_VERSION }}
+    - name: Setup just
+      uses: extractions/setup-just@v3
     - name: Build amd64
       env:
         CGO_ENABLED: 1
         GOOS: darwin
         GOARCH: amd64
-      run: make release
+      run: just release
     - name: Archive artifacts
       uses: actions/upload-artifact@v6
       with:
@@ -76,13 +80,15 @@ jobs:
       uses: actions/setup-go@v4
       with:
         go-version: ${{ env.GO_VERSION }}
+    - name: Setup just
+      uses: extractions/setup-just@v3
     - name: Build amd64
       shell: bash
       env:
         CGO_ENABLED: 1
         GOOS: windows
         GOARCH: amd64
-      run: make release
+      run: just release
     - name: Archive artifacts
       uses: actions/upload-artifact@v6
       with:

@@ -496,7 +496,7 @@ Decided: no separate TUI; the table picker and `describe` cover it. Schemas are 
 ## 6. Environment notes
 
 - Helix: `[language-server.sqlh] command = "sqlh"`, `args = ["-log", "/tmp/sqlh.log"]`
-- Binary: `~/.local/bin/sqlh` (`go build -o ~/.local/bin/sqlh .` from repo root); CLI: `doc/cli.md`
+- Binary: `$GOPATH/bin/sqlh` (`just install` from repo root); CLI: `doc/cli.md`
 - Tests isolating sockets/state: `SQLH_RUNTIME_DIR=/tmp/sqlh-rt XDG_STATE_HOME=/tmp/sqlh-state`;
   `/tmp/sqls-build/t_p3.py` (CLI↔server scenario)
 - Config: `~/.config/sqlh/config.yml` (example: `doc/config.example.yml`); connections
