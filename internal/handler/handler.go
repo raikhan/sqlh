@@ -228,6 +228,8 @@ func (s *Server) handleInitialize(ctx context.Context, conn *jsonrpc2.Conn, req 
 					CommandExport,
 					CommandCancel,
 					CommandRefresh,
+					CommandUseHeader,
+					CommandStampHeader,
 					CommandExecuteQuery,
 					CommandShowDatabases,
 					CommandShowSchemas,

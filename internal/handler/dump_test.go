@@ -33,6 +33,7 @@ type fakeEditor struct {
 	version  map[string]int
 	edits    int
 	messages []string
+	diags    map[string][]lsp.Diagnostic
 }
 
 func (e *fakeEditor) handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (interface{}, error) {
@@ -66,6 +67,12 @@ func (e *fakeEditor) handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonr
 			}()
 		}
 		return lsp.ApplyWorkspaceEditResult{Applied: true}, nil
+	case "textDocument/publishDiagnostics":
+		var p lsp.PublishDiagnosticsParams
+		_ = json.Unmarshal(*req.Params, &p)
+		e.mu.Lock()
+		e.diags[string(p.URI)] = p.Diagnostics
+		e.mu.Unlock()
 	case "window/showMessage":
 		var p lsp.ShowMessageParams
 		_ = json.Unmarshal(*req.Params, &p)
@@ -125,7 +132,7 @@ func newDumpServer(t *testing.T, text string) *dumpServer {
 
 	s := NewServer()
 	s.SpecificFileCfg = cfg
-	ed := &fakeEditor{t: t, text: map[string]string{}, version: map[string]int{}}
+	ed := &fakeEditor{t: t, text: map[string]string{}, version: map[string]int{}, diags: map[string][]lsp.Diagnostic{}}
 	a, b := net.Pipe()
 	srvConn := jsonrpc2.NewConn(context.Background(), jsonrpc2.NewBufferedStream(a, jsonrpc2.VSCodeObjectCodec{}), jsonrpc2.HandlerWithError(s.Handle))
 	ed.conn = jsonrpc2.NewConn(context.Background(), jsonrpc2.NewBufferedStream(b, jsonrpc2.VSCodeObjectCodec{}), jsonrpc2.AsyncHandler(jsonrpc2.HandlerWithError(ed.handle)))
@@ -378,5 +385,158 @@ func TestDumpViaServerNumbersAndKeepsLatest(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(d.ws, ".sqlh", "results", "latest.csv")); !os.IsNotExist(err) {
 		t.Error("dump updated latest.csv")
+	}
+}
+
+func TestHeaderDiagnostics(t *testing.T) {
+	st := headerState{editor: headerTarget{"pg", ""}, aliases: []string{"pg", "ora"}}
+	cases := []struct {
+		name, text string
+		st         headerState
+		severity   int
+		contains   string
+	}{
+		{"no header", "select 1", st, 0, ""},
+		{"same", "-- sqlh: conn=pg\nselect 1", st, 0, ""},
+		{"other connection", "-- sqlh: conn=ora\nselect 1", st, lsp.SeverityInformation, "targets ora, the editor is on pg"},
+		{"other database", "-- sqlh: conn=pg db=rep\nselect 1", st, lsp.SeverityInformation, "targets pg (database rep), the editor is on pg"},
+		{"editor on a database", "-- sqlh: conn=pg\nselect 1", headerState{editor: headerTarget{"pg", "rep"}, aliases: st.aliases}, lsp.SeverityInformation, "the editor is on pg (database rep)"},
+		{"unknown", "-- sqlh: conn=nope\nselect 1", st, lsp.SeverityWarning, `unknown connection "nope"; configured: pg, ora`},
+		{"not connected: no comparison", "-- sqlh: conn=ora\nselect 1", headerState{aliases: st.aliases}, 0, ""},
+		{"not connected: unknown still", "-- sqlh: conn=nope", headerState{aliases: st.aliases}, lsp.SeverityWarning, "unknown"},
+		{"no conn key", "-- sqlh: db=x\nselect 1", st, 0, ""},
+	}
+	for _, c := range cases {
+		ds := headerDiagnostics(c.text, c.st)
+		if c.severity == 0 {
+			if len(ds) != 0 {
+				t.Errorf("%s: %+v", c.name, ds)
+			}
+			continue
+		}
+		if len(ds) != 1 || ds[0].Severity != c.severity || !strings.Contains(ds[0].Message, c.contains) {
+			t.Errorf("%s: %+v", c.name, ds)
+			continue
+		}
+		if r := ds[0].Range; r.Start.Line != 0 || r.Start.Character != 0 || r.End.Character != len(strings.SplitN(c.text, "\n", 2)[0]) {
+			t.Errorf("%s: range %+v", c.name, r)
+		}
+	}
+	// indented header: the range starts at the comment
+	if ds := headerDiagnostics("\n  -- sqlh: conn=ora", st); len(ds) != 1 || ds[0].Range.Start != (lsp.Position{Line: 1, Character: 2}) {
+		t.Errorf("indented: %+v", ds)
+	}
+}
+
+// waitDiags waits until the document's published diagnostics satisfy ok.
+func (d *dumpServer) waitDiags(what string, ok func([]lsp.Diagnostic) bool) []lsp.Diagnostic {
+	d.t.Helper()
+	var last []lsp.Diagnostic
+	for i := 0; i < 300; i++ {
+		d.editor.mu.Lock()
+		last = d.editor.diags[d.uri]
+		d.editor.mu.Unlock()
+		if ok(last) {
+			return last
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	d.t.Fatalf("%s: diagnostics %+v", what, last)
+	return nil
+}
+
+func headerHint(ds []lsp.Diagnostic) *lsp.Diagnostic {
+	for i := range ds {
+		if ds[i].Range.Start.Line == 0 && ds[i].Severity == lsp.SeverityInformation {
+			return &ds[i]
+		}
+	}
+	return nil
+}
+
+func (d *dumpServer) codeActions(line int) []lsp.Command {
+	d.t.Helper()
+	var cmds []lsp.Command
+	if err := d.editor.conn.Call(context.Background(), "textDocument/codeAction", lsp.CodeActionParams{
+		TextDocument: lsp.TextDocumentIdentifier{URI: d.uri},
+		Range:        lsp.Range{Start: lsp.Position{Line: line}, End: lsp.Position{Line: line, Character: 1}},
+	}, &cmds); err != nil {
+		d.t.Fatal(err)
+	}
+	return cmds
+}
+
+func (d *dumpServer) execute(cmd lsp.Command) {
+	d.t.Helper()
+	if err := d.editor.conn.Call(context.Background(), "workspace/executeCommand",
+		lsp.ExecuteCommandParams{Command: cmd.Command, Arguments: cmd.Arguments}, nil); err != nil {
+		d.t.Fatalf("%s: %v", cmd.Command, err)
+	}
+}
+
+func TestHeaderHintAndActions(t *testing.T) {
+	d := newDumpServer(t, "-- sqlh: conn=lite2\nselect name from t;\n")
+
+	// the editor is on lite (the first connection): hint on the header
+	ds := d.waitDiags("mismatch", func(ds []lsp.Diagnostic) bool { return headerHint(ds) != nil })
+	if h := headerHint(ds); !strings.Contains(h.Message, "targets lite2, the editor is on lite") {
+		t.Errorf("hint %q", h.Message)
+	}
+
+	// on the header line the header actions come first; elsewhere after the run actions
+	cmds := d.codeActions(0)
+	if len(cmds) < 2 || cmds[0].Command != CommandUseHeader || cmds[1].Command != CommandStampHeader {
+		t.Fatalf("actions on the header: %+v", cmds[:2])
+	}
+	if !strings.Contains(cmds[0].Title, "lite2") || !strings.Contains(cmds[1].Title, "lite") {
+		t.Errorf("titles %q / %q", cmds[0].Title, cmds[1].Title)
+	}
+	if cmds := d.codeActions(1); cmds[0].Command != CommandRun || cmds[3].Command != CommandUseHeader {
+		t.Errorf("actions elsewhere: %v %v", cmds[0].Command, cmds[3].Command)
+	}
+
+	// switch the editor to the header's connection: the hint goes, no actions
+	d.execute(cmds[0])
+	d.waitDiags("after useHeader", func(ds []lsp.Diagnostic) bool { return headerHint(ds) == nil })
+	d.s.mu.Lock()
+	alias := d.s.curDBCfg.Alias
+	d.s.mu.Unlock()
+	if alias != "lite2" {
+		t.Fatalf("editor on %s", alias)
+	}
+	if cmds := d.codeActions(0); cmds[0].Command == CommandUseHeader {
+		t.Error("header actions offered without a mismatch")
+	}
+
+	// switching elsewhere (not from this buffer) brings it back
+	var st control.Status
+	if err := d.call(control.MethodConnect, control.ConnectParams{Alias: "lite"}, &st); err != nil {
+		t.Fatal(err)
+	}
+	d.waitDiags("after switch", func(ds []lsp.Diagnostic) bool { return headerHint(ds) != nil })
+
+	// point the header at the editor: header rewritten, hint gone
+	edits := d.edits()
+	d.execute(lsp.Command{Command: CommandStampHeader, Arguments: []interface{}{d.uri}})
+	if got := d.waitEdit(edits); !strings.HasPrefix(got, "-- sqlh: conn=lite\n") {
+		t.Fatalf("after stamp: %q", got)
+	}
+	d.waitDiags("after stamp", func(ds []lsp.Diagnostic) bool { return headerHint(ds) == nil })
+
+	// an unknown connection: warning, and only the "point at" action
+	d.editor.mu.Lock()
+	d.editor.text[d.uri] = "-- sqlh: conn=nope\nselect 1;\n"
+	d.editor.version[d.uri]++
+	text, v := d.editor.text[d.uri], d.editor.version[d.uri]
+	d.editor.mu.Unlock()
+	_ = d.editor.conn.Notify(context.Background(), "textDocument/didChange", lsp.DidChangeTextDocumentParams{
+		TextDocument:   lsp.VersionedTextDocumentIdentifier{URI: d.uri, Version: v},
+		ContentChanges: []lsp.TextDocumentContentChangeEvent{{Text: text}},
+	})
+	d.waitDiags("unknown", func(ds []lsp.Diagnostic) bool {
+		return len(ds) > 0 && ds[0].Severity == lsp.SeverityWarning && strings.Contains(ds[0].Message, `unknown connection "nope"`)
+	})
+	if cmds := d.codeActions(0); cmds[0].Command != CommandStampHeader {
+		t.Errorf("unknown alias actions: %v", cmds[0].Command)
 	}
 }

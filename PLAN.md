@@ -503,6 +503,11 @@ Decided:
 - [x] Server: header stamping on runs and `connect/db --file` (versioned `workspace/applyEdit`
       from a goroutine); dump via the server (`RunParams.Dump/Fresh`); reuse (`jobState.results`,
       forgotten by non-read statements via `exec.ReadOnly`, `closeSession`); `RunResult.ReusedFrom`
+- [x] Header hint: information diagnostic on the header when it names another target than
+      the editor's (warning: unknown connection; independent of `diagnostics: false`), re-checked
+      on switches; code actions `Switch the editor to X` (`sqlh.useHeader`: connection, then
+      database or back to the connection's own) and `Point the file's header at Y`
+      (`sqlh.stampHeader`), first when the cursor is on the header.
 - [x] `sqlh.nu dump [--fresh] [--bg]` (shared `detach`), `space i d`, `space i C/D` pass
       `--file`; doc/cli.md (also fixed `space i X/S/U`), README, config example
 - Verified: unit tests (header, numbering, copy, `ReadOnly`), CLI dump against SQLite

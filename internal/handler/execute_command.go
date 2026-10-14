@@ -57,6 +57,11 @@ func (s *Server) handleTextDocumentCodeAction(ctx context.Context, conn *jsonrpc
 			Arguments: []interface{}{params.TextDocument.URI, params.Range},
 		},
 	}
+	if hc, onHeader := s.headerActions(params.TextDocument.URI, params.Range); onHeader {
+		commands = append(hc, commands...)
+	} else {
+		commands = append(commands, hc...)
+	}
 	if j := s.runningJob(); j != nil {
 		commands = append([]lsp.Command{{
 			Title:   "Cancel: " + j.title,
@@ -121,6 +126,19 @@ func (s *Server) handleWorkspaceExecuteCommand(ctx context.Context, conn *jsonrp
 		_, err = s.startRun(ctx, runRequest{kind: kind, limit: limit, uri: uri, rng: rng, vertical: vertical})
 	case CommandRefresh:
 		result, err = s.refreshCache(ctx)
+	case CommandUseHeader, CommandStampHeader:
+		uri, _ := firstString(params.Arguments)
+		if uri == "" {
+			uri = s.lastURI
+		}
+		if params.Command == CommandUseHeader {
+			result, err = s.useHeader(ctx, uri)
+		} else if _, ok := s.files[uri]; !ok {
+			err = fmt.Errorf("document not open: %q", uri)
+		} else {
+			s.stampHeader(uri)
+			result = "pointed the header at " + s.headerState().editor.String()
+		}
 	case CommandCancel:
 		if j := s.runningJob(); j != nil {
 			j.stop("by request")
@@ -180,6 +198,15 @@ func (s *Server) presentCommandResult(ctx context.Context, conn *jsonrpc2.Conn, 
 		return
 	}
 	m.ShowDocument("file://"+path, true)
+}
+
+func firstString(args []interface{}) (string, bool) {
+	if len(args) > 0 {
+		if s, ok := args[0].(string); ok {
+			return s, true
+		}
+	}
+	return "", false
 }
 
 func rangeFromArg(v map[string]interface{}) (*lsp.Range, error) {
@@ -344,6 +371,7 @@ func (s *Server) useDatabase(ctx context.Context, dbName string) (string, error)
 		s.curDBName = prev
 		return "", err
 	}
+	s.relintOpen() // connection headers compare against the new target
 	return fmt.Sprintf("switched database to %s", dbName), nil
 }
 
@@ -418,6 +446,7 @@ func (s *Server) switchTo(ctx context.Context, name string) (string, error) {
 			log.Println("save state:", err)
 		}
 	}
+	s.relintOpen() // connection headers compare against the new target
 	return "switched connection to " + connectionLabel(index, s.curDBCfg), nil
 }
 

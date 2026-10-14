@@ -2,13 +2,173 @@ package handler
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/raikhan/sqlh/internal/header"
 	"github.com/raikhan/sqlh/internal/lsp"
 )
+
+const (
+	// CommandUseHeader switches the editor to the connection (and database)
+	// in a document's header. Argument: the document URI.
+	CommandUseHeader = "sqlh.useHeader"
+	// CommandStampHeader points a document's header at the editor's
+	// connection without running anything. Argument: the document URI.
+	CommandStampHeader = "sqlh.stampHeader"
+)
+
+// headerTarget is where a document's header points, or where the editor is:
+// a connection alias and a database override ("" = the connection's own).
+type headerTarget struct{ conn, db string }
+
+func (t headerTarget) String() string {
+	if t.db != "" {
+		return t.conn + " (database " + t.db + ")"
+	}
+	return t.conn
+}
+
+// headerState is what header diagnostics are checked against, snapshot
+// under s.mu (they are published from a timer).
+type headerState struct {
+	editor  headerTarget // conn "" when not connected or unnamed
+	aliases []string     // configured connection aliases
+}
+
+func (s *Server) headerState() headerState {
+	var st headerState
+	if s.dbConn != nil && s.curDBCfg != nil {
+		st.editor = headerTarget{s.curDBCfg.Alias, s.curDBName}
+	}
+	if cfg := s.getConfig(); cfg != nil {
+		for _, c := range cfg.Connections {
+			if c.Alias != "" {
+				st.aliases = append(st.aliases, c.Alias)
+			}
+		}
+	}
+	return st
+}
+
+// headerDiagnostics flags a header naming a connection that isn't
+// configured (warning) or another target than the editor's (information:
+// running the file from the editor would move the header; `sqlh dump` from
+// the terminal still uses it).
+func headerDiagnostics(text string, st headerState) []lsp.Diagnostic {
+	h := header.Parse(text)
+	if h.Line < 0 || h.Conn == "" {
+		return nil
+	}
+	start, end := h.Span()
+	d := lsp.Diagnostic{
+		Range: lsp.Range{
+			Start: lsp.Position{Line: h.Line, Character: start},
+			End:   lsp.Position{Line: h.Line, Character: end},
+		},
+		Source: &diagnosticSource,
+	}
+	file := headerTarget{h.Conn, h.DB}
+	switch {
+	case !contains(st.aliases, h.Conn):
+		d.Severity = lsp.SeverityWarning
+		d.Message = fmt.Sprintf("unknown connection %q; configured: %s", h.Conn, strings.Join(st.aliases, ", "))
+	case st.editor.conn != "" && file != st.editor:
+		d.Severity = lsp.SeverityInformation
+		d.Message = fmt.Sprintf("this file targets %s, the editor is on %s; running it here moves the header (code action: switch the editor)", file, st.editor)
+	default:
+		return nil
+	}
+	return []lsp.Diagnostic{d}
+}
+
+func contains(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+// headerActions: the code actions for a document whose header differs from
+// the editor's connection; first when the cursor is on the header.
+func (s *Server) headerActions(uri string, rng lsp.Range) (actions []lsp.Command, onHeader bool) {
+	f, ok := s.files[uri]
+	if !ok {
+		return nil, false
+	}
+	h := header.Parse(f.Text)
+	if h.Line < 0 || h.Conn == "" {
+		return nil, false
+	}
+	st := s.headerState()
+	file := headerTarget{h.Conn, h.DB}
+	if st.editor.conn == "" || file == st.editor {
+		return nil, false
+	}
+	if contains(st.aliases, h.Conn) {
+		actions = append(actions, lsp.Command{
+			Title: "Switch the editor to " + file.String() + " (the file's header)", Command: CommandUseHeader,
+			Arguments: []interface{}{uri},
+		})
+	}
+	actions = append(actions, lsp.Command{
+		Title: "Point the file's header at " + st.editor.String(), Command: CommandStampHeader,
+		Arguments: []interface{}{uri},
+	})
+	return actions, rng.Start.Line <= h.Line && h.Line <= rng.End.Line
+}
+
+// useHeader switches the editor to the connection and database of a
+// document's header.
+func (s *Server) useHeader(ctx context.Context, uri string) (string, error) {
+	f, ok := s.files[uri]
+	if !ok {
+		return "", fmt.Errorf("document not open: %s", uri)
+	}
+	h := header.Parse(f.Text)
+	if h.Line < 0 || h.Conn == "" {
+		return "", errors.New("the file has no connection header")
+	}
+	var msgs []string
+	if s.dbConn == nil || s.curDBCfg == nil || s.curDBCfg.Alias != h.Conn {
+		m, err := s.switchTo(ctx, h.Conn) // also back to its own database
+		if err != nil {
+			return "", err
+		}
+		msgs = append(msgs, m)
+	}
+	if h.DB != s.curDBName {
+		var m string
+		var err error
+		if h.DB == "" {
+			m, err = s.switchTo(ctx, h.Conn) // reconnect to the connection's own database
+		} else {
+			m, err = s.useDatabase(ctx, h.DB)
+		}
+		if err != nil {
+			return "", err
+		}
+		msgs = append(msgs, m)
+	}
+	if len(msgs) == 0 {
+		return "already on " + headerTarget{h.Conn, h.DB}.String(), nil
+	}
+	return strings.Join(msgs, "; "), nil
+}
+
+// relintOpen re-checks every open document; s.mu must be held (relintAll
+// takes it).
+func (s *Server) relintOpen() {
+	for uri := range s.files {
+		s.scheduleLint(uri)
+	}
+}
 
 // stampHeader points the "-- sqlh: conn=… db=…" header of an open document
 // at the current connection and database, inserting it if missing, so that

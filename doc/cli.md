@@ -118,6 +118,13 @@ select …
   the buffer becomes modified, save it for the CLI to see it). `db=` only appears after a
   database switch. Files that aren't open are never edited.
 - Edit it by hand to point the file somewhere else; other `key=value` pairs are kept.
+- **When the header and the editor differ** (you switched from another buffer, or opened a
+  file last run elsewhere), the header line gets an information diagnostic — "this file
+  targets oracle_dev, the editor is on pg_local" — and the code actions (`space a`; first when
+  the cursor is on the header) offer **Switch the editor to oracle_dev** (connection and
+  database; `sqlh.useHeader`) and **Point the file's header at pg_local** (rewrites it without
+  running; `sqlh.stampHeader`). A connection that isn't configured is a warning. These checks
+  stay on with `diagnostics: false`.
 - No schema in it: the schema comes from the connection (DSN `search_path`, Oracle login
   schema). Session state (`SET search_path`, `ALTER SESSION`, temp tables, an open
   transaction) is not carried over to `dump`: put what the query needs in the file.

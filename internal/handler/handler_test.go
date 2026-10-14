@@ -132,6 +132,8 @@ func TestInitialized(t *testing.T) {
 					CommandExport,
 					CommandCancel,
 					CommandRefresh,
+					CommandUseHeader,
+					CommandStampHeader,
 					CommandExecuteQuery,
 					CommandShowDatabases,
 					CommandShowSchemas,

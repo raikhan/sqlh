@@ -147,6 +147,12 @@ func (h Header) String() string {
 	return strings.Join(parts, " ")
 }
 
+// Span is the header text on its line as [start, end) in UTF-16 code units
+// (indentation excluded), for diagnostics.
+func (h Header) Span() (start, end int) {
+	return utf16Len(indent(h.text)), utf16Len(h.text)
+}
+
 // Edit replaces Line[0:OldLen] (UTF-16 code units, as LSP counts) with Text.
 // OldLen 0 at Line 0 is an insertion at the start of the file.
 type Edit struct {

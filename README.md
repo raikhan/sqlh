@@ -98,7 +98,9 @@ A `-- sqlh: conn=ALIAS [db=NAME]` header at the top of a file records the connec
 ran on in the editor (the server keeps it up to date in the buffer as you run statements and
 switch connections). `sqlh dump report.sql [-d DIR]` runs the file there from the terminal and
 writes `report.csv`, e.g. from a scheduled job; Helix `space i d` dumps the statement at the
-cursor, copying a recent complete result of the same query instead of running it again. See
+cursor, copying a recent complete result of the same query instead of running it again. A
+header naming another connection than the editor's is flagged, with code actions to switch the
+editor to it or to point the header at the editor's connection. See
 [doc/cli.md](doc/cli.md#query-files-connection-header-and-dump).
 
 #### CodeAction

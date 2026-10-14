@@ -38,6 +38,7 @@ func (s *Server) scheduleLint(uri string) {
 		return
 	}
 	text, conn := f.Text, s.editor
+	hs := s.headerState()
 	enabled := s.dbConn != nil && s.curDBCfg != nil && s.getConfig().DiagnosticsEnabled()
 	var d sqlsplit.Dialect
 	if enabled {
@@ -60,7 +61,8 @@ func (s *Server) scheduleLint(uri string) {
 		if enabled {
 			cat = s.lintCatalog(d)
 		}
-		diags := toLSPDiagnostics(lint.Check(text, cat))
+		// the connection header is checked even with diagnostics: false
+		diags := append(headerDiagnostics(text, hs), toLSPDiagnostics(lint.Check(text, cat))...)
 		l.mu.Lock()
 		stale := l.gen[uri] != gen
 		l.mu.Unlock()
