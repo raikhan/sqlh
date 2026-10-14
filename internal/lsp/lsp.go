@@ -570,3 +570,14 @@ type TypeDefinitionParams struct {
 }
 
 type Definition = []Location
+
+// ApplyWorkspaceEditParams: server → client "workspace/applyEdit".
+type ApplyWorkspaceEditParams struct {
+	Label string        `json:"label,omitempty"`
+	Edit  WorkspaceEdit `json:"edit"`
+}
+
+type ApplyWorkspaceEditResult struct {
+	Applied       bool   `json:"applied"`
+	FailureReason string `json:"failureReason,omitempty"`
+}

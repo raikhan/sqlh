@@ -86,6 +86,21 @@ func ReturnsRows(st sqlsplit.Statement) bool {
 	return false
 }
 
+// writeWordRe: words that make a query more than a plain read (FOR UPDATE
+// included: it locks). False positives only cost a reuse.
+var writeWordRe = regexp.MustCompile(`(?i)\b(insert|update|delete|merge|upsert|into|truncate|nextval|setval|lock|call|exec|execute|perform)\b`)
+
+// ReadOnly reports whether a statement is a plain read: SELECT, WITH, VALUES
+// or TABLE without data-modifying parts. It can't see a function that writes
+// (select my_proc()). Anything else may have changed what queries return.
+func ReadOnly(st sqlsplit.Statement) bool {
+	if st.PLSQL {
+		return false
+	}
+	body := StripLeadingComments(st.SQL)
+	return cursorVerbs[strings.ToUpper(firstWordRe.FindString(body))] && !writeWordRe.MatchString(body)
+}
+
 func isDML(sql string) bool {
 	return dmlVerbs[strings.ToUpper(firstWordRe.FindString(StripLeadingComments(sql)))]
 }

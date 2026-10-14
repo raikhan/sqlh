@@ -260,3 +260,65 @@ func TestAffectedOnlyForDML(t *testing.T) {
 		}
 	}
 }
+
+func TestNumberedPathAndCopy(t *testing.T) {
+	for n, want := range map[int]string{0: "/x/report.csv", 1: "/x/report.csv", 2: "/x/report_2.csv", 10: "/x/report_10.csv"} {
+		if got := NumberedPath("/x/report.csv", n); got != want {
+			t.Errorf("%d: %s", n, got)
+		}
+	}
+	if got := NumberedPath("/x/out", 2); got != "/x/out_2" {
+		t.Errorf("no extension: %s", got)
+	}
+
+	dir := t.TempDir()
+	src, dst := filepath.Join(dir, "src.csv"), filepath.Join(dir, "sub", "dst.csv")
+	os.WriteFile(src, []byte("a\n1\n"), 0o644)
+	os.MkdirAll(filepath.Dir(dst), 0o755)
+	os.WriteFile(dst+".part", []byte("stale"), 0o644) // from an interrupted run
+	os.WriteFile(dst, []byte("old"), 0o644)
+	if err := CopyResult(src, dst); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(dst); string(b) != "a\n1\n" {
+		t.Errorf("copied %q", b)
+	}
+	if _, err := os.Stat(dst + ".part"); !os.IsNotExist(err) {
+		t.Error(".part left behind")
+	}
+	if err := CopyResult(filepath.Join(dir, "missing.csv"), dst); err == nil {
+		t.Error("want an error for a missing source")
+	}
+	if b, _ := os.ReadFile(dst); string(b) != "a\n1\n" {
+		t.Errorf("failed copy replaced the file: %q", b)
+	}
+}
+
+func TestReadOnly(t *testing.T) {
+	cases := map[string]bool{
+		"select * from t": true,
+		"-- c\nwith x as (select 1) select * from x": true,
+		"values (1)":                        true,
+		"table t":                           true,
+		"select updated_at, deleted from t": true,
+		"select * from t for update":        false,
+		"with d as (delete from t returning *) select * from d": false,
+		"select * into t2 from t":                               false,
+		"select nextval('s')":                                   false,
+		"insert into t values (1)":                              false,
+		"update t set a = 1":                                    false,
+		"begin":                                                 false,
+		"commit":                                                false,
+		"set search_path = x":                                   false,
+		"explain analyze delete from t":                         false,
+		"create table x (a int)":                                false,
+	}
+	for q, want := range cases {
+		if got := ReadOnly(sqlsplit.Statement{SQL: q}); got != want {
+			t.Errorf("%q: got %v want %v", q, got, want)
+		}
+	}
+	if ReadOnly(sqlsplit.Statement{SQL: "begin null; end;", PLSQL: true}) {
+		t.Error("PL/SQL is not read-only")
+	}
+}

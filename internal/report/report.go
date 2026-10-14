@@ -19,8 +19,10 @@ import (
 
 // Summary is the one-line result of a run, e.g.
 // "oracle_dev: 100 rows (more available) → .sqlh/results/x.csv · 129ms".
-// Paths are shown relative to workspace when inside it.
-func Summary(alias, workspace string, outcomes []exec.Outcome, files []string, elapsed time.Duration) string {
+// Paths are shown relative to workspace when inside it. latest: the files are
+// in the results directory (a multi-statement summary points at latest.csv);
+// otherwise they are explicit output files and the first one is named.
+func Summary(alias, workspace string, outcomes []exec.Outcome, files []string, elapsed time.Duration, latest bool) string {
 	rel := func(p string) string {
 		if r, err := filepath.Rel(workspace, p); err == nil && !strings.HasPrefix(r, "..") {
 			return r
@@ -54,14 +56,42 @@ func Summary(alias, workspace string, outcomes []exec.Outcome, files []string, e
 		}
 	}
 	parts = append(parts, fmt.Sprintf("%d statements", len(outcomes)))
-	if len(files) > 0 {
+	switch {
+	case len(files) > 0 && latest:
 		parts = append(parts, fmt.Sprintf("%d result files (latest → %s)", len(files), rel(filepath.Join(filepath.Dir(files[len(files)-1]), exec.LatestName))))
+	case len(files) == 1:
+		parts = append(parts, "1 result file → "+rel(files[0]))
+	case len(files) > 1:
+		parts = append(parts, fmt.Sprintf("%d result files → %s …", len(files), rel(files[0])))
 	}
 	if execs > 0 {
 		parts = append(parts, Affected(aff))
 	}
 	parts = append(parts, Duration(elapsed))
 	return alias + ": " + strings.Join(parts, " · ")
+}
+
+// Reused is the summary of a dump that copied an earlier result:
+// "pg_local: 1,234 rows → report.csv · reused the result from 14:02 (3m ago)".
+func Reused(alias, workspace, file string, rows int64, at time.Time) string {
+	if r, err := filepath.Rel(workspace, file); err == nil && !strings.HasPrefix(r, "..") {
+		file = r
+	}
+	return fmt.Sprintf("%s: %s → %s · reused the result from %s (%s ago)", alias, RowCount(rows), file, at.Format("15:04"), shortDuration(time.Since(at)))
+}
+
+// shortDuration: "45s", "3m", "1h", "1h5m" (truncated).
+func shortDuration(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	case int(d.Minutes())%60 == 0:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+	}
 }
 
 // RowCount: "1 row", "1,234 rows".

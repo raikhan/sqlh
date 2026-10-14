@@ -18,6 +18,7 @@ results:
   dir: "{workspace}/.sqlh/results"   # .sqlh/ gets a self-ignoring .gitignore
   previewLimit: 100                   # rows for "Run → CSV" and the text view
   null: ""                            # text written for SQL NULL
+  reuseFor: 10m                       # `space i d` copies a complete result this recent (0: never)
 
 connections:
   - alias: pg_local

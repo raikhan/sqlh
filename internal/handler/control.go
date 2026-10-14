@@ -104,6 +104,7 @@ func (s *Server) handleControl(ctx context.Context, conn *jsonrpc2.Conn, req *js
 		if err != nil {
 			return nil, err
 		}
+		s.stampFile(p.File)
 		s.notifyEditor(msg)
 		return s.controlStatus(), nil
 	case control.MethodCancel:
@@ -195,10 +196,22 @@ func (s *Server) handleControl(ctx context.Context, conn *jsonrpc2.Conn, req *js
 		if err != nil {
 			return nil, err
 		}
+		s.stampFile(p.File)
 		s.notifyEditor(msg)
 		return msg, nil
 	}
 	return nil, &jsonrpc2.Error{Code: jsonrpc2.CodeMethodNotFound, Message: "unknown method " + req.Method}
+}
+
+// stampFile updates the connection header of a file the CLI acted from
+// (`connect/db --file`), if the editor has it open.
+func (s *Server) stampFile(path string) {
+	if path == "" {
+		return
+	}
+	if uri, ok := s.openURI(path); ok {
+		s.stampHeader(uri)
+	}
 }
 
 func unmarshal(req *jsonrpc2.Request, v interface{}) error {
@@ -231,6 +244,11 @@ func (s *Server) controlRun(ctx context.Context, conn *jsonrpc2.Conn, req *jsonr
 		out: p.Out, fromCLI: true,
 	}
 	switch {
+	case p.Dump:
+		if p.Out == "" {
+			return nil, errors.New("dump: no output path")
+		}
+		rr.kind, rr.dump, rr.fresh, rr.limit = jobExport, true, p.Fresh, 0
 	case p.Table:
 		rr.kind = jobText
 	case p.All:

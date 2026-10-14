@@ -3,6 +3,7 @@ package exec
 import (
 	"encoding/csv"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -75,6 +76,55 @@ func ResultPath(dir, conn string, at time.Time, index int) string {
 		p = filepath.Join(dir, fmt.Sprintf("%s-%d.csv", base, n))
 	}
 	return p
+}
+
+// NumberedPath is the path for the n-th (1-based) result set written to an
+// explicit output path: the path itself, then "<stem>_2.csv", "<stem>_3.csv" "".
+func NumberedPath(path string, n int) string {
+	if n <= 1 {
+		return path
+	}
+	ext := filepath.Ext(path)
+	return fmt.Sprintf("%s_%d%s", strings.TrimSuffix(path, ext), n, ext)
+}
+
+// PrepareOut readies an explicit output path: its directory exists, and a
+// ".part" left by an interrupted run is gone. The file itself is replaced
+// only when the new one is complete.
+func PrepareOut(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	_ = os.Remove(path + ".part")
+	return nil
+}
+
+// CopyResult copies a result file to dst like a CSVFile writes it: through
+// "<dst>.part", renamed when complete.
+func CopyResult(src, dst string) error {
+	if err := PrepareOut(dst); err != nil {
+		return err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	part := dst + ".part"
+	out, err := os.OpenFile(part, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		_ = os.Remove(part)
+		return err
+	}
+	if err := out.Close(); err != nil {
+		_ = os.Remove(part)
+		return err
+	}
+	return os.Rename(part, dst)
 }
 
 func fileExists(p string) bool {

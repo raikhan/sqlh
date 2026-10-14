@@ -77,6 +77,67 @@ type jobState struct {
 	// runs like in psql/sqlplus. Only used by the running job.
 	session      *sql.Conn
 	sessionOwner *database.DBConnection
+
+	// results are complete results in the results directory, which a dump
+	// of the same statement copies instead of running it. Cleared whenever
+	// the session may have changed data (any statement that isn't a plain
+	// read, a new session).
+	results map[resultKey]resultRecord
+}
+
+// resultKey identifies a statement's result: connection, database override
+// and the exact statement text (leading comments, e.g. the header, are not
+// part of it).
+type resultKey struct{ conn, db, sql string }
+
+type resultRecord struct {
+	file string
+	rows int64
+	at   time.Time
+}
+
+// maxResults bounds the remembered results (the oldest goes first).
+const maxResults = 64
+
+// forgetResults: the session may have changed data.
+func (js *jobState) forgetResults() {
+	js.mu.Lock()
+	js.results = nil
+	js.mu.Unlock()
+}
+
+func (js *jobState) rememberResult(k resultKey, r resultRecord) {
+	js.mu.Lock()
+	defer js.mu.Unlock()
+	if js.results == nil {
+		js.results = map[resultKey]resultRecord{}
+	}
+	if _, ok := js.results[k]; !ok && len(js.results) >= maxResults {
+		var oldest resultKey
+		first := true
+		for k2, r2 := range js.results {
+			if first || r2.at.Before(js.results[oldest].at) {
+				oldest, first = k2, false
+			}
+		}
+		delete(js.results, oldest)
+	}
+	js.results[k] = r
+}
+
+// reusableResult returns a remembered result younger than window whose file
+// still exists.
+func (js *jobState) reusableResult(k resultKey, window time.Duration) (resultRecord, bool) {
+	js.mu.Lock()
+	r, ok := js.results[k]
+	js.mu.Unlock()
+	if !ok || window <= 0 || time.Since(r.at) > window {
+		return resultRecord{}, false
+	}
+	if _, err := os.Stat(r.file); err != nil {
+		return resultRecord{}, false
+	}
+	return r, true
 }
 
 type runRequest struct {
@@ -91,8 +152,13 @@ type runRequest struct {
 	file    string
 	line    int
 	col     int
-	out     string // CSV path for the first result set
+	out     string // CSV path for the first result set (later ones numbered)
 	fromCLI bool
+
+	// dump: an export to out that may copy a remembered result of the same
+	// statement (unless fresh)
+	dump  bool
+	fresh bool
 }
 
 // parseRunArgs reads [uri?, range?, limit?, "-show-vertical"?] in any order.
@@ -235,6 +301,7 @@ func (s *Server) closeSession() {
 		}
 	}
 	js.session, js.sessionOwner = nil, nil
+	js.forgetResults() // a new session: its transaction, temp tables, … are gone
 }
 
 // stopJob cancels the running job and waits (bounded) for it to finish.
@@ -267,8 +334,10 @@ type runEnv struct {
 	dialect    sqlsplit.Dialect
 	resultsDir string
 	workspace  string
+	db         string // database override (switched database), "" = the connection's
 	limit      int
 	null       string
+	reuse      *resultRecord // dump: copy this result instead of running
 }
 
 // startRun validates a request and starts it as a background job. Call with
@@ -299,6 +368,7 @@ func (s *Server) startRun(ctx context.Context, req runRequest) (*job, error) {
 		alias:     connAlias(s.curDBCfg),
 		dialect:   sqlsplit.DialectOf(string(s.curDBCfg.Driver)),
 		workspace: s.workspace,
+		db:        s.curDBName,
 		limit:     req.limit,
 		null:      cfg.Null,
 	}
@@ -317,7 +387,14 @@ func (s *Server) startRun(ctx context.Context, req runRequest) (*job, error) {
 		env.limit = cfg.Limit()
 	}
 
-	title := fmt.Sprintf("%s: %s", env.alias, describeRun(req.kind, env.limit, len(stmts)))
+	if req.dump && !req.fresh && len(stmts) == 1 {
+		k := resultKey{env.alias, env.db, stmts[0].SQL}
+		if r, ok := s.jobs.reusableResult(k, cfg.ReuseWindow()); ok {
+			env.reuse = &r
+		}
+	}
+
+	title := fmt.Sprintf("%s: %s", env.alias, describeRun(req, env.limit, len(stmts)))
 	jctx, cancel := context.WithCancel(context.Background())
 	j := &job{title: title, cancel: cancel, done: make(chan struct{})}
 	s.jobs.mu.Lock()
@@ -325,18 +402,23 @@ func (s *Server) startRun(ctx context.Context, req runRequest) (*job, error) {
 	s.jobs.mu.Unlock()
 
 	go s.runJob(jctx, j, session, stmts, req, env)
+	if req.sql == "" && uri != "" {
+		s.stampHeader(uri)
+	}
 	return j, nil
 }
 
-func describeRun(kind jobKind, limit, n int) string {
+func describeRun(req runRequest, limit, n int) string {
 	what := "statement"
 	if n > 1 {
 		what = fmt.Sprintf("%d statements", n)
 	}
-	switch kind {
-	case jobExport:
+	switch kind := req.kind; {
+	case req.dump:
+		return "dump " + what + " → " + filepath.Base(req.out)
+	case kind == jobExport:
 		return "export " + what + " → CSV"
-	case jobPreview:
+	case kind == jobPreview:
 		return fmt.Sprintf("run %s → CSV (first %d rows)", what, limit)
 	default:
 		return fmt.Sprintf("run %s (first %d rows)", what, limit)
@@ -368,6 +450,17 @@ func (s *Server) runJob(ctx context.Context, j *job, session *sql.Conn, stmts []
 	started := time.Now()
 	values := exec.ValueFormatter{Dialect: env.dialect, Null: env.null}
 
+	if env.reuse != nil {
+		res, err := reuseResult(env, req.out, stmts[0])
+		if err == nil {
+			prog.End(res.Summary)
+			j.result = res
+			notify(true, res.Summary)
+			return
+		}
+		log.Println("reuse result, running instead:", err)
+	}
+
 	res := &control.RunResult{Connection: env.alias}
 	var (
 		outcomes []exec.Outcome
@@ -389,12 +482,12 @@ func (s *Server) runJob(ctx context.Context, j *job, session *sql.Conn, stmts []
 				table = &exec.Table{}
 				return table, nil
 			}
-			if req.out != "" && len(files) == 0 {
-				file = req.out
-				if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+			if req.out != "" {
+				// --out / dump: overwritten once complete; later result sets numbered
+				file = exec.NumberedPath(req.out, len(files)+1)
+				if err := exec.PrepareOut(file); err != nil {
 					return nil, err
 				}
-				_ = os.Remove(file) // --out overwrites
 			} else {
 				if err := exec.PrepareDir(env.resultsDir); err != nil {
 					return nil, err
@@ -409,6 +502,10 @@ func (s *Server) runJob(ctx context.Context, j *job, session *sql.Conn, stmts []
 			Progress: func(n int64) {
 				prog.Report(report.RowCount(n))
 			},
+		}
+		readOnly := exec.ReadOnly(st)
+		if !readOnly {
+			s.jobs.forgetResults() // it may change what queries return
 		}
 		out, err := exec.Run(ctx, session, st, newSink, opts)
 		if err != nil {
@@ -449,9 +546,13 @@ func (s *Server) runJob(ctx context.Context, j *job, session *sql.Conn, stmts []
 		if file != "" && out.Kind == exec.KindResultSet {
 			sr.File = file
 			files = append(files, file)
-			if req.out == "" || file != req.out {
+			if req.out == "" {
 				if err := exec.UpdateLatest(env.resultsDir, file); err != nil {
 					log.Println("update latest.csv:", err)
+				}
+				if readOnly && !out.Truncated {
+					s.jobs.rememberResult(resultKey{env.alias, env.db, st.SQL},
+						resultRecord{file: file, rows: out.Rows, at: time.Now()})
 				}
 			}
 		}
@@ -481,10 +582,31 @@ func (s *Server) runJob(ctx context.Context, j *job, session *sql.Conn, stmts []
 		return
 	}
 
-	res.Summary = report.Summary(env.alias, env.workspace, outcomes, files, elapsed)
+	res.Summary = report.Summary(env.alias, env.workspace, outcomes, files, elapsed, req.out == "")
 	prog.End(res.Summary)
 	j.result = res
 	notify(true, res.Summary)
+}
+
+// reuseResult copies a remembered result to out instead of running st.
+func reuseResult(env runEnv, out string, st sqlsplit.Statement) (*control.RunResult, error) {
+	started := time.Now()
+	r := env.reuse
+	if err := exec.CopyResult(r.file, out); err != nil {
+		return nil, err
+	}
+	elapsed := time.Since(started)
+	return &control.RunResult{
+		Connection: env.alias,
+		Summary:    report.Reused(env.alias, env.workspace, out, r.rows, r.at),
+		Statements: []control.StatementResult{{
+			Line: st.Start.Line + 1, Kind: "rows", Rows: r.rows, Affected: -1,
+			File: out, ElapsedMS: elapsed.Milliseconds(),
+		}},
+		Files:      []string{out},
+		ReusedFrom: r.file,
+		ElapsedMS:  elapsed.Milliseconds(),
+	}, nil
 }
 
 func connAlias(cfg *database.DBConfig) string {

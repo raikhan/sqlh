@@ -111,7 +111,9 @@ func fetch(ctx context.Context, c *sql.Conn, newSink func() (Sink, error), opts 
 		return err
 	}
 	err = readRows(ctx, rows, newSink, opts, out)
-	if cerr := rows.Close(); err == nil {
+	// closed here, not deferred: CLOSE/COMMIT need the connection next
+	if cerr := rows.Close(); err == nil { //nolint:sqlclosecheck
+
 		err = cerr
 	}
 	return err

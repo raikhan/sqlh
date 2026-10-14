@@ -146,13 +146,18 @@ func runStandalone(c *cli.Context, p control.RunParams) (*control.RunResult, err
 	if err != nil {
 		return nil, err
 	}
-	name := alias(conn)
-	d := sqlsplit.DialectOf(string(conn.Driver))
-	stmts, err := statements(p, d)
+	stmts, err := statements(p, sqlsplit.DialectOf(string(conn.Driver)))
 	if err != nil {
 		return nil, err
 	}
+	return execStandalone(cfg, ws, ws, conn, stmts, p)
+}
 
+// execStandalone runs stmts on a new connection to conn. Summary paths are
+// shown relative to relTo.
+func execStandalone(cfg *config.Config, ws, relTo string, conn *database.DBConfig, stmts []sqlsplit.Statement, p control.RunParams) (*control.RunResult, error) {
+	name := alias(conn)
+	d := sqlsplit.DialectOf(string(conn.Driver))
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	dbc, err := database.Open(conn)
@@ -199,12 +204,12 @@ func runStandalone(c *cli.Context, p control.RunParams) (*control.RunResult, err
 				table = &exec.Table{}
 				return table, nil
 			}
-			if p.Out != "" && len(files) == 0 {
-				file = p.Out
-				if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+			if p.Out != "" {
+				// overwritten once complete; later result sets numbered
+				file = exec.NumberedPath(p.Out, len(files)+1)
+				if err := exec.PrepareOut(file); err != nil {
 					return nil, err
 				}
-				_ = os.Remove(file)
 			} else {
 				if err := exec.PrepareDir(resultsDir); err != nil {
 					return nil, err
@@ -230,7 +235,7 @@ func runStandalone(c *cli.Context, p control.RunParams) (*control.RunResult, err
 		if file != "" && out.Kind == exec.KindResultSet {
 			sr.File = file
 			files = append(files, file)
-			if file != p.Out {
+			if p.Out == "" {
 				_ = exec.UpdateLatest(resultsDir, file)
 			}
 		}
@@ -242,7 +247,7 @@ func runStandalone(c *cli.Context, p control.RunParams) (*control.RunResult, err
 		res.Table = report.Text(outcomes, tables, false)
 		res.Summary = fmt.Sprintf("%s: %s", name, report.Duration(elapsed))
 	} else {
-		res.Summary = report.Summary(name, ws, outcomes, files, elapsed)
+		res.Summary = report.Summary(name, relTo, outcomes, files, elapsed, p.Out == "")
 	}
 	return res, nil
 }

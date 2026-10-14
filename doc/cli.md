@@ -3,13 +3,15 @@
 `sqlh` with no command (or `sqlh lsp`) is the language server. The other commands work
 with the server of the current workspace — the same connection, session and **unsaved
 editor buffers** — via a Unix socket. Without a running server, `run`, `export`,
-`connections` and `latest` work standalone from the config.
+`connections` and `latest` work standalone from the config. `dump` from the terminal always
+runs standalone, on the connection in the file's header (see [Query files](#query-files-connection-header-and-dump)).
 
 | Command | What it does |
 |---|---|
 | `sqlh run` | run SQL → CSV, first N rows (`--limit`, default `results.previewLimit`); prints the CSV path(s) on stdout, summary on stderr |
 | `sqlh export` | same, all rows |
-| `sqlh connect [alias]` | switch the editor's connection (no alias: pick with fzf); remembered per workspace |
+| `sqlh dump FILE…` | run query files on the connection in their header → `<file>.csv` in the current directory (`-d DIR`, `-o FILE`), all rows; see [Query files](#query-files-connection-header-and-dump) |
+| `sqlh connect [alias]` | switch the editor's connection (no alias: pick with fzf); remembered per workspace; `--file F`: also point F's connection header at it |
 | `sqlh connections` / `ls` | list connections, `*` = current |
 | `sqlh status [--all]` | workspace, connection, running query, results dir (`--all`: all servers) |
 | `sqlh cancel` | cancel the running query |
@@ -20,7 +22,7 @@ editor buffers** — via a Unix socket. Without a running server, `run`, `export
 | `sqlh relations TABLE` | the tables and views related to TABLE, grouped (`--long`, `--json`; `-p` picks one) |
 | `sqlh columns [TABLE] [--prefix p.] [--sep ", "]` | a table's columns; `-p` multi-picks (Tab, Ctrl-A all) → `p.a, p.b`; no TABLE with `-p`: pick the table first |
 | `sqlh schemas [--all]` / `sqlh databases` | lists; `-p` picks one |
-| `sqlh db [NAME]` | switch the editor's connection to another database (PostgreSQL; no NAME: pick) |
+| `sqlh db [NAME]` | switch the editor's connection to another database (PostgreSQL; no NAME: pick); `--file F` as for `connect` |
 
 ## Pickers
 
@@ -93,11 +95,66 @@ In order of precedence:
    `%{cursor_line}`); `--file` without `--line` runs the whole file. With a server, an open
    file's live buffer is used.
 
-Options: `--out PATH` (CSV path for the first result set), `--table` (print a text table instead
+Options: `--out PATH` (CSV path; further result sets `<name>_2.csv`, …), `--table` (print a text table instead
 of writing CSV), `--json` (structured result), `--conn ALIAS` / `--standalone` (run on a separate
 connection, leaving the editor's alone), `-C DIR` (find the workspace from `DIR`).
 
 Ctrl-C cancels the query, also when it runs in the server.
+
+## Query files: connection header and dump
+
+A query file says which connection it runs on in a header among its leading comments:
+
+```sql
+-- sqlh: conn=pg_local db=reports
+
+select …
+```
+
+- **The editor keeps it up to date.** Whenever a statement of an open file runs in the
+  editor's server (code actions, `space i r/e/d`, `sqlh run --file`), and when you switch
+  connection or database from it (`space i C/D`, `sqlh connect/db --file F`), the server
+  rewrites the header — or inserts it at the top — in the **buffer** (`workspace/applyEdit`;
+  the buffer becomes modified, save it for the CLI to see it). `db=` only appears after a
+  database switch. Files that aren't open are never edited.
+- Edit it by hand to point the file somewhere else; other `key=value` pairs are kept.
+- No schema in it: the schema comes from the connection (DSN `search_path`, Oracle login
+  schema). Session state (`SET search_path`, `ALTER SESSION`, temp tables, an open
+  transaction) is not carried over to `dump`: put what the query needs in the file.
+
+`sqlh dump FILE… [-d DIR | -o FILE] [--line L [--col C]] [--conn ALIAS]` runs each file on its
+header's connection (`--conn` overrides; neither → that file fails) on a new connection and
+writes all rows to `DIR/<file>.csv` (default: the current directory; further result sets
+`<file>_2.csv`, …), replacing it only once complete. `--line` runs just the statement at that
+line. `latest.csv` and the results directory are not touched. Several files run independently:
+the others continue when one fails, and the exit status is 1 at the end. CSV paths go to
+stdout, summaries and errors to stderr.
+
+```sh
+sqlh dump reports/monthly.sql                    # → ./monthly.csv
+sqlh dump reports/*.sql -d ~/exports/$(date +%F) # one CSV per file, each on its own connection
+sqlh dump report.sql --conn pg_test -o /tmp/r.csv
+```
+
+From Helix, `space i d` runs `sqlh dump --editor FILE --line L`: the statement at the cursor, in
+the editor's server — its connection (the header follows), the unsaved buffer, progress and
+summary in the status line, `space i X` cancels — into Helix's working directory. Without a
+server it falls back to the terminal behaviour.
+
+**Reuse.** If the same statement (exact text; comments above it, like the header, don't count)
+already produced a complete result in the results directory — an export (`space i e`), or a
+preview (`space i r`) that returned fewer rows than the limit — `space i d` copies that CSV
+instead of running the query again (`… · reused the result from 14:02 (3m ago)`). Only while:
+
+- same connection and database, same editor session: any statement that isn't a plain read
+  (DML, DDL, PL/SQL, `BEGIN`/`COMMIT`, `SELECT … FOR UPDATE`, `nextval`, …), a reconnect and
+  a connection or database switch forget all results;
+- the result is younger than `results.reuseFor` (default `10m`; `0` disables);
+- the CSV still exists.
+
+Writes by other sessions, functions that write, and time-dependent queries (`now()`) are not
+detected: that's what the age limit and the status line are for. `--fresh` always runs; dumps
+from the terminal never reuse.
 
 ## Examples
 
@@ -119,12 +176,13 @@ progress, the summary or the error in the editor.
 | Keys | |
 |---|---|
 | `space i r` / `v` / `e` | run the statement at the cursor → CSV (preview) / → VisiData pane / export all rows |
+| `space i d` | dump the statement at the cursor → `<file>.csv` in Helix's working directory (all rows; copies a recent complete result of the same statement, see [Query files](#query-files-connection-header-and-dump)) |
 | `space i l` | pick a row limit (preset, typed number, `all`), then run |
 | `space i o` | open the latest result in VisiData (Herdr pane) |
-| `space i x` | cancel the running query (`:lsp-workspace-command sqlh.cancel`) |
+| `space i X` | cancel the running query (`:lsp-workspace-command sqlh.cancel`) |
 | `space i t` / `c` | insert a table (related first; after `JOIN` the join clause) / columns (fzf) |
-| `space i C` / `D` | switch connection / database (fzf) |
-| `space i s` / `u` | status (popup) / reload schema metadata (`sqlh.refresh`) |
+| `space i C` / `D` | switch connection / database (fzf); the buffer's connection header follows |
+| `space i S` / `U` | status (popup) / reload schema metadata (`sqlh.refresh`) |
 
 `space a` (code actions) does the same per statement, without the helper.
 

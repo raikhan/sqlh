@@ -23,6 +23,10 @@ import (
 	"github.com/raikhan/sqlh/internal/control"
 )
 
+// headerFileFlag: the editor buffer a switch comes from; the server updates
+// its connection header.
+var headerFileFlag = &cli.StringFlag{Name: "file", Aliases: []string{"f"}, Usage: "update the connection header of `FILE` (if open in the editor)"}
+
 // Commands returns the CLI subcommands.
 func Commands() []*cli.Command {
 	dirFlag := &cli.StringFlag{Name: "dir", Aliases: []string{"C"}, Usage: "find the workspace from `DIR` (default: --file's directory, else cwd)"}
@@ -55,11 +59,12 @@ func Commands() []*cli.Command {
 			Flags:     runFlags,
 			Action:    func(c *cli.Context) error { return runCmd(c, true) },
 		},
+		dumpCommand(dirFlag),
 		{
 			Name:      "connect",
 			Usage:     "switch the editor's connection (no alias: pick with fzf)",
 			ArgsUsage: "[alias]",
-			Flags:     []cli.Flag{dirFlag},
+			Flags:     []cli.Flag{dirFlag, headerFileFlag},
 			Action:    connectCmd,
 		},
 		{
@@ -121,6 +126,14 @@ func expandHome(p string) string {
 
 // absPath is p made absolute, "~" expanded.
 func absPath(p string) (string, error) { return filepath.Abs(expandHome(p)) }
+
+// optionalAbs is absPath, "" staying "".
+func optionalAbs(p string) (string, error) {
+	if p == "" {
+		return "", nil
+	}
+	return absPath(p)
+}
 
 // startDir is where workspace/server resolution starts.
 func startDir(c *cli.Context) string {
@@ -331,8 +344,12 @@ func connectCmd(c *cli.Context) error {
 			return err
 		}
 	}
+	file, err := optionalAbs(c.String("file"))
+	if err != nil {
+		return err
+	}
 	var st control.Status
-	if err := call(cl, control.MethodConnect, control.ConnectParams{Alias: alias}, &st); err != nil {
+	if err := call(cl, control.MethodConnect, control.ConnectParams{Alias: alias, File: file}, &st); err != nil {
 		return err
 	}
 	if st.Connection != nil {

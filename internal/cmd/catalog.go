@@ -282,7 +282,7 @@ func catalogCommands() []*cli.Command {
 			Name:      "db",
 			Usage:     "switch the editor's connection to another database (no NAME: pick)",
 			ArgsUsage: "[NAME]",
-			Flags:     []cli.Flag{&cli.StringFlag{Name: "dir", Aliases: []string{"C"}, Usage: "find the workspace from `DIR`"}},
+			Flags:     []cli.Flag{&cli.StringFlag{Name: "dir", Aliases: []string{"C"}, Usage: "find the workspace from `DIR`"}, headerFileFlag},
 			Action:    dbCmd,
 		},
 	}
@@ -497,8 +497,12 @@ func dbCmd(c *cli.Context) error {
 		}
 		name = vals[0]
 	}
+	file, err := optionalAbs(c.String("file"))
+	if err != nil {
+		return err
+	}
 	var msg string
-	if err := call(cl, control.MethodUseDatabase, control.DatabaseParams{Name: name}, &msg); err != nil {
+	if err := call(cl, control.MethodUseDatabase, control.DatabaseParams{Name: name, File: file}, &msg); err != nil {
 		return err
 	}
 	fmt.Fprintln(os.Stderr, msg)

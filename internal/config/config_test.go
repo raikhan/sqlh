@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/raikhan/sqlh/internal/database"
@@ -206,5 +207,41 @@ func TestGetConfig(t *testing.T) {
 				t.Errorf("unmatch (- want, + got):\n%s", diff)
 			}
 		})
+	}
+}
+
+func TestReuseWindow(t *testing.T) {
+	cases := map[string]time.Duration{
+		"":    DefaultReuseFor,
+		"10m": 10 * time.Minute,
+		"90s": 90 * time.Second,
+		"1h":  time.Hour,
+		"0":   0,
+		"30":  30 * time.Second,
+	}
+	for in, want := range cases {
+		if got := (ResultsConfig{ReuseFor: in}).ReuseWindow(); got != want {
+			t.Errorf("%q: got %s want %s", in, got, want)
+		}
+	}
+	for _, bad := range []string{"soon", "-5m"} {
+		c := &Config{Results: ResultsConfig{ReuseFor: bad}}
+		if err := c.Validate(); err == nil {
+			t.Errorf("%q: want a validation error", bad)
+		}
+	}
+	// YAML: a bare 0 or number decodes into the string field
+	for src, want := range map[string]time.Duration{"results:\n  reuseFor: 0\n": 0, "results:\n  reuseFor: 5m\n": 5 * time.Minute} {
+		p := filepath.Join(t.TempDir(), "c.yml")
+		if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := GetConfig(p)
+		if err != nil {
+			t.Fatalf("%q: %v", src, err)
+		}
+		if got := cfg.Results.ReuseWindow(); got != want {
+			t.Errorf("%q: got %s want %s", src, got, want)
+		}
 	}
 }

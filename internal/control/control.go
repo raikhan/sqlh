@@ -147,6 +147,7 @@ type NotifyParams struct {
 
 type DatabaseParams struct {
 	Name string `json:"name"`
+	File string `json:"file,omitempty"` // as ConnectParams.File
 }
 
 // Connection describes one configured connection.
@@ -171,6 +172,9 @@ type Status struct {
 
 type ConnectParams struct {
 	Alias string `json:"alias"`
+	// File: the editor buffer the switch came from; its connection header
+	// is updated (absolute path, optional).
+	File string `json:"file,omitempty"`
 }
 
 // RunParams selects what to run and how. Exactly one source is used, in
@@ -182,8 +186,12 @@ type RunParams struct {
 	Col   int    `json:"col,omitempty"`  // 1-based, optional
 	Limit int    `json:"limit,omitempty"`
 	All   bool   `json:"all,omitempty"`   // export: no row limit
-	Out   string `json:"out,omitempty"`   // CSV path for the (first) result set
+	Out   string `json:"out,omitempty"`   // CSV path for the first result set; later ones <stem>_N.csv
 	Table bool   `json:"table,omitempty"` // return a text table instead of writing CSV
+	// Dump: an export to Out (all rows) that may copy a complete result of
+	// the same statement the server still has, unless Fresh.
+	Dump  bool `json:"dump,omitempty"`
+	Fresh bool `json:"fresh,omitempty"`
 }
 
 type StatementResult struct {
@@ -203,6 +211,8 @@ type RunResult struct {
 	Files      []string          `json:"files"`
 	Table      string            `json:"table,omitempty"`
 	ElapsedMS  int64             `json:"elapsedMs"`
+	// ReusedFrom: the dump copied this earlier result instead of running.
+	ReusedFrom string `json:"reusedFrom,omitempty"`
 }
 
 // --- socket locations ------------------------------------------------------

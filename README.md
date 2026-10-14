@@ -92,6 +92,15 @@ From the CLI, `sqlh describe TABLE` / `sqlh relations TABLE`, and the table pick
 cursor first and, after `JOIN`, inserts the whole join clause; Ctrl-R drills into a table's
 relationships and inserts the join chain. See [doc/cli.md](doc/cli.md#relationships).
 
+#### Query files
+
+A `-- sqlh: conn=ALIAS [db=NAME]` header at the top of a file records the connection it last
+ran on in the editor (the server keeps it up to date in the buffer as you run statements and
+switch connections). `sqlh dump report.sql [-d DIR]` runs the file there from the terminal and
+writes `report.csv`, e.g. from a scheduled job; Helix `space i d` dumps the statement at the
+cursor, copying a recent complete result of the same query instead of running it again. See
+[doc/cli.md](doc/cli.md#query-files-connection-header-and-dump).
+
 #### CodeAction
 
 ![code_actions](https://github.com/raikhan/sqlh.vim/blob/master/imgs/sqls_vim_demo.gif)

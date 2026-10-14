@@ -462,6 +462,55 @@ Decided: no separate TUI; the table picker and `describe` cover it. Schemas are 
       updatable, `mv_batch_summary`). CADE: 513 read-only, 143 writable views.
 - [ ] Go to definition of a table: generated DDL (columns, keys) the same way.
 
+### Phase 8 — query files: connection header, `sqlh dump`, result reuse
+
+Goal: query files run from the terminal (automation) on the connection last chosen in Helix,
+CSV written next to the caller (`<file>.csv`); `space i d` does the same from the editor.
+
+Decided:
+
+- **Header** `-- sqlh: conn=ALIAS [db=NAME]` in the file's leading comments (`key=value`,
+  other keys kept). `db=` only when the database was switched (`space i D`). No schema: it
+  comes from the connection (DSN `search_path`, Oracle login schema); session state
+  (`SET search_path`, `ALTER SESSION`) is not carried — put it in the file.
+- **The header follows the editor**: the server rewrites (or inserts) it, in open buffers only
+  (`workspace/applyEdit`, versioned; the buffer is modified, the CLI sees it after `:w`):
+  on every run of a document (code actions, `space i r/e/d`, `sqlh run --file` via the server),
+  and on `sqlh connect/db --file F` (Helix `space i C/D` pass the buffer). Files on disk are
+  never touched by the CLI.
+- **`sqlh dump FILE… [-d DIR | -o FILE] [--line L [--col C]] [--conn ALIAS] [--fresh]`**:
+  all rows → `DIR/<stem>.csv` (default: cwd; more result sets `<stem>_2.csv` …), overwritten
+  on success only; `latest.csv` untouched. From the terminal: always standalone, the file on
+  disk, connection `--conn` › header › **error**; several files each on their own header,
+  failures don't stop the others (exit 1 at the end). From Helix (`--editor`, via `sqlh.nu`):
+  through the server — editor's connection (header stamped), live buffer, statement at the
+  cursor, status line, `space i X` cancels; Helix's cwd is the default directory.
+- **`--out` numbering**: also for `run/export --out`: later result sets `<stem>_N.csv` instead
+  of the results directory.
+- **Reuse** (`space i d` only): the server remembers complete results written to the results
+  directory (`e`, or `r` when not truncated) by connection + database + exact statement text
+  (leading comments, i.e. the header, are not part of it); a dump of the same statement copies
+  that CSV instead of running when: same session generation (bumped by any statement that
+  isn't a plain read: DML/DDL/PL/SQL/`BEGIN`/`COMMIT`/…, and on reconnect or switch), younger
+  than `results.reuseFor` (default `10m`, `0` disables), the file still exists. `--fresh`
+  forces a run. Can't see other sessions' writes: hence the age limit and the status line
+  (`reused the result from 14:02`). Terminal dumps never reuse.
+
+- [x] `internal/header`: parse/stamp (CRLF, block comments, quoting, kept keys, UTF-16 ranges)
+- [x] `--out` numbering (`exec.NumberedPath`), old file replaced only on success, no `latest.csv`
+      for out files; `results.reuseFor` (validated; `0`/bare seconds accepted)
+- [x] `sqlh dump` standalone (header required, `--conn`, several files, `--line`, `-d`/`-o`)
+- [x] Server: header stamping on runs and `connect/db --file` (versioned `workspace/applyEdit`
+      from a goroutine); dump via the server (`RunParams.Dump/Fresh`); reuse (`jobState.results`,
+      forgotten by non-read statements via `exec.ReadOnly`, `closeSession`); `RunResult.ReusedFrom`
+- [x] `sqlh.nu dump [--fresh] [--bg]` (shared `detach`), `space i d`, `space i C/D` pass
+      `--file`; doc/cli.md (also fixed `space i X/S/U`), README, config example
+- Verified: unit tests (header, numbering, copy, `ReadOnly`), CLI dump against SQLite
+  in process, server tests with a fake editor applying edits over the real control socket
+  (stamp on run/switch, reuse/forget/fresh/truncated/reuseFor 0/reconnect), end to end with
+  the built binary: scripted LSP client + `sqlh.nu dump --bg` on pg_local (header inserted,
+  status line, reuse after `export`, `--fresh`).
+
 ### Phase 5 — later / optional
 
 - [ ] `EXPLAIN` to buffer
@@ -506,6 +555,9 @@ Decided: no separate TUI; the table picker and `describe` cover it. Schemas are 
 
 - **2026-10-14** PostgreSQL previews through a server-side cursor: `space i r` on a large
   query no longer fetches the whole result (5M rows: 2.8 s → 3 ms).
+
+- **2026-10-14** Phase 8: connection header in query files (kept up to date by the editor),
+  `sqlh dump` for running query files from the terminal, `space i d` with result reuse.
 
 ## 6. Environment notes
 

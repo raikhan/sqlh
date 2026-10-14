@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/raikhan/sqlh/internal/database"
 	"gopkg.in/yaml.v2"
@@ -70,6 +72,34 @@ type ResultsConfig struct {
 	PreviewLimit int `json:"previewLimit" yaml:"previewLimit"`
 	// Null is the text written for SQL NULL. Default: empty.
 	Null string `json:"null" yaml:"null"`
+	// ReuseFor: how long a complete result may stand in for running the same
+	// statement again (`space i d` copies it). A duration ("10m", "90s");
+	// "0" disables. Default: 10m.
+	ReuseFor string `json:"reuseFor" yaml:"reuseFor"`
+}
+
+// DefaultReuseFor applies when results.reuseFor is not set.
+const DefaultReuseFor = 10 * time.Minute
+
+// ReuseWindow returns the effective results.reuseFor (0: reuse disabled).
+func (r ResultsConfig) ReuseWindow() time.Duration {
+	if strings.TrimSpace(r.ReuseFor) == "" {
+		return DefaultReuseFor
+	}
+	d, err := parseDuration(r.ReuseFor)
+	if err != nil || d < 0 {
+		return 0
+	}
+	return d
+}
+
+// parseDuration also takes "0" and a bare number of seconds.
+func parseDuration(s string) (time.Duration, error) {
+	s = strings.TrimSpace(s)
+	if n, err := strconv.Atoi(s); err == nil {
+		return time.Duration(n) * time.Second, nil
+	}
+	return time.ParseDuration(s)
 }
 
 // DefaultPreviewLimit applies when results.previewLimit is not set.
@@ -84,6 +114,11 @@ func (r ResultsConfig) Limit() int {
 }
 
 func (c *Config) Validate() error {
+	if r := strings.TrimSpace(c.Results.ReuseFor); r != "" {
+		if d, err := parseDuration(r); err != nil || d < 0 {
+			return fmt.Errorf("results.reuseFor: %q is not a duration (e.g. 10m, 90s, 0)", r)
+		}
+	}
 	if len(c.Connections) > 0 {
 		return c.Connections[0].Validate()
 	}
