@@ -8,7 +8,7 @@ runs standalone, on the connection in the file's header (see [Query files](#quer
 
 | Command | What it does |
 |---|---|
-| `sqlh run` | run SQL → CSV, first N rows (`--limit`, default `results.previewLimit`); prints the CSV path(s) on stdout, summary on stderr |
+| `sqlh run` | run SQL → CSV, first N rows (`--limit N`, default `results.previewLimit`; `--limit all`; `--limit ask` picks with fzf); prints the CSV path(s) on stdout, summary on stderr; `--open`: open the CSV in the viewer; `--bg`: return at once |
 | `sqlh export` | same, all rows |
 | `sqlh dump FILE…` | run query files on the connection in their header → `<file>.csv` in the current directory (`-d DIR`, `-o FILE`), all rows; see [Query files](#query-files-connection-header-and-dump) |
 | `sqlh connect [alias]` | switch the editor's connection (no alias: pick with fzf); remembered per workspace; `--file F`: also point F's connection header at it |
@@ -17,6 +17,7 @@ runs standalone, on the connection in the file's header (see [Query files](#quer
 | `sqlh cancel` | cancel the running query |
 | `sqlh refresh` | reload schema metadata (after DDL) |
 | `sqlh latest` | path of the newest result CSV: `vd $(sqlh latest)` |
+| `sqlh open [CSV…]` | open the newest result CSV (or the given ones) in `results.viewer`, see [Viewer](#viewer) |
 | `sqlh tables [-s SCHEMA] [--all]` | tables/views as you'd type them (default schema unqualified, others `schema.table`, quoted when needed); `-p` picks one (preview: `describe`); with `--file F --line L --col C` the tables related to the statement's come first and after `JOIN` it inserts the join clause, see [Table picker](#table-picker) |
 | `sqlh describe TABLE` | columns (foreign keys marked), relationships, a view's definition (`--json`) |
 | `sqlh relations TABLE` | the tables and views related to TABLE, grouped (`--long`, `--json`; `-p` picks one) |
@@ -97,9 +98,51 @@ In order of precedence:
 
 Options: `--out PATH` (CSV path; further result sets `<name>_2.csv`, …), `--table` (print a text table instead
 of writing CSV), `--json` (structured result), `--conn ALIAS` / `--standalone` (run on a separate
-connection, leaving the editor's alone), `-C DIR` (find the workspace from `DIR`).
+connection, leaving the editor's alone), `-C DIR` (find the workspace from `DIR`), `--open` (open
+the CSV in the [viewer](#viewer) when done).
+
+`--limit ask` (`run`) picks the row limit with fzf: a preset, a typed number (Enter takes `10`
+as typed, not the `100` it matches), or `all`; Esc cancels.
+
+`--bg` starts the same command again in a detached process (its own session, no terminal, stdio
+on `/dev/null`) and returns at once; the query reports through the server (status line, `sqlh
+cancel`). Piped SQL is passed on; `--table`/`--json` can't be used with it.
 
 Ctrl-C cancels the query, also when it runs in the server.
+
+## Viewer
+
+`sqlh open` and `--open` hand result files to `results.viewer`: a program and its arguments,
+`"{}"` standing for the file(s) (else they are appended), `~` expanded in the program. Default:
+`open` (macOS) / `xdg-open`. The editor's server's configuration is used, else the config file.
+
+```yaml
+results:
+  viewer: ["vd"]                                                       # from a terminal
+  viewer: ["~/.config/helix/open-in-herdr-pane.nu", "0.8", "vd", "{}"] # VisiData in a Herdr pane
+```
+
+From a terminal the viewer inherits it; otherwise (`--editor`, `--bg`, a pipe) sqlh waits for
+it to start and reports its output if it fails.
+
+## Editor mode
+
+`--editor` (on `run`, `export`, `dump`, `open`, `connect`, `db`, `cancel`, `refresh` and the
+catalog commands) says the command was started from an editor keybinding rather than a
+terminal:
+
+- **errors go to the editor's status line** (through the workspace's server), **never to
+  stderr**, and the exit status is 1. Helix 25.07 takes a failed command's stderr as its
+  *output*: `:pipe-to` discards it, `:insert-output` inserts it into the buffer. Without a
+  server Helix just reports "Shell command failed: status 1";
+- summaries and confirmations aren't printed either: the server shows them;
+- **stdin is ignored**: `:pipe-to` sends the selection — whatever the last motion selected —
+  so `run --file F --line L` always runs the statement at the line (`space a` runs a
+  selection).
+
+`--file F` (Helix `%{buffer_name}`) finds the workspace from F's directory — also on
+`latest`, `open`, `status`, `cancel`, `refresh` and the catalog commands — falling back to the
+current directory for scratch buffers.
 
 ## Query files: connection header and dump
 
@@ -143,10 +186,10 @@ sqlh dump reports/*.sql -d ~/exports/$(date +%F) # one CSV per file, each on its
 sqlh dump report.sql --conn pg_test -o /tmp/r.csv
 ```
 
-From Helix, `space i d` runs `sqlh dump --editor FILE --line L`: the statement at the cursor, in
-the editor's server — its connection (the header follows), the unsaved buffer, progress and
-summary in the status line, `space i X` cancels — into Helix's working directory. Without a
-server it falls back to the terminal behaviour.
+From Helix, `space i d` runs `sqlh dump --editor --bg FILE --line L`: the statement at the
+cursor, in the editor's server — its connection (the header follows), the unsaved buffer,
+progress, summary and errors in the status line, `space i X` cancels — into Helix's working
+directory. Without a server it falls back to the terminal behaviour.
 
 **Reuse.** If the same statement (exact text; comments above it, like the header, don't count)
 already produced a complete result in the results directory — an export (`space i e`), or a
@@ -175,16 +218,35 @@ sqlh connect pg_local
 
 ## Helix
 
-Keybindings under `space i` (in `~/.config/helix/config.toml`) call the helper
-`~/.config/helix/sqlh.nu`. Like code actions, they report in the status line, not popups:
-queries start in a detached process, so `:pipe-to` returns at once, and the server shows
-progress, the summary or the error in the editor.
+Keybindings under `space i` (in `~/.config/helix/config.toml`) call the CLI directly, in
+[editor mode](#editor-mode). Like code actions, they report in the status line, not popups:
+queries start with `--bg`, so `:pipe-to` returns at once, and the server shows progress, the
+summary or the error in the editor.
+
+```toml
+[keys.normal.space.i]
+r = ":pipe-to sqlh run --editor --bg --open -f r##'%{buffer_name}'## -l %{cursor_line}"
+e = ":pipe-to sqlh export --editor --bg --open -f r##'%{buffer_name}'## -l %{cursor_line}"
+d = ":pipe-to sqlh dump --editor --bg r##'%{buffer_name}'## -l %{cursor_line}"
+o = ":pipe-to sqlh open --editor -f r##'%{buffer_name}'##"
+t = [":insert-output sqlh tables -p --editor -f r##'%{buffer_name}'## -l %{cursor_line} --col %{cursor_column}", ":redraw"]
+f = ":format"
+C = [":pipe-to sqlh connect --editor -f r##'%{buffer_name}'##", ":redraw"]
+D = [":pipe-to sqlh db --editor -f r##'%{buffer_name}'##", ":redraw"]
+S = ":sh sqlh status -f r##'%{buffer_name}'##"
+X = ":lsp-workspace-command sqlh.cancel"
+U = ":lsp-workspace-command sqlh.refresh"
+```
+
+These are for `shell = ["nu", …]` in Helix's config (`r##'…'##` is a Nushell raw string, so any
+path survives); with the default `sh`, write `'%{buffer_name}'`. `r`/`e` open the result in the
+[viewer](#viewer).
 
 | Keys | |
 |---|---|
-| `space i r` / `e` | run the statement at the cursor → CSV, first `results.previewLimit` rows / all rows, opened in VisiData (Herdr pane) |
+| `space i r` / `e` | run the statement at the cursor → CSV, first `results.previewLimit` rows / all rows, opened in the viewer |
 | `space i d` | dump the statement at the cursor → `<file>.csv` in Helix's working directory (all rows; copies a recent complete result of the same statement, see [Query files](#query-files-connection-header-and-dump)) |
-| `space i o` | open the latest result in VisiData |
+| `space i o` | open the latest result in the viewer |
 | `space i t` | insert a table (related first; after `JOIN` the join clause), see [Table picker](#table-picker) |
 | `space i f` | format the file (`:format`) |
 | `space i C` / `D` | switch connection / database (fzf); the buffer's connection header follows |
@@ -192,22 +254,19 @@ progress, the summary or the error in the editor.
 | `space i X` | cancel the running query (`:lsp-workspace-command sqlh.cancel`) |
 | `space i U` | reload schema metadata after DDL (`:lsp-workspace-command sqlh.refresh`) |
 
-The helper can do more than is bound: `sqlh.nu run --ask-limit` (pick a row limit — preset,
-typed number or `all` — then run), `run` without `--view` (CSV only), `dump --fresh` (never
-reuse) and `insert columns` (multi-pick columns, `--prefix p.`).
+Not bound, but there: `run --limit ask` (pick a row limit — preset, typed number or `all` —
+then run), `run` without `--open` (CSV only), `dump --fresh` (never reuse) and
+`[":insert-output sqlh columns -p --editor -f r##'%{buffer_name}'## --prefix p.", ":redraw"]`
+(multi-pick columns).
 
-`space a` (code actions) does the same per statement, without the helper.
+`space a` (code actions) does the same per statement.
 
-Why the helper:
+Notes:
 
-- Helix 25.07 handles a failed shell command's stderr as its *output*: `:pipe-to` discards
-  it, `:insert-output` inserts it into the buffer. The helper exits with empty stderr and
-  relays errors with `sqlh notify [--error] MESSAGE` (hidden command: shows MESSAGE in the
-  editor's status line via the server).
 - `:sh` shows output in a popup that only Esc/Ctrl-C closes, and sets "Command run" over any
   status message, so queries aren't run from `:sh`.
-- Pickers need the terminal, so they run under `:pipe-to`/`:insert-output`, followed by
-  `:redraw`.
+- Pickers need the terminal, so they run under `:pipe-to`/`:insert-output` (fzf draws on
+  `/dev/tty`), followed by `:redraw`.
 
 ## Files
 

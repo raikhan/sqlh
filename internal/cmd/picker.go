@@ -15,6 +15,7 @@ type pickOpts struct {
 	preview string   // fzf --preview command; {1} is the value field
 	expect  []string // keys that also accept; pickKey reports which one
 	binds   []string // extra --bind specs
+	args    []string // other fzf arguments
 	// display: the field shown and matched (default 2.., after the value);
 	// it may contain ANSI colours.
 	display string
@@ -66,6 +67,7 @@ func pickKey(lines []string, o pickOpts) (string, []string, error) {
 	for _, b := range o.binds {
 		args = append(args, "--bind="+b)
 	}
+	args = append(args, o.args...)
 	extra := strings.Fields(os.Getenv("SQLH_FZF_ARGS"))
 	args = append(args, extra...)
 	scripted := false

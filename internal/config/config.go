@@ -76,6 +76,11 @@ type ResultsConfig struct {
 	// statement again (`space i d` copies it). A duration ("10m", "90s");
 	// "0" disables. Default: 10m.
 	ReuseFor string `json:"reuseFor" yaml:"reuseFor"`
+	// Viewer opens result files (`sqlh open`, `run --open`): the program and
+	// its arguments; "{}" stands for the files, else they are appended; a
+	// leading "~" in the program is expanded. Default: open (macOS),
+	// xdg-open.
+	Viewer []string `json:"viewer" yaml:"viewer"`
 }
 
 // DefaultReuseFor applies when results.reuseFor is not set.

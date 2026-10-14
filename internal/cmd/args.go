@@ -11,24 +11,11 @@ import (
 // "sqlh columns t -p --prefix x." would silently ignore -p and --prefix.
 // Global flags before the subcommand are left alone; "--" ends flag parsing.
 func ReorderArgs(app *cli.App, args []string) []string {
-	if len(args) < 2 {
-		return args
-	}
-	// find the subcommand
-	i := 1
-	for i < len(args) && strings.HasPrefix(args[i], "-") {
-		if takesValue(app.Flags, args[i]) && !strings.Contains(args[i], "=") {
-			i++
-		}
-		i++
-	}
-	if i >= len(args) {
+	i := commandIndex(app, args)
+	if i < 0 {
 		return args
 	}
 	cmd := app.Command(args[i])
-	if cmd == nil {
-		return args
-	}
 	var flags, pos []string
 	rest := args[i+1:]
 	for j := 0; j < len(rest); j++ {
@@ -50,6 +37,22 @@ func ReorderArgs(app *cli.App, args []string) []string {
 	out := append([]string{}, args[:i+1]...)
 	out = append(out, flags...)
 	return append(out, pos...)
+}
+
+// commandIndex is the index of the subcommand in args (after global flags),
+// -1 if there is none.
+func commandIndex(app *cli.App, args []string) int {
+	i := 1
+	for i < len(args) && strings.HasPrefix(args[i], "-") {
+		if takesValue(app.Flags, args[i]) && !strings.Contains(args[i], "=") {
+			i++
+		}
+		i++
+	}
+	if i >= len(args) || app.Command(args[i]) == nil {
+		return -1
+	}
+	return i
 }
 
 func takesValue(flags []cli.Flag, arg string) bool {

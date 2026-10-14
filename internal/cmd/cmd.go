@@ -40,6 +40,9 @@ func Commands() []*cli.Command {
 		&cli.BoolFlag{Name: "table", Aliases: []string{"t"}, Usage: "print a text table instead of writing CSV"},
 		&cli.StringFlag{Name: "conn", Usage: "run standalone on connection `ALIAS` (does not change the editor's connection)"},
 		&cli.BoolFlag{Name: "standalone", Usage: "do not use a running server"},
+		&cli.BoolFlag{Name: "open", Usage: "open the CSV in results.viewer when done"},
+		&cli.BoolFlag{Name: "bg", Usage: "return at once; the query continues in a detached process (reports in the editor)"},
+		editorFlag("started from an editor keybinding: ignore stdin; errors in its status line, nothing on stderr"),
 		dirFlag, jsonFlag,
 	}
 	return append([]*cli.Command{
@@ -48,24 +51,24 @@ func Commands() []*cli.Command {
 			Usage:     "run SQL → CSV (first N rows); prints the CSV path(s)",
 			ArgsUsage: " ",
 			Flags: append([]cli.Flag{
-				&cli.IntFlag{Name: "limit", Aliases: []string{"n"}, Usage: "rows to fetch (default: results.previewLimit, 100)"},
+				&cli.StringFlag{Name: "limit", Aliases: []string{"n"}, Usage: "rows to fetch: a number (default: results.previewLimit, 100), `all` or ask (pick with fzf)"},
 			}, runFlags...),
-			Action: func(c *cli.Context) error { return runCmd(c, false) },
+			Action: editorAction(func(c *cli.Context) error { return runCmd(c, false) }),
 		},
 		{
 			Name:      "export",
 			Usage:     "run SQL → CSV (all rows); prints the CSV path(s)",
 			ArgsUsage: " ",
 			Flags:     runFlags,
-			Action:    func(c *cli.Context) error { return runCmd(c, true) },
+			Action:    editorAction(func(c *cli.Context) error { return runCmd(c, true) }),
 		},
 		dumpCommand(dirFlag),
 		{
 			Name:      "connect",
 			Usage:     "switch the editor's connection (no alias: pick with fzf)",
 			ArgsUsage: "[alias]",
-			Flags:     []cli.Flag{dirFlag, headerFileFlag},
-			Action:    connectCmd,
+			Flags:     []cli.Flag{dirFlag, headerFileFlag, editorFlag("")},
+			Action:    editorAction(connectCmd),
 		},
 		{
 			Name:    "connections",
@@ -77,20 +80,20 @@ func Commands() []*cli.Command {
 		{
 			Name:   "status",
 			Usage:  "show the workspace's server: connection, running query, results dir",
-			Flags:  []cli.Flag{dirFlag, jsonFlag, &cli.BoolFlag{Name: "all", Usage: "list all running servers"}},
+			Flags:  []cli.Flag{dirFlag, wsFileFlag(), jsonFlag, &cli.BoolFlag{Name: "all", Usage: "list all running servers"}},
 			Action: statusCmd,
 		},
 		{
 			Name:   "cancel",
 			Usage:  "cancel the running query",
-			Flags:  []cli.Flag{dirFlag},
-			Action: simpleCmd(control.MethodCancel),
+			Flags:  []cli.Flag{dirFlag, wsFileFlag(), editorFlag("")},
+			Action: editorAction(simpleCmd(control.MethodCancel)),
 		},
 		{
 			Name:   "refresh",
 			Usage:  "reload schema metadata (after DDL)",
-			Flags:  []cli.Flag{dirFlag},
-			Action: simpleCmd(control.MethodRefresh),
+			Flags:  []cli.Flag{dirFlag, wsFileFlag(), editorFlag("")},
+			Action: editorAction(simpleCmd(control.MethodRefresh)),
 		},
 		{
 			// For editor glue: commands started from a keybinding have no terminal
@@ -105,8 +108,16 @@ func Commands() []*cli.Command {
 		{
 			Name:   "latest",
 			Usage:  "print the path of the latest result CSV (e.g. vd $(sqlh latest))",
-			Flags:  []cli.Flag{dirFlag, &cli.StringFlag{Name: "conn", Usage: "standalone: connection `ALIAS` (for a results dir using {conn})"}},
+			Flags:  []cli.Flag{dirFlag, wsFileFlag(), &cli.StringFlag{Name: "conn", Usage: "standalone: connection `ALIAS` (for a results dir using {conn})"}},
 			Action: latestCmd,
+		},
+		{
+			Name:      "open",
+			Usage:     "open the latest result CSV (or CSV...) in results.viewer",
+			ArgsUsage: "[CSV...]",
+			Flags: []cli.Flag{dirFlag, wsFileFlag(), editorFlag(""),
+				&cli.StringFlag{Name: "conn", Usage: "standalone: connection `ALIAS` (for a results dir using {conn})"}},
+			Action: editorAction(openCmd),
 		},
 	}, append(catalogCommands(), relationCommands()...)...)
 }
@@ -142,7 +153,10 @@ func startDir(c *cli.Context) string {
 	}
 	if c.IsSet("file") {
 		if abs, err := absPath(c.String("file")); err == nil {
-			return filepath.Dir(abs)
+			// a new file in a new directory, or a scratch buffer: the cwd
+			if fi, err := os.Stat(filepath.Dir(abs)); err == nil && fi.IsDir() {
+				return filepath.Dir(abs)
+			}
 		}
 	}
 	wd, _ := os.Getwd()
@@ -193,15 +207,18 @@ func readStdin() (string, error) {
 	return string(b), nil
 }
 
-func runParams(c *cli.Context, all bool) (control.RunParams, error) {
+func runParams(c *cli.Context, all bool, limit limitChoice) (control.RunParams, error) {
 	p := control.RunParams{
 		SQL: c.String("sql"), Line: c.Int("line"), Col: c.Int("col"),
-		Table: c.Bool("table"), All: all,
+		Table: c.Bool("table"), All: all || limit.all,
 	}
-	if !all {
-		p.Limit = c.Int("limit")
+	if !p.All {
+		p.Limit = limit.n
 	}
-	if p.SQL == "-" || p.SQL == "" {
+	if p.SQL == "-" && c.Bool("editor") {
+		return p, errors.New("--sql - reads stdin, which --editor ignores")
+	}
+	if (p.SQL == "-" || p.SQL == "") && !c.Bool("editor") {
 		s, err := readStdin()
 		if err != nil {
 			return p, err
@@ -229,9 +246,38 @@ func runParams(c *cli.Context, all bool) (control.RunParams, error) {
 }
 
 func runCmd(c *cli.Context, all bool) error {
-	p, err := runParams(c, all)
+	var limit limitChoice
+	if !all {
+		var err error
+		if limit, err = parseLimit(c.String("limit")); err != nil {
+			return err
+		}
+	}
+	if c.Bool("bg") && (c.Bool("table") || c.Bool("json")) {
+		return errors.New("--bg writes CSV files; it can't print --table or --json")
+	}
+	p, err := runParams(c, all, limit)
 	if err != nil {
 		return err
+	}
+	if limit.ask {
+		l, ok, err := askLimit()
+		if err != nil || !ok {
+			return err
+		}
+		limit = l
+		p.All, p.Limit = l.all, l.n
+	}
+	if c.Bool("bg") {
+		drop := []string{"limit", "sql"}
+		var extra []string
+		if limit.all || limit.n > 0 {
+			extra = append(extra, "--limit", limit.String())
+		}
+		if p.SQL != "" { // possibly from stdin, which the detached process doesn't get
+			extra = append(extra, "--sql", p.SQL)
+		}
+		return detach(c, drop, extra...)
 	}
 	var res *control.RunResult
 	if c.Bool("standalone") || c.String("conn") != "" {
@@ -250,7 +296,13 @@ func runCmd(c *cli.Context, all bool) error {
 	if err != nil {
 		return err
 	}
-	return printRun(c, res)
+	if err := printRun(c, res); err != nil {
+		return err
+	}
+	if c.Bool("open") {
+		return openFiles(c, res.Files)
+	}
+	return nil
 }
 
 // runViaServer runs on the editor's server and waits. Ctrl-C cancels the
@@ -272,6 +324,10 @@ func runViaServer(c *cli.Context, cl *control.Client, p control.RunParams) (*con
 	var res control.RunResult
 	// no timeout: exports can take long; Ctrl-C cancels
 	if err := cl.Call(context.Background(), control.MethodRun, p, &res); err != nil {
+		var re *control.RemoteError
+		if errors.As(err, &re) {
+			return nil, &shownError{err} // the server showed it in the editor
+		}
 		return nil, err
 	}
 	return &res, nil
@@ -425,6 +481,9 @@ func simpleCmd(method string) cli.ActionFunc {
 		if err := call(cl, method, nil, &msg); err != nil {
 			return err
 		}
+		if c.Bool("editor") {
+			notifyEditor(c, msg, false)
+		}
 		fmt.Fprintln(os.Stderr, msg)
 		return nil
 	}
@@ -445,28 +504,36 @@ func notifyCmd(c *cli.Context) error {
 }
 
 func latestCmd(c *cli.Context) error {
+	p, err := latestPath(c)
+	if err != nil {
+		return err
+	}
+	fmt.Println(p)
+	return nil
+}
+
+// latestPath is the newest result CSV of the workspace.
+func latestPath(c *cli.Context) (string, error) {
 	var dir string
 	cl, _, err := server(c)
 	switch {
 	case errors.Is(err, control.ErrNoServer):
 		if dir, err = standaloneResultsDir(c); err != nil {
-			return err
+			return "", err
 		}
 	case err != nil:
-		return err
+		return "", err
 	default:
 		defer cl.Close()
 		var st control.Status
 		if err := call(cl, control.MethodStatus, nil, &st); err != nil {
-			return err
+			return "", err
 		}
 		dir = st.ResultsDir
 	}
-	p := filepath.Join(dir, "latest.csv")
-	target, err := filepath.EvalSymlinks(p)
+	target, err := filepath.EvalSymlinks(filepath.Join(dir, "latest.csv"))
 	if err != nil {
-		return fmt.Errorf("no results yet in %s", dir)
+		return "", fmt.Errorf("no results yet in %s", dir)
 	}
-	fmt.Println(target)
-	return nil
+	return target, nil
 }

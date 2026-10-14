@@ -26,7 +26,9 @@ var revision = "HEAD"
 
 func main() {
 	if err := realMain(); err != nil {
-		fmt.Fprintln(os.Stderr, err.Error())
+		if !errors.Is(err, cmd.ErrReported) { // --editor: shown in the editor
+			fmt.Fprintln(os.Stderr, err.Error())
+		}
 		os.Exit(1)
 	}
 	os.Exit(0)

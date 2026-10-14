@@ -325,6 +325,14 @@ Known limitations (not blocking):
       failed command's stderr as output (`:insert-output` would insert the error), so the
       helper exits with empty stderr and relays the message to the status line
 - [ ] Decide `showDocument` focus behaviour (`takeFocus` vs background load) for non-CSV outputs
+- [x] Helper folded into the CLI, `sqlh.nu` removed; the bindings call `sqlh` directly:
+      `--editor` (errors → status line via the server, nothing on stderr, exit 1 silently via
+      `cmd.ErrReported`; summaries suppressed; stdin ignored), `--bg` (re-exec with `Setsid`,
+      stdio `/dev/null`, piped SQL passed as `--sql`), `run --limit ask|all|N`, `run --open` /
+      `sqlh open` with `results.viewer` (from the server's config via `Status.Viewer`, else the
+      file; default `open`/`xdg-open`), `--file` finds the workspace on every command (scratch
+      buffer → cwd). Server errors from `sqlh/run` come back as `control.RemoteError` and are
+      not shown twice; `controlRun` now notifies all its early errors.
 
 ### Diagnostics (schema-aware lint, no database round-trips)
 

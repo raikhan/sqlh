@@ -40,14 +40,14 @@ func relationCommands() []*cli.Command {
 			Usage:     "show a table or view: columns, relationships (foreign keys, views, guesses), definition",
 			ArgsUsage: "TABLE",
 			Flags:     catalogFlags(),
-			Action:    describeCmd,
+			Action:    editorAction(describeCmd),
 		},
 		{
 			Name:      "relations",
 			Usage:     "list the tables and views related to TABLE (-p: pick one)",
 			ArgsUsage: "TABLE",
 			Flags:     catalogFlags(),
-			Action:    relationsCmd,
+			Action:    editorAction(relationsCmd),
 		},
 		{
 			// fzf bindings of the table picker (drill-down state)
@@ -64,7 +64,6 @@ func relationCommands() []*cli.Command {
 // tablePickFlags are the tables command's picker flags.
 func tablePickFlags() []cli.Flag {
 	return []cli.Flag{
-		&cli.StringFlag{Name: "file", Aliases: []string{"f"}, Usage: "with -p: the SQL file being edited (the editor's buffer if open)"},
 		&cli.IntFlag{Name: "line", Aliases: []string{"l"}, Usage: "with -p: 1-based cursor line in --file (Helix %{cursor_line})"},
 		&cli.IntFlag{Name: "col", Usage: "with -p: 1-based cursor column in --file (Helix %{cursor_column})"},
 		&cli.StringFlag{Name: "insert", Usage: "with -p after JOIN: `join` (table, alias, ON condition) or name (default: relations.insert)"},

@@ -19,6 +19,8 @@ results:
   previewLimit: 100                   # rows for "Run → CSV" and the text view
   null: ""                            # text written for SQL NULL
   reuseFor: 10m                       # `space i d` copies a complete result this recent (0: never)
+  # opens results (`sqlh open`, `run --open`); "{}" = the file(s). Default: open / xdg-open
+  # viewer: ["~/.config/helix/open-in-herdr-pane.nu", "0.8", "vd", "{}"]
 
 connections:
   - alias: pg_local

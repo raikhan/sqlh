@@ -168,6 +168,8 @@ type Status struct {
 	Connected  bool        `json:"connected"`
 	Job        string      `json:"job,omitempty"` // running job, if any
 	ResultsDir string      `json:"resultsDir"`
+	// Viewer: results.viewer, the command that opens result files.
+	Viewer []string `json:"viewer,omitempty"`
 }
 
 type ConnectParams struct {
@@ -406,9 +408,15 @@ func (c *Client) Call(ctx context.Context, method string, params, result interfa
 	err := c.conn.Call(ctx, method, params, result)
 	var rpcErr *jsonrpc2.Error
 	if errors.As(err, &rpcErr) {
-		return errors.New(rpcErr.Message) // plain message for the CLI
+		return &RemoteError{Message: rpcErr.Message} // plain message for the CLI
 	}
 	return err
 }
+
+// RemoteError is an error the server returned (as opposed to a failure to
+// reach it).
+type RemoteError struct{ Message string }
+
+func (e *RemoteError) Error() string { return e.Message }
 
 func (c *Client) Close() error { return c.conn.Close() }

@@ -241,6 +241,8 @@ func catalogFlags(extra ...cli.Flag) []cli.Flag {
 		&cli.StringFlag{Name: "dir", Aliases: []string{"C"}, Usage: "find the workspace from `DIR`"},
 		&cli.StringFlag{Name: "conn", Usage: "standalone: use connection `ALIAS`"},
 		&cli.BoolFlag{Name: "standalone", Usage: "do not use a running server"},
+		&cli.StringFlag{Name: "file", Aliases: []string{"f"}, Usage: "the SQL file being edited: finds the workspace; for tables -p with --line, the statement's context (the editor's buffer if open)"},
+		editorFlag(""),
 	}, extra...)
 }
 
@@ -254,7 +256,7 @@ func catalogCommands() []*cli.Command {
 				&cli.StringFlag{Name: "schema", Aliases: []string{"s"}, Usage: "only `SCHEMA`"},
 				&cli.BoolFlag{Name: "all", Usage: "include system schemas"},
 			}, tablePickFlags()...)...),
-			Action: tablesCmd,
+			Action: editorAction(tablesCmd),
 		},
 		{
 			Name:      "columns",
@@ -264,26 +266,26 @@ func catalogCommands() []*cli.Command {
 				&cli.StringFlag{Name: "prefix", Usage: "prepend `STR` to picked columns, e.g. p."},
 				&cli.StringFlag{Name: "sep", Value: ", ", Usage: "separator between picked columns"},
 			),
-			Action: columnsCmd,
+			Action: editorAction(columnsCmd),
 		},
 		{
 			Name:   "schemas",
 			Usage:  "list schemas (-p: pick one)",
 			Flags:  catalogFlags(&cli.BoolFlag{Name: "all", Usage: "include system schemas"}),
-			Action: schemasCmd,
+			Action: editorAction(schemasCmd),
 		},
 		{
 			Name:   "databases",
 			Usage:  "list databases on the server (-p: pick one)",
 			Flags:  catalogFlags(),
-			Action: databasesCmd,
+			Action: editorAction(databasesCmd),
 		},
 		{
 			Name:      "db",
 			Usage:     "switch the editor's connection to another database (no NAME: pick)",
 			ArgsUsage: "[NAME]",
-			Flags:     []cli.Flag{&cli.StringFlag{Name: "dir", Aliases: []string{"C"}, Usage: "find the workspace from `DIR`"}, headerFileFlag},
-			Action:    dbCmd,
+			Flags:     []cli.Flag{&cli.StringFlag{Name: "dir", Aliases: []string{"C"}, Usage: "find the workspace from `DIR`"}, headerFileFlag, editorFlag("")},
+			Action:    editorAction(dbCmd),
 		},
 	}
 }

@@ -27,7 +27,9 @@ the header; without either the file fails. Several files run independently.
 
 With --editor (the Helix binding) the statement runs in the editor's server on
 its connection, and may copy a complete result of the same statement from the
-results directory instead of running it again (results.reuseFor; --fresh: run).`,
+results directory instead of running it again (results.reuseFor; --fresh: run).
+Errors then show in the editor's status line, not on stderr; --bg returns at
+once and lets the query finish in a detached process.`,
 		ArgsUsage: "FILE...",
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "out-dir", Aliases: []string{"d"}, Usage: "write `DIR`/<file>.csv (default: current directory)"},
@@ -35,11 +37,12 @@ results directory instead of running it again (results.reuseFor; --fresh: run).`
 			&cli.IntFlag{Name: "line", Aliases: []string{"l"}, Usage: "only the statement at this 1-based line (one FILE only)"},
 			&cli.IntFlag{Name: "col", Usage: "1-based column, with --line"},
 			&cli.StringFlag{Name: "conn", Usage: "run on connection `ALIAS` instead of the header's"},
-			&cli.BoolFlag{Name: "editor", Usage: "run in the editor's server (live buffer, its connection; header updated)"},
+			editorFlag("run in the editor's server (live buffer, its connection; header updated); errors in its status line"),
+			&cli.BoolFlag{Name: "bg", Usage: "return at once; the query continues in a detached process (reports in the editor)"},
 			&cli.BoolFlag{Name: "fresh", Usage: "with --editor: always run, never copy an earlier result"},
 			dirFlag,
 		},
-		Action: dumpCmd,
+		Action: editorAction(dumpCmd),
 	}
 }
 
@@ -57,6 +60,15 @@ func dumpCmd(c *cli.Context) error {
 		return errors.New("--line takes one FILE")
 	case !one && c.Bool("editor"):
 		return errors.New("--editor takes one FILE")
+	}
+	if one && c.Bool("editor") && !c.IsSet("dir") {
+		// the file's workspace: its server runs it and shows errors
+		if abs, err := absPath(files[0]); err == nil {
+			_ = c.Set("dir", filepath.Dir(abs))
+		}
+	}
+	if c.Bool("bg") {
+		return detach(c, nil)
 	}
 	wd, err := os.Getwd()
 	if err != nil {

@@ -235,9 +235,15 @@ func (s *Server) notifyEditorError(msg string) {
 }
 
 func (s *Server) controlRun(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.Request) (interface{}, error) {
+	// Errors are also shown in the editor: the CLI may run detached from a
+	// keybinding, with nowhere to print (job errors are reported by the job).
+	fail := func(err error) (interface{}, error) {
+		s.notifyEditorError(err.Error())
+		return nil, err
+	}
 	var p control.RunParams
 	if err := unmarshal(req, &p); err != nil {
-		return nil, err
+		return fail(err)
 	}
 	rr := runRequest{
 		kind: jobPreview, limit: p.Limit, sql: p.SQL, file: p.File, line: p.Line, col: p.Col,
@@ -246,7 +252,7 @@ func (s *Server) controlRun(ctx context.Context, conn *jsonrpc2.Conn, req *jsonr
 	switch {
 	case p.Dump:
 		if p.Out == "" {
-			return nil, errors.New("dump: no output path")
+			return fail(errors.New("dump: no output path"))
 		}
 		rr.kind, rr.dump, rr.fresh, rr.limit = jobExport, true, p.Fresh, 0
 	case p.Table:
@@ -255,17 +261,14 @@ func (s *Server) controlRun(ctx context.Context, conn *jsonrpc2.Conn, req *jsonr
 		rr.kind = jobExport
 	}
 	if p.SQL == "" && p.File == "" {
-		return nil, errors.New("nothing to run: pass SQL on stdin or --sql, or --file and --line")
+		return fail(errors.New("nothing to run: pass SQL on stdin or --sql, or --file and --line"))
 	}
 
 	s.mu.Lock()
 	j, err := s.startRun(ctx, rr)
 	s.mu.Unlock()
 	if err != nil {
-		// Also tell the editor: the CLI may run detached from a keybinding,
-		// with nowhere to print (job errors are reported by the job itself).
-		s.notifyEditorError(err.Error())
-		return nil, err
+		return fail(err)
 	}
 	// Wait without holding s.mu; if the CLI goes away (Ctrl-C), cancel.
 	select {
@@ -294,6 +297,9 @@ func (s *Server) controlStatus() control.Status {
 	}
 	if j := s.runningJob(); j != nil {
 		st.Job = j.title
+	}
+	if cfg := s.getConfig(); cfg != nil {
+		st.Viewer = cfg.Results.Viewer
 	}
 	return st
 }
