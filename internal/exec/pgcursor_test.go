@@ -94,6 +94,39 @@ func TestPGPreviewDoesNotReadEverything(t *testing.T) {
 	}
 }
 
+// Every preview fetches from a cursor; pgx caches prepared statements by
+// text with their result columns, so a FETCH reused across previews brought
+// the first query's columns to the next: "bind message has 2 result formats
+// but query has 3 columns" (08P01), on every preview after it. (One result
+// format applies to all columns, so a 1-column first query hid it.)
+func TestPGPreviewsWithDifferentColumns(t *testing.T) {
+	_, c := pgSession(t)
+	mustExec(t, c, "create temp table sqlh_shape (a int, z text)", "insert into sqlh_shape values (1, 'z')")
+	for _, step := range []struct {
+		sql  string
+		cols int
+	}{
+		{"select g, 'x' as s from generate_series(1, 3) g", 2},
+		{"select g, g * 2 as d, 'x' as s from generate_series(1, 3) g", 3},
+		{"select g from generate_series(1, 3) g", 1},
+		{"select * from sqlh_shape", 2},
+		{"alter table sqlh_shape add column b text, add column c date", -1},
+		{"select * from sqlh_shape", 4}, // the same text, the table changed
+	} {
+		if step.cols < 0 {
+			mustExec(t, c, step.sql)
+			continue
+		}
+		out, tb, err := pgRun(t, c, step.sql, 2)
+		if err != nil || out.Kind != KindResultSet || len(tb.Columns) != step.cols {
+			t.Errorf("%q: %d columns, %+v %v; want %d", step.sql, len(tb.Columns), out, err, step.cols)
+		}
+	}
+	if n := openCursors(t, c); n != 0 {
+		t.Errorf("%d cursors left open", n)
+	}
+}
+
 func TestPGPreviewComplete(t *testing.T) {
 	_, c := pgSession(t)
 	for _, q := range []string{

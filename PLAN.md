@@ -568,6 +568,11 @@ Decided:
 
 - **2026-10-14** PostgreSQL previews through a server-side cursor: `space i r` on a large
   query no longer fetches the whole result (5M rows: 2.8 s → 3 ms).
+  Fix: each preview declares its own cursor (`sqlh_preview_N`). One shared name made every
+  `FETCH` the same text, which pgx's statement cache served with the first preview's result
+  columns: the next query with another column count failed (08P01 "bind message has 5 result
+  formats but query has 9 columns") for the rest of the session, and after a 1-column first
+  query results were decoded with that column's type.
 
 - **2026-10-14** Phase 8: connection header in query files (kept up to date by the editor),
   `sqlh dump` for running query files from the terminal, `space i d` with result reuse.

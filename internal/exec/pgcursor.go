@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v4/stdlib"
@@ -32,7 +33,19 @@ import (
 //     WITH, SELECT … INTO, a syntax error), the statement runs as written.
 //     Errors are then reported as before.
 
-const previewCursor = "sqlh_preview"
+// previewSavepoint guards DECLARE inside the user's transaction.
+const previewSavepoint = "sqlh_preview"
+
+// cursorSeq numbers the preview cursors. Each preview needs its own name:
+// pgx caches prepared statements by their text, result columns included, so
+// one "FETCH … FROM sqlh_preview" served every preview with the first one's
+// columns — PostgreSQL refused the next query with a different column count
+// (08P01 "bind message has 5 result formats but query has 9 columns") until
+// the session ended, and with a 1-column first query the results were
+// decoded as that column's type.
+var cursorSeq atomic.Uint64
+
+func newCursorName() string { return fmt.Sprintf("sqlh_preview_%d", cursorSeq.Add(1)) }
 
 // cursorVerbs: statements a cursor can be declared for.
 var cursorVerbs = map[string]bool{"SELECT": true, "WITH": true, "VALUES": true, "TABLE": true}
@@ -59,11 +72,12 @@ func pgPreview(ctx context.Context, q Querier, st sqlsplit.Statement, newSink fu
 	default: // not PostgreSQL, or a failed transaction
 		return false, nil
 	}
-	if !declare(ctx, c, st.SQL, own) {
+	cursor := newCursorName()
+	if !declare(ctx, c, cursor, st.SQL, own) {
 		return false, nil
 	}
-	err = fetch(ctx, c, newSink, opts, out)
-	return true, finish(ctx, c, own, err)
+	err = fetch(ctx, c, cursor, newSink, opts, out)
+	return true, finish(ctx, c, cursor, own, err)
 }
 
 // pgTxStatus returns the session's transaction status ('I' idle, 'T' in a
@@ -81,8 +95,8 @@ func pgTxStatus(c *sql.Conn) byte {
 
 // declare opens the cursor; false (with everything undone) if PostgreSQL
 // refuses it.
-func declare(ctx context.Context, c *sql.Conn, query string, own bool) bool {
-	begin, undo := "SAVEPOINT "+previewCursor, []string{"ROLLBACK TO SAVEPOINT " + previewCursor, "RELEASE SAVEPOINT " + previewCursor}
+func declare(ctx context.Context, c *sql.Conn, cursor, query string, own bool) bool {
+	begin, undo := "SAVEPOINT "+previewSavepoint, []string{"ROLLBACK TO SAVEPOINT " + previewSavepoint, "RELEASE SAVEPOINT " + previewSavepoint}
 	if own {
 		begin, undo = "BEGIN", []string{"ROLLBACK"}
 	}
@@ -90,13 +104,13 @@ func declare(ctx context.Context, c *sql.Conn, query string, own bool) bool {
 		return false
 	}
 	// a newline after FOR: the statement may start with a "--" comment
-	if _, err := c.ExecContext(ctx, "DECLARE "+previewCursor+" NO SCROLL CURSOR FOR\n"+query); err != nil {
+	if _, err := c.ExecContext(ctx, "DECLARE "+cursor+" NO SCROLL CURSOR FOR\n"+query); err != nil {
 		cleanup(ctx, c, undo...)
 		return false
 	}
 	if !own {
-		if _, err := c.ExecContext(ctx, "RELEASE SAVEPOINT "+previewCursor); err != nil {
-			cleanup(ctx, c, "CLOSE "+previewCursor)
+		if _, err := c.ExecContext(ctx, "RELEASE SAVEPOINT "+previewSavepoint); err != nil {
+			cleanup(ctx, c, "CLOSE "+cursor)
 			return false
 		}
 	}
@@ -105,8 +119,8 @@ func declare(ctx context.Context, c *sql.Conn, query string, own bool) bool {
 
 // fetch reads Limit+1 rows: the extra one tells readRows the result was
 // truncated.
-func fetch(ctx context.Context, c *sql.Conn, newSink func() (Sink, error), opts Options, out *Outcome) error {
-	rows, err := c.QueryContext(ctx, fmt.Sprintf("FETCH FORWARD %d FROM %s", opts.Limit+1, previewCursor))
+func fetch(ctx context.Context, c *sql.Conn, cursor string, newSink func() (Sink, error), opts Options, out *Outcome) error {
+	rows, err := c.QueryContext(ctx, fmt.Sprintf("FETCH FORWARD %d FROM %s", opts.Limit+1, cursor))
 	if err != nil {
 		return err
 	}
@@ -123,18 +137,18 @@ func fetch(ctx context.Context, c *sql.Conn, newSink func() (Sink, error), opts 
 // failure the own transaction is rolled back; in the user's transaction a
 // database error has aborted it, exactly as the statement run as written
 // would have.
-func finish(ctx context.Context, c *sql.Conn, own bool, err error) error {
+func finish(ctx context.Context, c *sql.Conn, cursor string, own bool, err error) error {
 	if err != nil {
 		if own {
 			cleanup(ctx, c, "ROLLBACK")
 		} else {
-			cleanup(ctx, c, "CLOSE "+previewCursor) // fails harmlessly if aborted
+			cleanup(ctx, c, "CLOSE "+cursor) // fails harmlessly if aborted
 		}
 		return err
 	}
 	cctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupTimeout)
 	defer cancel()
-	if _, err := c.ExecContext(cctx, "CLOSE "+previewCursor); err != nil {
+	if _, err := c.ExecContext(cctx, "CLOSE "+cursor); err != nil {
 		if own {
 			cleanup(ctx, c, "ROLLBACK")
 		}
