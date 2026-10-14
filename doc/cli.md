@@ -182,14 +182,19 @@ progress, the summary or the error in the editor.
 
 | Keys | |
 |---|---|
-| `space i r` / `v` / `e` | run the statement at the cursor → CSV (preview) / → VisiData pane / export all rows |
+| `space i r` / `e` | run the statement at the cursor → CSV, first `results.previewLimit` rows / all rows, opened in VisiData (Herdr pane) |
 | `space i d` | dump the statement at the cursor → `<file>.csv` in Helix's working directory (all rows; copies a recent complete result of the same statement, see [Query files](#query-files-connection-header-and-dump)) |
-| `space i l` | pick a row limit (preset, typed number, `all`), then run |
-| `space i o` | open the latest result in VisiData (Herdr pane) |
-| `space i X` | cancel the running query (`:lsp-workspace-command sqlh.cancel`) |
-| `space i t` / `c` | insert a table (related first; after `JOIN` the join clause) / columns (fzf) |
+| `space i o` | open the latest result in VisiData |
+| `space i t` | insert a table (related first; after `JOIN` the join clause), see [Table picker](#table-picker) |
+| `space i f` | format the file (`:format`) |
 | `space i C` / `D` | switch connection / database (fzf); the buffer's connection header follows |
-| `space i S` / `U` | status (popup) / reload schema metadata (`sqlh.refresh`) |
+| `space i S` | status: connection, running query, results directory (popup, Esc closes) |
+| `space i X` | cancel the running query (`:lsp-workspace-command sqlh.cancel`) |
+| `space i U` | reload schema metadata after DDL (`:lsp-workspace-command sqlh.refresh`) |
+
+The helper can do more than is bound: `sqlh.nu run --ask-limit` (pick a row limit — preset,
+typed number or `all` — then run), `run` without `--view` (CSV only), `dump --fresh` (never
+reuse) and `insert columns` (multi-pick columns, `--prefix p.`).
 
 `space a` (code actions) does the same per statement, without the helper.
 
