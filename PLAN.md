@@ -18,7 +18,7 @@ status lives in §4–§5.
 | Results location           | **In-project** `{workspace}/.sqlh/results/`, gitignored. `{conn}_{stamp}.csv` + `latest.csv` symlink.                                                                                                       |
 | Oracle metadata            | **Schema allow-list** per connection (`schemas = [...]`); lazy per-schema loading. Never scan `ALL_TABLES`/`ALL_TAB_COLUMNS` unfiltered.                                                                    |
 | Opening results            | **Save first, don't auto-open.** Viewing (vd in a Herdr pane) is wired on the Helix/Nu side later.                                                                                                          |
-| Preview limit              | Client-side row cap (read N rows, stop) — dialect-agnostic, safe for CTEs/ORDER BY. Server-side `FETCH FIRST`/`LIMIT` rewriting optional later.                                                             |
+| Preview limit              | Client-side row cap (read N rows, stop), statement never rewritten. PostgreSQL through a cursor (`DECLARE … FETCH N+1`): pgx otherwise reads the whole result on close.                                     |
 | Secrets                    | `passwdCmd` (e.g. macOS keychain) / `${ENV}` references in config; no plaintext for work DBs.                                                                                                               |
 | Config format              | YAML (sqls-compatible) for now; TOML deferred (see Phase 1).                                                                                                                                                |
 | Execution splitting        | Own dialect-aware splitter (`internal/sqlsplit`); the completion parser is not used for execution.                                                                                                          |
@@ -226,6 +226,16 @@ Known limitations (not blocking):
 - Limitations: a custom row limit needs the CLI (Phase 3) — Helix can't pass the cursor with
   `:lsp-workspace-command`, so `sqlh.run`/`sqlh.export` require a range (code actions provide it).
   Progress shows nothing while Oracle is still executing (no rows yet); the spinner still runs.
+- [x] PostgreSQL previews through a cursor (`internal/exec/pgcursor.go`). Abandoning the rows
+      after N is cheap on go-ora (batched fetch) and SQLite, but PostgreSQL streams the whole
+      result and pgx's `rows.Close()` reads it to the end: a 100-row preview of 5M rows took
+      2.8 s, as long as the export. Now `DECLARE sqlh_preview NO SCROLL CURSOR FOR <statement>;
+      FETCH N+1; CLOSE` (3 ms; first-rows plans via `cursor_tuple_fraction`). Idle session: own
+      `BEGIN … COMMIT` (like autocommit); in the user's transaction: declared there, savepoint
+      around `DECLARE`; failed transaction or `DECLARE` refused (data-modifying `WITH`,
+      `SELECT … INTO`, syntax error): run as written, errors unchanged. Only `SELECT`/`WITH`/
+      `VALUES`/`TABLE` with a limit on a pinned session; exports unchanged. Tests need a
+      server: `SQLH_TEST_PG=<dsn> go test ./internal/exec`.
 
 ### Phase 3 — control plane + CLI ✅ done
 
@@ -455,7 +465,8 @@ Decided: no separate TUI; the table picker and `describe` cover it. Schemas are 
 ### Phase 5 — later / optional
 
 - [ ] `EXPLAIN` to buffer
-- [ ] Server-side LIMIT rewriting for simple SELECTs
+- [ ] Server-side LIMIT rewriting for simple SELECTs (PostgreSQL done with a cursor; MySQL
+      drains like pgx if ever needed)
 - [ ] `modernc.org/sqlite` (cgo-free static binary), pgx v5
 - [ ] Upstream PRs to sqls-server/sqls: `executeCommandProvider`, schema-qualified alias
       columns, `join schema.`, exit panic (generic, non-controversial)
@@ -493,12 +504,17 @@ Decided: no separate TUI; the table picker and `describe` cover it. Schemas are 
   drill-down, join completion and hover for views. Go to definition of views (read-only
   definition files), diagnostics for writes to read-only views and materialized views.
 
+- **2026-10-14** PostgreSQL previews through a server-side cursor: `space i r` on a large
+  query no longer fetches the whole result (5M rows: 2.8 s → 3 ms).
+
 ## 6. Environment notes
 
 - Helix: `[language-server.sqlh] command = "sqlh"`, `args = ["-log", "/tmp/sqlh.log"]`
 - Binary: `$GOPATH/bin/sqlh` (`just install` from repo root); CLI: `doc/cli.md`
 - Tests isolating sockets/state: `SQLH_RUNTIME_DIR=/tmp/sqlh-rt XDG_STATE_HOME=/tmp/sqlh-state`;
   `/tmp/sqls-build/t_p3.py` (CLI↔server scenario)
+- PostgreSQL exec tests (cursor previews) run against a real server, skipped otherwise:
+  `SQLH_TEST_PG='host=localhost user=… password=… dbname=sdsai sslmode=disable' go test ./internal/exec`
 - Config: `~/.config/sqlh/config.yml` (example: `doc/config.example.yml`); connections
   `oracle_dev` (default; keychain `sqlh-oracle_dev`, schemas CADE), `pg_local`, `sqlite_scratch`
 - Test files: `scratch/test.sql` (PG), `scratch/oracle.sql`, `scratch/sqlite.sql`

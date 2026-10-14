@@ -34,3 +34,12 @@ mysql -u root -proot -h 127.0.0.1 -P 13305 -D mysql < help_functions_mysql56.sql
 mysql -u root -proot -h 127.0.0.1 -P 13306 -D mysql < help_functions_mysql57.sql > ./export/help_functions_mysql57.txt
 mysql -u root -proot -h 127.0.0.1 -P 13307 -D mysql < help_functions_mysql8.sql  > ./export/help_functions_mysql8.txt
 ```
+
+## Tests against PostgreSQL
+
+`internal/exec` has PostgreSQL tests (previews through a cursor) that need a server; they are
+skipped unless `SQLH_TEST_PG` holds a DSN:
+
+```sh
+SQLH_TEST_PG='host=localhost port=5432 user=… password=… dbname=… sslmode=disable' go test ./internal/exec
+```

@@ -115,9 +115,9 @@ func StripLeadingComments(q string) string {
 
 // Run executes one statement. newSink is called only when the statement
 // returns a result set, so DML never creates output files.
-func Run(ctx context.Context, q Querier, st sqlsplit.Statement, newSink func() (Sink, error), opts Options) (Outcome, error) {
+func Run(ctx context.Context, q Querier, st sqlsplit.Statement, newSink func() (Sink, error), opts Options) (out Outcome, err error) {
 	start := time.Now()
-	out := Outcome{Line: st.Start.Line, Affected: -1}
+	out = Outcome{Line: st.Start.Line, Affected: -1}
 	defer func() { out.Elapsed = time.Since(start) }()
 
 	if !ReturnsRows(st) {
@@ -134,8 +134,11 @@ func Run(ctx context.Context, q Querier, st sqlsplit.Statement, newSink func() (
 				out.Affected = n
 			}
 		}
-		out.Elapsed = time.Since(start)
 		return out, nil
+	}
+
+	if ok, err := pgPreview(ctx, q, st, newSink, opts, &out); ok {
+		return out, err
 	}
 
 	rows, err := q.QueryContext(ctx, st.SQL)
@@ -143,17 +146,22 @@ func Run(ctx context.Context, q Querier, st sqlsplit.Statement, newSink func() (
 		return out, err
 	}
 	defer rows.Close()
+	return out, readRows(ctx, rows, newSink, opts, &out)
+}
 
+// readRows sends a result set to a new sink (DML without a result set,
+// e.g. PostgreSQL "WITH … UPDATE" without RETURNING, gets none). The caller
+// closes rows.
+func readRows(ctx context.Context, rows *sql.Rows, newSink func() (Sink, error), opts Options, out *Outcome) error {
 	cols, err := rows.Columns()
 	if err != nil {
-		return out, err
+		return err
 	}
-	if len(cols) == 0 { // e.g. PostgreSQL "WITH ... UPDATE" without RETURNING
+	if len(cols) == 0 {
 		for rows.Next() {
 		}
 		out.Kind = KindExecuted
-		out.Elapsed = time.Since(start)
-		return out, rows.Err()
+		return rows.Err()
 	}
 	types := make([]string, len(cols))
 	if cts, err := rows.ColumnTypes(); err == nil {
@@ -169,11 +177,11 @@ func Run(ctx context.Context, q Querier, st sqlsplit.Statement, newSink func() (
 
 	sink, err := newSink()
 	if err != nil {
-		return out, err
+		return err
 	}
 	if err := sink.Begin(cols); err != nil {
 		sink.Abort()
-		return out, err
+		return err
 	}
 	out.Kind = KindResultSet
 	out.Columns = len(cols)
@@ -192,14 +200,14 @@ func Run(ctx context.Context, q Querier, st sqlsplit.Statement, newSink func() (
 		}
 		if err := rows.Scan(ptrs...); err != nil {
 			sink.Abort()
-			return out, err
+			return err
 		}
 		for i, v := range vals {
 			strs[i] = opts.Values.Format(v, types[i])
 		}
 		if err := sink.Row(strs); err != nil {
 			sink.Abort()
-			return out, err
+			return err
 		}
 		out.Rows++
 		if opts.Progress != nil && out.Rows%1000 == 0 && time.Since(lastReport) >= time.Second {
@@ -209,15 +217,11 @@ func Run(ctx context.Context, q Querier, st sqlsplit.Statement, newSink func() (
 	}
 	if err := rows.Err(); err != nil {
 		sink.Abort()
-		return out, err
+		return err
 	}
 	if err := ctx.Err(); err != nil { // cancelled between rows
 		sink.Abort()
-		return out, err
+		return err
 	}
-	if err := sink.End(out.Truncated); err != nil {
-		return out, err
-	}
-	out.Elapsed = time.Since(start)
-	return out, nil
+	return sink.End(out.Truncated)
 }
