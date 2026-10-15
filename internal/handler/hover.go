@@ -10,6 +10,7 @@ import (
 	"github.com/raikhan/sqlh/ast/astutil"
 	"github.com/raikhan/sqlh/internal/database"
 	"github.com/raikhan/sqlh/internal/lsp"
+	"github.com/raikhan/sqlh/internal/sqlsplit"
 	"github.com/raikhan/sqlh/parser"
 	"github.com/raikhan/sqlh/parser/parseutil"
 	"github.com/raikhan/sqlh/token"
@@ -33,7 +34,11 @@ func (s *Server) handleTextDocumentHover(ctx context.Context, conn *jsonrpc2.Con
 		return nil, fmt.Errorf("document not found: %s", params.TextDocument.URI)
 	}
 
-	res, err := hover(f.Text, params, s.worker.Cache())
+	var d sqlsplit.Dialect
+	if s.curDBCfg != nil {
+		d = sqlsplit.DialectOf(string(s.curDBCfg.Driver))
+	}
+	res, err := hover(f.Text, params, s.worker.Cache(), d)
 	if err != nil {
 		if errors.Is(err, ErrNoHover) {
 			return nil, nil
@@ -43,9 +48,13 @@ func (s *Server) handleTextDocumentHover(ctx context.Context, conn *jsonrpc2.Con
 	return res, nil
 }
 
-func hover(text string, params lsp.HoverParams, dbCache *database.DBCache) (*lsp.Hover, error) {
+func hover(text string, params lsp.HoverParams, dbCache *database.DBCache, d sqlsplit.Dialect) (*lsp.Hover, error) {
 	if dbCache == nil {
 		return nil, nil
+	}
+	// DDL statements and DML tails: the objects they name
+	if h := ddlHover(text, params.Position, dbCache, d); h != nil {
+		return h, nil
 	}
 
 	pos := token.Pos{

@@ -96,6 +96,10 @@ func completionTypeIs(completionTypes []completionType, expect completionType) b
 }
 
 func (c *Completer) Complete(text string, params lsp.CompletionParams, lowercaseKeywords bool) ([]lsp.CompletionItem, error) {
+	// DDL statements and DML tails (RETURNING, ON CONFLICT, MERGE)
+	if items, ok := c.ddlComplete(text, params, lowercaseKeywords); ok {
+		return items, nil
+	}
 	parsed, err := parser.Parse(text)
 	if err != nil {
 		return nil, err

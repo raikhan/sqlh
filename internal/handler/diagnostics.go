@@ -41,8 +41,10 @@ func (s *Server) scheduleLint(uri string) {
 	hs := s.headerState()
 	enabled := s.dbConn != nil && s.curDBCfg != nil && s.getConfig().DiagnosticsEnabled()
 	var d sqlsplit.Dialect
+	executedKeyPrefix := ""
 	if enabled {
 		d = sqlsplit.DialectOf(string(s.curDBCfg.Driver))
+		executedKeyPrefix = connAlias(s.curDBCfg) + "\t" + s.curDBName + "\t"
 	}
 
 	l := &s.lint
@@ -62,7 +64,8 @@ func (s *Server) scheduleLint(uri string) {
 			cat = s.lintCatalog(d)
 		}
 		// the connection header is checked even with diagnostics: false
-		diags := append(headerDiagnostics(text, hs), toLSPDiagnostics(lint.Check(text, cat))...)
+		opts := lint.Options{SkipDDL: s.jobs.executedDDLFilter(executedKeyPrefix)}
+		diags := append(headerDiagnostics(text, hs), toLSPDiagnostics(lint.CheckWith(text, cat, opts))...)
 		l.mu.Lock()
 		stale := l.gen[uri] != gen
 		l.mu.Unlock()
@@ -162,6 +165,24 @@ func buildCatalog(cache *database.DBCache, d sqlsplit.Dialect) *lint.Catalog {
 		if w := v.Writes; w != nil {
 			b.Writes(v.Schema, v.Name, v.Materialized, w.Insert, w.Update, w.Delete)
 		}
+	}
+	if rel := cache.Relations; rel != nil && rel.ViewsLoaded {
+		for _, t := range cache.SchemaTables[strings.ToUpper(def)] {
+			b.Kind(def, t, string(rel.Kind(t)))
+		}
+		b.KindsKnown(def)
+	}
+	if cache.Objects != nil {
+		for _, x := range cache.Objects.List() {
+			if x.Kind != database.ObjectType {
+				b.Object(x.Kind, x.Schema, x.Name, x.Table)
+			}
+		}
+		for _, p := range cache.Objects.Partials() {
+			kind, schema, _ := strings.Cut(p, "\t")
+			b.ObjectsPartial(kind, schema)
+		}
+		b.ObjectsKnown(true)
 	}
 	switch d {
 	case sqlsplit.PostgreSQL, sqlsplit.SQLite:

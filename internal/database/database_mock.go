@@ -549,3 +549,17 @@ func init() {
 	RegisterOpen("mock", func(connCfg *DBConfig) (*DBConnection, error) { return &DBConnection{}, nil })
 	RegisterFactory("mock", NewMockDBRepository)
 }
+
+// SchemaObjects implements ObjectLister.
+func (m *MockDBRepository) SchemaObjects(ctx context.Context) (*SchemaObjects, error) {
+	return NewSchemaObjects([]*SchemaObject{
+		{Kind: ObjectIndex, Schema: "world", Name: "city_pkey", Table: "city", Detail: "primary key", Columns: []string{"ID"}},
+		{Kind: ObjectIndex, Schema: "world", Name: "idx_city_name", Table: "city", Columns: []string{"Name"}},
+		{Kind: ObjectConstraint, Schema: "world", Name: "city_pkey", Table: "city", Detail: "primary key", Columns: []string{"ID"}},
+		{Kind: ObjectConstraint, Schema: "world", Name: "fk_city_country", Table: "city", Detail: "foreign key", Columns: []string{"CountryCode"}, RefTable: "country"},
+		{Kind: ObjectConstraint, Schema: "world", Name: "country_pkey", Table: "country", Detail: "primary key", Columns: []string{"Code"}},
+		{Kind: ObjectSequence, Schema: "world", Name: "city_id_seq"},
+		{Kind: ObjectTrigger, Schema: "world", Name: "trg_city_audit", Table: "city"},
+		{Kind: ObjectType, Schema: "world", Name: "continent_kind", Detail: "enum"},
+	}), nil
+}

@@ -34,6 +34,17 @@ materialized view), from the database's own catalog (PostgreSQL `pg_relation_is_
 Oracle `ALL_UPDATABLE_COLUMNS`, INSTEAD OF triggers and rules included). Turn off with
 `diagnostics: false`.
 
+DDL is checked too, statement by statement in document order: unknown tables in
+`ALTER`/`DROP` (not with `IF EXISTS`)/`TRUNCATE`/`CREATE INDEX … ON`/`REFERENCES`/`COMMENT ON`,
+`DROP VIEW` on a table (and the other wrong-kind drops), unknown columns in `DROP`/`RENAME`/
+`ALTER COLUMN`, index and key column lists, `REFERENCES t (col)`, `ADD COLUMN` of a column that
+exists, unknown indexes, constraints, sequences and triggers, key columns a `CREATE TABLE`
+doesn't define, and the query of `CREATE VIEW … AS`. Objects created, altered or dropped by
+earlier statements of the file count (also `EXECUTE IMMEDIATE '<DDL>'` in PL/SQL blocks), and a
+DDL statement that ran successfully isn't checked again (`DROP TABLE t` would otherwise turn red
+once `t` is gone). `INSERT`/`UPDATE`/`DELETE … RETURNING`, `ON CONFLICT` and `MERGE` columns are
+checked against the target table.
+
 #### Auto Completion
 
 ![completion](./imgs/sqlh-completion.gif)
@@ -47,12 +58,33 @@ Oracle `ALL_UPDATABLE_COLUMNS`, INSTEAD OF triggers and rules included). Turn of
         - [x] Scoping per query level: an inner subquery's or CTE body's `FROM` doesn't leak
               into the outer query; `UNION` branches are separate; correlated subqueries see
               the enclosing query's aliases (`b.` inside `EXISTS (…)`)
-    - [x] INSERT
-    - [x] UPDATE
-    - [x] DELETE
-- DDL(Data Definition Language)
-    - [ ] CREATE TABLE
-    - [ ] ALTER TABLE
+    - [x] INSERT (incl. `RETURNING`, `ON CONFLICT (…) DO UPDATE SET` with `EXCLUDED.`)
+    - [x] UPDATE, DELETE (incl. `RETURNING`)
+    - [x] MERGE (`INTO`/`USING` tables, `UPDATE SET`/`INSERT (…)` target columns)
+- DDL(Data Definition Language): the keywords that fit the position, then names
+    - [x] CREATE TABLE: column types of the dialect (PostgreSQL, Oracle, SQLite, a generic set
+          for the others; user types and domains too), column and table constraints,
+          `REFERENCES` tables (the one guessed from the column name first, `customer_id` →
+          `customer`) and their columns (keys first), key column lists from the columns
+          defined above, `CHECK`/`DEFAULT` expressions; `… AS SELECT` like a query
+    - [x] ALTER TABLE: tables, actions, columns of the table (`DROP`/`RENAME`/`ALTER`/`MODIFY`
+          `COLUMN`), types after `ADD [COLUMN] x`/`TYPE`, constraints, triggers
+    - [x] DROP / TRUNCATE / COMMENT ON / GRANT … ON / ALTER VIEW|INDEX|SEQUENCE|TRIGGER: only
+          the kind of object named (`DROP VIEW` → views, `DROP INDEX` → indexes, `DROP
+          SEQUENCE`, `DROP TRIGGER`, `DROP TYPE`), `schema.` qualified, `COMMENT ON COLUMN t.`
+    - [x] CREATE INDEX (`ON` table, its columns), CREATE VIEW (`AS SELECT` like a query),
+          CREATE TRIGGER (`ON` table), CREATE SEQUENCE options
+
+    Index, constraint, sequence, trigger and type names come from the database's catalog
+    with the background load (Oracle: the allowed schemas; a non-owner login may not see
+    another owner's triggers and sequences).
+
+    The schema cache is reloaded after a run that executed DDL (`refreshAfterDDL: false` to
+    turn off; `space i U` / `sqlh refresh` still reload by hand).
+
+DDL is formatted with its own layout: a `CREATE TABLE`'s columns one per line, an `ALTER TABLE`
+with several actions one action per line, other DDL on one line, the query of `CREATE VIEW … AS`
+below its header.
 
 #### Functions
 
@@ -173,6 +205,9 @@ lowercaseKeywords: false
 # Underline unknown tables, aliases and columns, checked against the schema cache
 # (never the database). Default: true.
 diagnostics: true
+# Reload the schema cache after a run that executed DDL (CREATE, ALTER, DROP, RENAME,
+# COMMENT). Default: true.
+refreshAfterDDL: true
 relations:
   # After JOIN, the table picker inserts "table alias ON …" (join) or the name (name).
   insert: join

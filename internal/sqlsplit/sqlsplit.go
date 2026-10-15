@@ -64,6 +64,8 @@ type Statement struct {
 	Start, End Position
 	// PLSQL is true for Oracle PL/SQL units.
 	PLSQL bool
+	// Terminated: ended by ';' or a '/' line, not by the end of the text.
+	Terminated bool
 }
 
 var (
@@ -316,12 +318,14 @@ func split(text string, d Dialect, hazards *[]Hazard) []Statement {
 
 		endIdx := -1 // exclusive end of statement text
 		var end Position
+		terminated := false
 		lastSig, lastSigPos := startIdx, start // after last significant rune
 		for !s.eof() {
 			if d == Oracle && s.peek(0) == '/' {
 				if lineEnd, ok := s.slashLine(s.i); ok {
 					s.note("'/' terminator line")
 					endIdx, end = lastSig, lastSigPos
+					terminated = true
 					for s.i < lineEnd {
 						s.advance()
 					}
@@ -338,6 +342,7 @@ func split(text string, d Dialect, hazards *[]Hazard) []Statement {
 					endIdx = s.i
 					s.advance()
 					end = s.pos()
+					terminated = true
 					break
 				}
 			}
@@ -354,7 +359,7 @@ func split(text string, d Dialect, hazards *[]Hazard) []Statement {
 			sql = strings.TrimSpace(trailingSemiRe.ReplaceAllString(sql, ""))
 		}
 		if sql != "" {
-			out = append(out, Statement{SQL: sql, Start: start, End: end, PLSQL: plsql})
+			out = append(out, Statement{SQL: sql, Start: start, End: end, PLSQL: plsql, Terminated: terminated})
 		}
 	}
 }

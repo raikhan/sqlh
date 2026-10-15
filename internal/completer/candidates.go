@@ -596,6 +596,9 @@ func (c *Completer) SchemaCandidates() []lsp.CompletionItem {
 	candidates := []lsp.CompletionItem{}
 	dbs := c.DBCache.SortedSchemas()
 	for _, db := range dbs {
+		if strings.HasPrefix(db, "pg_temp_") || strings.HasPrefix(db, "pg_toast") {
+			continue // PostgreSQL's per-session internals
+		}
 		candidate := lsp.CompletionItem{
 			Label:  db,
 			Kind:   lsp.ModuleCompletion,

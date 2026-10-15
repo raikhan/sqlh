@@ -34,6 +34,9 @@ type Config struct {
 	// Diagnostics: underline unknown tables, aliases and columns (checked
 	// against the schema cache, never the database). Default: true.
 	Diagnostics *bool `json:"diagnostics" yaml:"diagnostics"`
+	// RefreshAfterDDL: reload the schema cache after a run that executed DDL
+	// (CREATE, ALTER, DROP, RENAME, COMMENT). Default: true.
+	RefreshAfterDDL *bool `json:"refreshAfterDDL" yaml:"refreshAfterDDL"`
 	// Relations: the table picker and join completion.
 	Relations RelationsConfig `json:"relations" yaml:"relations"`
 }
@@ -61,6 +64,10 @@ func (r RelationsConfig) MaybeEnabled() bool { return r.Maybe == nil || *r.Maybe
 
 // DiagnosticsEnabled reports whether diagnostics are on (the default).
 func (c *Config) DiagnosticsEnabled() bool { return c.Diagnostics == nil || *c.Diagnostics }
+
+// RefreshAfterDDLEnabled reports whether the schema cache is reloaded after
+// DDL runs (the default).
+func (c *Config) RefreshAfterDDLEnabled() bool { return c.RefreshAfterDDL == nil || *c.RefreshAfterDDL }
 
 // ResultsConfig controls query result files.
 type ResultsConfig struct {

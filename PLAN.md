@@ -321,7 +321,7 @@ Known limitations (not blocking):
       - unknown table in FROM/JOIN/INTO/UPDATE/USING/DELETE, with "did you mean"
       - unknown column on a resolved table: `alias.col`, INSERT column list, UPDATE SET
 - Quiet when unsure: scope = all tables of the statement (subqueries included, so correlated
-  references never trip); skips PL/SQL, DDL, templates (`${x}`, `{{x}}`, `{x}`), `$$`/q-quotes,
+  references never trip); skips PL/SQL, templates (`${x}`, `{{x}}`, `{x}`), `$$`/q-quotes,
   SQL*Plus `&var`, dblinks, schemas not in the cache, table functions/CTEs/derived tables
   (columns unknown), `alias(col, …)`, PARTITION/SAMPLE/PIVOT/AS OF…; Oracle unqualified names
   only once synonyms are loaded (`ALL_SYNONYMS`, PUBLIC + allowed schemas, background load) and
@@ -501,9 +501,267 @@ Decided:
   the built binary: scripted LSP client + `sqlh.nu dump --bg` on pg_local (header inserted,
   status line, reuse after `export`, `--fresh`).
 
+### Phase 9 — DDL awareness (completion, hover, lint, format) ✅ done
+
+Trigger: hands-on test (2026-10-14) — keywords complete at the start of a DDL statement and
+nothing after them. Census below from a probe of ~100 cursor positions against the mock
+schema (`city`/`country`/`countrylanguage`, handler-level `textDocument/completion` and
+`hover`) plus the formatter on typical DDL. "kw" = the dialect's whole keyword list (145
+for the default list, ~450 for PostgreSQL), unfiltered by context.
+
+#### 9.1 Census
+
+**Root causes**
+
+1. `parseutil.CheckSyntaxPosition` knows only DML anchors (`SELECT`, `FROM`, `WHERE`, `SET`,
+   `JOIN`, `ON`, `INSERT INTO`, `TRUNCATE`, …). Any other position falls to the completer's
+   `default` branch: whole keyword list + functions with a prefix. No `TABLE`, `VIEW`,
+   `COLUMN`, `REFERENCES`, `RETURNING`, `INDEX … ON`, `COMMENT ON` anchors.
+2. `isInsertColumns` is "the cursor is inside any parenthesis": every `(…)` is treated as an
+   INSERT column list → columns of the scope's tables, never keywords. In `CREATE TABLE t (`
+   the scope table is `t` (not in the cache) → empty list.
+3. The scope collector counts `TABLE` as a table keyword, so `ALTER TABLE city …` puts `city`
+   in scope (good) and `CREATE TABLE t` puts `t` (unknown) in scope.
+4. The parser turns `name(` (no space) into a `FunctionLiteral`: `city(Name)`, `t(id int)`,
+   `numeric(12,2)` — position checks then see a function call.
+5. `ON` always means a join condition (`getJoinOnCondition`): `CREATE INDEX i ON |`,
+   `GRANT … ON |`, `CREATE TRIGGER … ON |` offer columns of an empty scope → nothing.
+6. A member identifier in the default branch is treated as `pkg.function`:
+   `COMMENT ON COLUMN city.|`, `ALTER TABLE world.|`, `DROP TABLE world.|` → nothing.
+7. No data-type list anywhere (types only appear by accident in keyword lists: PG has
+   `VARCHAR`/`INTEGER`/`TEXT`, Oracle has no `VARCHAR2`/`NUMBER`, SQLite none).
+8. Oracle's keyword list (`oracleKeyWords`, 90 words) lacks `JOIN`, `LEFT`, `INNER`, `MERGE`,
+   `USING`, `PRIMARY`, `KEY`, `FOREIGN`, `REFERENCES`, `CONSTRAINT`, `ADD`, `MODIFY`,
+   `COLUMN`, `RENAME`, `TRUNCATE`, `COMMENT`, `MATERIALIZED`, `CASCADE`, `PURGE`, … (also
+   hurts DML). `oracleReservedWords` (PL/SQL) isn't used for completion.
+9. The cache has no index, constraint, sequence, trigger or user-type names.
+
+**Completion — by statement** (✗ broken, ≈ accidental/partly right, ✓ works)
+
+| Position | Today | Expected |
+| --- | --- | --- |
+| `CREATE TABLE \|`, `… IF NOT EXISTS \|` | kw | nothing / `IF NOT EXISTS`, schema names for `schema.` |
+| `CREATE TABLE t (\|` and `(id int, \|` | ✗ empty | column name: nothing; table-constraint keywords (`CONSTRAINT`, `PRIMARY KEY`, `FOREIGN KEY`, `UNIQUE`, `CHECK`, PG `LIKE`, `EXCLUDE`) |
+| `CREATE TABLE t (id \|`, `(id va\|` | ✗ empty | data types of the dialect |
+| `CREATE TABLE t (id int \|` | ✗ empty | column-constraint keywords (`NOT NULL`, `NULL`, `DEFAULT`, `PRIMARY KEY`, `UNIQUE`, `REFERENCES`, `CHECK`, `GENERATED … AS IDENTITY`, `COLLATE`, Oracle `ENABLE`…) |
+| `… DEFAULT \|` | ✗ empty | functions/literals (`now()`, `CURRENT_TIMESTAMP`, `SYSDATE`, `gen_random_uuid()`, `nextval(`) |
+| `… REFERENCES \|` (column or table constraint) | ✗ empty | tables |
+| `… REFERENCES country (\|`, `country(\|` | ✗ empty | columns of `country` (PK/unique first) |
+| `PRIMARY KEY (\|`, `UNIQUE (\|`, `FOREIGN KEY (\|` in CREATE TABLE | ✗ empty | columns defined earlier in the statement |
+| `CHECK (\|` in CREATE TABLE | ✗ empty | columns defined in the statement, functions |
+| `CREATE TABLE t (LIKE \|` (PG) | ✗ empty | tables |
+| `CREATE TABLE t AS SELECT …` | ✓ | — |
+| `ALTER TABLE \|`, `ALTER TABLE ci\|` | kw / empty | tables (views for `ALTER VIEW`, matviews for `ALTER MATERIALIZED VIEW`) |
+| `ALTER TABLE world.\|` | ✗ empty | tables of `world` |
+| `ALTER TABLE city \|` | kw | `ADD`, `DROP`, `ALTER`, `RENAME`, PG `OWNER TO`/`SET`/`ENABLE`…, Oracle `MODIFY` |
+| `… DROP COLUMN \|`, `DROP \|` (MySQL/Oracle style), `RENAME COLUMN \|`, `ALTER COLUMN \|` | kw | columns of `city` (+ `COLUMN`/`CONSTRAINT` after a bare `DROP`) |
+| `… ALTER COLUMN Name \|` | kw | `TYPE`, `SET`, `DROP` (`DEFAULT`, `NOT NULL`) |
+| `… ALTER COLUMN Name TYPE \|`, `ADD COLUMN x \|`, `ADD x \|` | kw | data types |
+| `ALTER TABLE city ADD (x \|` (Oracle) | ≈ columns of city (wrong) | data types |
+| `ALTER TABLE city MODIFY (\|` (Oracle) | ≈ columns of city | ✓ columns (then types after the name) |
+| `ADD CONSTRAINT fk FOREIGN KEY (\|`, `ADD PRIMARY KEY (\|` | ≈ columns of city | ✓ (keep) |
+| `… FOREIGN KEY (CountryCode) REFERENCES \|` | kw | tables, the likely target first (FK guess from the column name) |
+| `… REFERENCES country (\|` | ✗ columns of **city** | columns of `country` |
+| `ADD CONSTRAINT ck CHECK (\|` | ≈ columns (no functions/keywords) | columns + functions |
+| `ALTER TABLE city DROP CONSTRAINT \|` | kw | constraint names of `city` (needs metadata) |
+| `ALTER TABLE city RENAME \|` / `RENAME TO \|` | kw | `COLUMN`, `TO`, `CONSTRAINT` / nothing |
+| `DROP TABLE \|`, `DROP TABLE IF EXISTS \|`, `DROP TABLE city, \|` | kw | tables only |
+| `DROP VIEW \|`, `DROP MATERIALIZED VIEW \|` | kw | views / materialized views only |
+| `DROP TABLE world.\|` | ✗ empty | tables of `world` |
+| `DROP INDEX \|`, `DROP SEQUENCE \|`, `DROP FUNCTION \|`, `DROP TRIGGER \|` | kw | index/sequence/function/trigger names (functions are cached; others need metadata) |
+| `… CASCADE`/`RESTRICT`/`PURGE` after the names | kw | those keywords |
+| `TRUNCATE \|` | ✓ tables + schemas | — |
+| `TRUNCATE TABLE \|` | kw | tables |
+| `CREATE VIEW v AS SELECT …`, `CREATE MATERIALIZED VIEW …` | ✓ | — |
+| `CREATE VIEW v (\|) AS …` | ≈ columns of the body's tables | nothing (new names) |
+| `CREATE INDEX i ON \|` | ✗ empty | tables (and matviews) |
+| `CREATE INDEX i ON city (\|`, `USING btree (\|` | ✗ empty | columns of `city` |
+| `CREATE INDEX i ON city(\|` | ✗ tables | columns of `city` |
+| `CREATE UNIQUE INDEX … WHERE \|` | ≈ tables only | columns of `city` + functions |
+| `CREATE TRIGGER trg AFTER INSERT ON \|` | ✗ empty | tables/views |
+| `COMMENT ON TABLE \|` / `COLUMN \|` | kw | tables / tables then `t.` |
+| `COMMENT ON COLUMN city.\|` | ✗ empty | columns of `city` |
+| `GRANT SELECT ON \|` | ✗ empty | tables/views (roles after `TO`: out of scope) |
+
+**Completion — DML tails** (INSERT/UPDATE/DELETE/MERGE work otherwise)
+
+| Position | Today | Expected |
+| --- | --- | --- |
+| `INSERT … VALUES (…) \|` | kw | `RETURNING`, `ON CONFLICT` (PG/SQLite), `,` rows |
+| `INSERT/UPDATE/DELETE … RETURNING \|`, `RETURNING ID, \|` | kw | columns of the target table (+ `*`); Oracle: then `INTO` |
+| `ON CONFLICT (\|` | ≈ columns (via "any paren") | ✓ columns of the target |
+| `ON CONFLICT (Name) DO \|` | kw | `UPDATE SET`, `NOTHING` |
+| `ON CONFLICT … DO UPDATE SET \|` | ≈ columns + all tables | columns of the target, `EXCLUDED.` columns |
+| `MERGE INTO \|`, `MERGE INTO city c USING \|` | kw | tables/views |
+| `MERGE … WHEN MATCHED THEN UPDATE SET \|` | ≈ columns + aliases + tables | target's columns |
+
+**Other features in DDL**
+
+- Hover: works where the position checker happens to classify (`CREATE INDEX i ON city`,
+  `REFERENCES country`, the SELECT of `CREATE VIEW`); nothing on the table in `DROP TABLE`,
+  `ALTER TABLE`, `TRUNCATE TABLE`, `COMMENT ON TABLE`, nor on columns in `DROP COLUMN`,
+  index column lists, `RETURNING`.
+- Go to definition of a view: ✓ anywhere (looked up by name), including `DROP VIEW v`.
+- Diagnostics: only statements starting with `SELECT/WITH/INSERT/UPDATE/DELETE/MERGE/VALUES`
+  are checked → nothing for DDL: unknown table in `ALTER/DROP/CREATE INDEX/REFERENCES/COMMENT`,
+  unknown column in `DROP/RENAME/ALTER COLUMN`, index lists, `REFERENCES t (col)`; and the
+  SELECT inside `CREATE VIEW … AS` / `CREATE TABLE … AS` is never linted. (Tables created or
+  altered in the document are already known to the linter.)
+- Completion after DDL in the same file: `CREATE TABLE t (id int); SELECT t.| FROM t` →
+  nothing until the statement is run and `sqlh.refresh` is done by hand.
+- Formatter (verified, so never corrupts — the layout is the problem):
+  `numeric(12,2)` → split over three lines; `CHECK (` → `CHECK(` with the IN list exploded;
+  `CREATE TABLE orders (` / `ON orders (col)` glued to `orders(`; `CREATE INDEX … ON` breaks
+  before `ON`; `CREATE OR REPLACE VIEW` → `CREATE` / `OR REPLACE VIEW` (OR read as a
+  condition) and the view's `SELECT` stays on the `AS` line; `ALTER`/`DROP` untouched (fine).
+
+#### 9.2 Design
+
+- **Token-based DDL context, not the sqls AST.** The AST's paren/function/`ON` handling is
+  the cause of most failures above; the linter already shows a token walk is reliable here.
+  New `internal/completer/ddl.go`: `ddlContext(stmtTokens, cursor, dialect)` walks the tokens
+  of the statement at the cursor (sqlsplit + lexer, comments/whitespace dropped, unterminated
+  input tolerated) and returns `(*CompletionContext, ok)`. `Complete()` asks it first; `ok =
+  false` → the existing path (so SELECT/INSERT/UPDATE/DELETE behaviour is unchanged).
+  Handles: statements starting with `CREATE`/`ALTER`/`DROP`/`TRUNCATE`/`COMMENT`/`GRANT`/
+  `REVOKE`/`RENAME`, and the DML tails (`RETURNING`, `ON CONFLICT`, `MERGE INTO/USING`).
+  CREATE … AS SELECT / CREATE VIEW bodies are handed back to the existing path (they work).
+- **State tracked by the walk**: statement kind and object kind (`TABLE`/`VIEW`/
+  `MATERIALIZED VIEW`/`INDEX`/…), target table (`ALTER TABLE x`, `CREATE INDEX … ON x`,
+  `COMMENT ON COLUMN x.`, DML target), a paren stack with a role per level (column
+  definitions, column-name list of table X, type arguments, CHECK/WHERE expression,
+  `REFERENCES` target list), columns defined so far in `CREATE TABLE`, and the last 1–3
+  significant words.
+- **New completion types**: `DataType`; `ContextKeyword` (a position's own keyword set,
+  multi-word items like `PRIMARY KEY`, `NOT NULL`, `IF EXISTS`); table candidates filtered by
+  kind (table / view / matview; before the background load knows view kinds, all relations);
+  `ColumnsOf(table)` (explicit table instead of the scope); `DefinedColumns` (columns of the
+  `CREATE TABLE` being written); `None` (new-name positions return an empty list rather than
+  keyword noise).
+- **Data types**: curated per dialect in `dialect/types.go` (PG, Oracle, SQLite; generic
+  ANSI list for the rest), inserted as plain words (no snippets, see decisions); the
+  parameter form shown in the detail (`varchar(n)`, `numeric(p, s)`, `VARCHAR2(n [CHAR])`).
+  PG user types (enums, domains, composites from `pg_type` of the allowed schemas) and Oracle
+  object types (`ALL_TYPES`) via the background load (M8).
+- **Ordering**: in `REFERENCES |` the table guessed from the FK column name (`customer_id` →
+  `customer`, reuse the relgraph guess) first; in `REFERENCES t (|` PK/unique columns first.
+- **Hover** uses the same context: the table/column under the cursor in DDL positions.
+- **Lint** gets a DDL pass with the same token walk (same "quiet when unsure" rules): unknown
+  table in `ALTER TABLE`/`DROP TABLE|VIEW|MATERIALIZED VIEW` (not with `IF EXISTS`)/`TRUNCATE`/
+  `CREATE INDEX ON`/`REFERENCES`/`COMMENT ON`/`GRANT … ON`; wrong object kind (`DROP VIEW`
+  on a table, `DROP TABLE` on a view, `DROP VIEW` on a materialized view: the database refuses
+  these); unknown column in `ALTER TABLE … DROP|RENAME|ALTER|MODIFY COLUMN`, index column
+  lists, `PRIMARY KEY|UNIQUE|FOREIGN KEY (…)` of `ALTER TABLE`, `REFERENCES t (cols)`,
+  `COMMENT ON COLUMN`; `ADD COLUMN` of a column that exists; unknown index/constraint/
+  sequence/trigger in `DROP` (no `IF EXISTS`; needs M8); in `CREATE TABLE`, `PRIMARY KEY|
+  UNIQUE|FOREIGN KEY (…)` naming a column the statement doesn't define. The `AS SELECT` body
+  of `CREATE VIEW/MATERIALIZED VIEW/TABLE` is linted like a SELECT. Schemas outside the cache
+  stay unchecked.
+  - *Document exemptions, refined for DDL*: today any table created or altered **anywhere**
+    in the document is exempt and an altered table's columns go unchecked — that would hide
+    `ALTER TABLE city DROP COLUMN nocol` (city is altered by that very statement). For the DDL
+    rules: only objects created **earlier** in the document are exempt, and only the columns
+    added/renamed by earlier statements. A second `DROP` of an object dropped earlier in the
+    document stays quiet.
+  - *Statements already run*: with refresh after DDL, a statement turns red once it has run
+    (`DROP TABLE x` → unknown table, `ADD COLUMN y` → already exists, `CREATE TABLE`
+    unaffected). The server remembers the DDL statements it executed successfully this session
+    (normalised text, per connection + database, like result reuse) and skips DDL rules for
+    them; editing the statement brings the checks back.
+- **Refresh after DDL**: when a run (editor, CLI via the server, dump) executed at least one
+  DDL statement successfully (`CREATE`/`ALTER`/`DROP`/`RENAME`/`COMMENT`, PL/SQL blocks with
+  `EXECUTE IMMEDIATE '<DDL>'`), the server refreshes the schema cache once the job ends, also
+  when a later statement of the same run failed. Config `refreshAfterDDL` (default `true`);
+  `sqlh.refresh` / `space i U` / `sqlh refresh` stay. The summary says so (`… · schema
+  refreshed`). Standalone CLI runs have no cache: nothing to do.
+
+#### 9.3 Steps
+
+- [x] Census as permanent tests: `internal/ddl/ddl_test.go` (slots per position and dialect,
+      refs, 224 cases), `internal/handler/ddl_completion_test.go` (one case per census row
+      against the mock DB, ranking, lower-case keywords), `ddl_hover_test.go`
+- [x] M1/M2/M3/M4 — `internal/ddl`: token walk (`Tokenize`, `Analyze`, `AtCursor`,
+      `InStatement`); a cursor marker after the tokens of the statement being typed (text up to
+      the cursor, the word being typed removed; `sqlsplit.Statement.Terminated` tells a finished
+      statement). Grammar in `grammar.go` (CREATE TABLE/VIEW/INDEX/TRIGGER/SEQUENCE/SYNONYM/
+      TYPE/SCHEMA, ALTER TABLE/VIEW/INDEX/SEQUENCE/TRIGGER/TYPE, DROP, TRUNCATE, COMMENT,
+      GRANT/REVOKE, Oracle RENAME) and `dml.go` (INSERT/UPDATE/DELETE tails, ON CONFLICT,
+      MERGE, WITH … DML); everything else hands off to the regular completer (`Handoff`).
+      A `stop` panic ends the walk at the cursor / the end / anything unexpected (`Unsure`).
+      `Slot`: object kinds (relations filtered by kind once views are loaded), qualifier,
+      columns of a named table, columns the statement defines, types, functions, EXCLUDED,
+      keywords, FK guess, keys first. Names glued with `$`/`#` (Oracle V$…, V500$ACT_GE) put
+      back together (the lexer splits them). Completer: `internal/completer/ddl.go`, asked
+      first in `Complete()`; filters by the word being typed incl. `$`/`#`.
+- [x] Data types: `dialect/types.go` (PostgreSQL 41, Oracle 27, SQLite 16, generic 22, with
+      parameters and a description), plus the database's user types; plain words
+- [x] M5 — keywords per position and dialect (`internal/ddl/keywords.go`, `"WORDS@posg"` tags);
+      Oracle keyword list completed (`oracleExtraKeywords`: JOIN, MERGE, PRIMARY, KEY, …)
+- [x] M6 — hover (`internal/handler/ddl_hover.go`, before the regular hover: tables, columns,
+      indexes, constraints, sequences, triggers in DDL and DML tails); lint DDL pass
+      (`internal/lint/ddl.go`): document state in order (created/dropped tables, columns
+      added/dropped/renamed, objects), also from `EXECUTE IMMEDIATE '<DDL>'` in skipped PL/SQL /
+      DO blocks; `AS SELECT` bodies linted as queries (`bodyStatement`); DML tails' columns.
+      Catalog: relation kinds (default schema, once views are loaded), objects with partial
+      lists; unqualified objects only sure when the current schema is cached (Oracle allow-list)
+- [x] M7 — `refreshAfterDDL` (default on): `exec.IsDDL` (CREATE/ALTER/DROP/RENAME/COMMENT, also
+      dynamic DDL in PL/SQL / DO blocks), refresh at the end of the job with a repository
+      captured at start (no server lock: `stopJob` holds it while waiting for the job),
+      `· schema refreshed` in the summary, also after a later statement failed; executed DDL
+      remembered per connection + database (`jobState.executed`, normalised text) and skipped
+      by the lint (`lint.Options.SkipDDL`), re-lint after the run
+- [x] M8 — `database.SchemaObjects` / `ObjectLister` (background load): PostgreSQL (`pg_index`,
+      `pg_constraint` incl. PG 18 not-null constraints marked generated, `pg_class` sequences,
+      `pg_trigger`, `pg_type` enum/domain/composite/range; 351 objects in 30 ms on pg_local),
+      Oracle (flat queries joined in Go: 66 s → 3 s on CADE as `cade_read_only`; system-named
+      CHECK constraints left out — telling NOT NULL apart cost 4.5 s; triggers and sequences of
+      another owner marked partial: `ALL_TRIGGERS`/`ALL_SEQUENCES` don't show them all),
+      SQLite (indexes with columns, triggers). Completion, hover, lint use them.
+- [x] M9 — formatter: `internal/formatter/ddl.go`, applied after the sqls formatter to the
+      DDL statements (paired by sqlsplit): token-based layout from the whitespace-collapsed
+      source (adjacency kept: `t (` stays `t (`, `users(id)` stays), keywords cased like the
+      formatter does plus DDL words and type names, names the statement uses kept as written;
+      CREATE TABLE elements one per line, ALTER TABLE with several actions one per line,
+      `CREATE VIEW/TABLE … AS` header + the query formatted on its own, the rest one line;
+      statements with comments left to the sqls formatter. Still verified (tokens, fixed
+      point). Goldens updated (`create INDEX x\non t(a)` → `create index x on t (a)`).
+- [x] README (completion checklist, DDL diagnostics, formatting, `refreshAfterDDL`),
+      `doc/config.example.yml`, `doc/cli.md`
+- Verified: unit tests (+ `-race`); lint on the chemalert Oracle scripts (1159 files, 40.7k
+  statements, also pretending to log in as CADE): no parse gaps left after the `$` fix,
+  findings are real (migrations already applied: "already has a column", objects of the DE
+  schema or of other versions), two false-positive classes found and fixed (dynamic DDL in
+  PL/SQL blocks, `GRANT … ON` a sequence/package → refs marked `Soft`); 478 KB script linted
+  in 75 ms; live completion on pg_local and Oracle (CADE via `cade.`); end to end over stdio
+  (`/tmp/sqlh-e2e/e2e.py`: complete, hover, diagnostics, run DDL → refreshed cache, executed
+  statements not flagged); formatter battery: 18 formatted, 0 corrupted.
+- Known limits: Oracle logins other than the owner see unqualified names of the login schema
+  only (as for queries; `cade.` works); `CREATE FUNCTION/PROCEDURE/PACKAGE` bodies, roles
+  after `GRANT … TO`, `PARTITION` clauses are not followed (regular completer / quiet lint).
+
+#### 9.4 Decisions (2026-10-14)
+
+1. **Dialects**: PostgreSQL, Oracle, SQLite get specific keywords/types/metadata; the other
+   drivers the generic ANSI set, expanded only if another database is needed.
+2. **Keywords**: where the position is understood, only its keywords — also with a prefix
+   typed. The whole list only where the position isn't understood.
+3. **Refresh after DDL**: automatic, `refreshAfterDDL: true` by default; the refresh keybinding
+   and command stay.
+4. **No document overlay**: tables created in the file aren't known to completion before
+   they're run (not a workflow here). The linter keeps tolerating them.
+5. **Metadata** for indexes, constraints, sequences, triggers, user types: now (M8).
+6. **DDL diagnostics**: yes, including unknown tables in `DROP` without `IF EXISTS` (errors
+   should show before running).
+7. **Formatter**: part of this phase (M9).
+8. **Snippets**: plain words only for now. Candidate for a later phase (see Phase 5).
+
 ### Phase 5 — later / optional
 
 - [ ] `EXPLAIN` to buffer
+- [ ] Snippets/templates (after Phase 9, if wanted): FK-guessed `REFERENCES customer (id)` for
+      a column named `customer_id`; type parameters with tab stops (`varchar(|)`); clause
+      skeletons (`ADD CONSTRAINT name FOREIGN KEY (…) REFERENCES t (…)`, `ON CONFLICT (…) DO
+      UPDATE SET …`, `CREATE INDEX name ON t (…)`) with the names filled from the context
 - [ ] Server-side LIMIT rewriting for simple SELECTs (PostgreSQL done with a cursor; MySQL
       drains like pgx if ever needed)
 - [ ] `modernc.org/sqlite` (cgo-free static binary), pgx v5
@@ -556,6 +814,15 @@ Decided:
 
 - **2026-10-14** TOML config dropped: YAML stays the only config format.
 
+- **2026-10-14** Phase 9 planned: DDL census (~100 positions probed; completion after the
+  first keywords of CREATE/ALTER/DROP/COMMENT/INDEX and DML `RETURNING`/`ON CONFLICT` tails
+  broken, hover partly, no DDL lint, formatter layout issues), token-based design, steps,
+  open questions.
+
+- **2026-10-14** Phase 9 done: `internal/ddl` (token walk for DDL and DML tails) behind
+  completion, hover and a DDL lint pass; index/constraint/sequence/trigger/type metadata;
+  schema cache reloaded after DDL runs (`refreshAfterDDL`); DDL formatting layout.
+
 ## 6. Environment notes
 
 - Helix: `[language-server.sqlh] command = "sqlh"`, `args = ["-log", "/tmp/sqlh.log"]`
@@ -573,6 +840,11 @@ Decided:
 - Protocol test client: `/tmp/sqls-build/lspc.py` (+ `t_*.py` scenario scripts;
   `t_fmtsafety2.py` = formatter battery); Oracle
   repo probe: `scratch/oradbg/` (reads creds from env `H S U P`)
+- Schema objects (indexes, constraints, …): `go run ./scratch/objprobe ALIAS [NAME]`;
+  lint/completion against a live cache: `SQLH_LINTPROBE=alias:dir` / `SQLH_COMPLPROBE=alias
+  CASES='DROP INDEX |;;…'` `go test ./internal/handler -run 'TestLintProbe|TestComplProbe' -v`
+  (`internal/handler/live_probe_test.go`; `PROBE_SCHEMA=CADE` pretends to log in as CADE);
+  chemalert Oracle scripts: `~/work/chemalert/chemalert/{src/database/oracle,db/dcrs}`
 - Relationships: `CFG=<config> go run ./scratch/relg ALIAS [TABLE…]` prints the graph
   (`MAYBE=1`: all guesses); PG test schema with views: `scratch/relations_pg.sql`;
   views and their writability: `go run ./scratch/viewprobe ALIAS [all]`; pg_local test views

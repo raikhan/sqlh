@@ -45,7 +45,7 @@ func (w *Worker) changed() {
 	}
 }
 
-func (w *Worker) setSecondary(col map[string][]*ColumnDesc, synonyms map[string][]string, functions *FunctionCatalog, views []*ViewDef) {
+func (w *Worker) setSecondary(col map[string][]*ColumnDesc, synonyms map[string][]string, functions *FunctionCatalog, views []*ViewDef, objects *SchemaObjects) {
 	w.lock.Lock()
 	if w.dbCache != nil {
 		// Swap in a copy so that readers holding the previous
@@ -56,6 +56,7 @@ func (w *Worker) setSecondary(col map[string][]*ColumnDesc, synonyms map[string]
 		if functions != nil {
 			newCache.Functions = functions
 		}
+		newCache.Objects = objects
 		newCache.SecondaryLoaded = true
 		w.dbCache = &newCache
 	}
@@ -107,6 +108,15 @@ func (w *Worker) Start() {
 						log.Printf("db worker: %d function signatures loaded", len(fns))
 					}
 				}
+				var objects *SchemaObjects
+				if ol, ok := w.dbRepo.(ObjectLister); ok {
+					if objects, err = ol.SchemaObjects(context.Background()); err != nil {
+						log.Println("schema objects:", err) // no index/constraint/… names
+						objects = nil
+					} else {
+						log.Printf("db worker: %d indexes, constraints, sequences, triggers, types", len(objects.List()))
+					}
+				}
 				var views []*ViewDef
 				if c := w.Cache(); c != nil {
 					if views, err = generator.GenerateViews(context.Background(), c.DefaultSchema()); err != nil {
@@ -114,7 +124,7 @@ func (w *Worker) Start() {
 						views = []*ViewDef{}
 					}
 				}
-				w.setSecondary(col, synonyms, functions, views)
+				w.setSecondary(col, synonyms, functions, views, objects)
 				log.Println("db worker: Update db cache secondary complete")
 			}
 		}

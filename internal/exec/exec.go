@@ -101,6 +101,20 @@ func ReadOnly(st sqlsplit.Statement) bool {
 	return cursorVerbs[strings.ToUpper(firstWordRe.FindString(body))] && !writeWordRe.MatchString(body)
 }
 
+var (
+	ddlVerbs = map[string]bool{"CREATE": true, "ALTER": true, "DROP": true, "RENAME": true, "COMMENT": true}
+	// dynamic DDL in PL/SQL (EXECUTE IMMEDIATE '…') or a PostgreSQL DO block
+	dynamicDDLRe = regexp.MustCompile(`(?i)\bexecute\s+(immediate\s+)?(q'.|')\s*(create|alter|drop|rename|comment)\b`)
+)
+
+// IsDDL reports whether a statement changes the schema (what the schema
+// cache holds): CREATE, ALTER, DROP, RENAME, COMMENT, also as dynamic SQL in
+// a PL/SQL or DO block.
+func IsDDL(st sqlsplit.Statement) bool {
+	body := StripLeadingComments(st.SQL)
+	return ddlVerbs[strings.ToUpper(firstWordRe.FindString(body))] || dynamicDDLRe.MatchString(body)
+}
+
 func isDML(sql string) bool {
 	return dmlVerbs[strings.ToUpper(firstWordRe.FindString(StripLeadingComments(sql)))]
 }

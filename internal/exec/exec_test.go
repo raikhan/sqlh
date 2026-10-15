@@ -322,3 +322,26 @@ func TestReadOnly(t *testing.T) {
 		t.Error("PL/SQL is not read-only")
 	}
 }
+
+func TestIsDDL(t *testing.T) {
+	for sql, want := range map[string]bool{
+		"CREATE TABLE t (a int)":                                    true,
+		"-- note\nalter table t add b int":                          true,
+		"DROP VIEW v":                                               true,
+		"COMMENT ON TABLE t IS 'x'":                                 true,
+		"RENAME a TO b":                                             true,
+		"CREATE OR REPLACE PROCEDURE p IS BEGIN NULL; END;":         true,
+		"BEGIN EXECUTE IMMEDIATE 'DROP TABLE t'; END;":              true,
+		"DO $$ BEGIN EXECUTE 'create index i on t (a)'; END $$":     true,
+		"BEGIN EXECUTE IMMEDIATE q'[CREATE TABLE x (a int)]'; END;": true,
+		"SELECT 1":                 false,
+		"INSERT INTO t VALUES (1)": false,
+		"TRUNCATE TABLE t":         false,
+		"GRANT SELECT ON t TO u":   false,
+		"BEGIN EXECUTE IMMEDIATE 'DELETE FROM t'; END;": false,
+	} {
+		if got := IsDDL(sqlsplit.Statement{SQL: sql}); got != want {
+			t.Errorf("%q: %v, want %v", sql, got, want)
+		}
+	}
+}

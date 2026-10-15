@@ -48,3 +48,31 @@ var oracleKeyWords = []string{
 	"VALUES", "VIEW", "VIEWS",
 	"WHEN", "WHERE", "WITH",
 }
+
+// oracleExtraKeywords: words of everyday SQL and DDL that oracleKeyWords
+// (Oracle's reserved words) lacks.
+var oracleExtraKeywords = []string{
+	"JOIN", "INNER", "LEFT", "RIGHT", "FULL", "OUTER", "CROSS", "NATURAL", "USING", "LATERAL",
+	"MERGE", "MATCHED", "DELETE", "TRUNCATE", "RETURNING", "RETURN", "OFFSET", "ROWS", "ROW", "ONLY",
+	"FIRST", "NEXT", "LAST", "NULLS", "OVER", "PARTITION", "WITHIN", "PIVOT", "UNPIVOT", "PRIOR",
+	"LEVEL", "SIBLINGS", "EXISTS", "REPLACE", "SET", "COMMIT", "ROLLBACK", "SAVEPOINT",
+	"PRIMARY", "KEY", "FOREIGN", "REFERENCES", "CONSTRAINT", "ADD", "MODIFY", "COLUMN", "RENAME",
+	"COMMENT", "MATERIALIZED", "CASCADE", "CONSTRAINTS", "PURGE", "SEQUENCE", "TRIGGER", "SYNONYM",
+	"ENABLE", "DISABLE", "VALIDATE", "NOVALIDATE", "GENERATED", "ALWAYS", "IDENTITY", "TEMPORARY",
+	"GLOBAL", "PRESERVE", "TABLESPACE", "PACKAGE", "BODY", "NOCYCLE", "NOCACHE", "INCREMENT",
+	"MINVALUE", "MAXVALUE", "CACHE", "CYCLE", "EXECUTE", "IMMEDIATE", "LOOP", "EXIT", "ELSIF",
+	"RAISE", "BULK", "COLLECT", "FORALL", "OPEN", "CLOSE", "RECORD", "ROWTYPE", "NOCOPY",
+}
+
+func init() {
+	seen := map[string]bool{}
+	for _, k := range oracleKeyWords {
+		seen[k] = true
+	}
+	for _, k := range oracleExtraKeywords {
+		if !seen[k] {
+			oracleKeyWords = append(oracleKeyWords, k)
+			seen[k] = true
+		}
+	}
+}

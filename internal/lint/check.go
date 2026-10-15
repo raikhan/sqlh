@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/raikhan/sqlh/dialect"
+	"github.com/raikhan/sqlh/internal/ddl"
 	"github.com/raikhan/sqlh/internal/sqlsplit"
 	"github.com/raikhan/sqlh/token"
 )
@@ -23,21 +24,50 @@ type Diagnostic struct {
 	Message    string
 }
 
+// Options adjust a check.
+type Options struct {
+	// SkipDDL: DDL statements (by their SQL) whose objects aren't checked,
+	// e.g. statements already run (DROP TABLE t: t is gone now).
+	SkipDDL func(sql string) bool
+}
+
 // Check lints every statement of a document.
 func Check(text string, cat *Catalog) []Diagnostic {
+	return CheckWith(text, cat, Options{})
+}
+
+// CheckWith lints every statement of a document.
+func CheckWith(text string, cat *Catalog, opts Options) []Diagnostic {
 	if cat == nil {
 		return nil
 	}
 	stmts := sqlsplit.Split(text, cat.Dialect)
 	// Tables the document creates (not cached yet) or alters (columns may
-	// differ from the cache).
+	// differ from the cache): the queries' checks leave them alone.
 	doc := docDDL{created: ddlNames(text, createRe), altered: ddlNames(text, alterRe)}
+	// DDL checks follow the document in order instead.
+	state := newDDLState()
 	var out []Diagnostic
 	for _, st := range stmts {
-		if st.PLSQL {
+		if st.PLSQL || bailRe.MatchString(st.SQL) || (cat.Dialect == sqlsplit.Oracle && substRe.MatchString(st.SQL)) {
+			state.applyDynamic(st.SQL, cat.Dialect) // EXECUTE IMMEDIATE '<DDL>'
+			continue
+		}
+		a, toks, ok := ddl.InStatement(st.SQL, cat.Dialect)
+		if ok && a.Kind != "" && !a.DML {
+			if opts.SkipDDL == nil || !opts.SkipDDL(st.SQL) {
+				out = append(out, checkDDL(st, a, cat, state)...)
+			}
+			if a.Body >= 0 {
+				out = append(out, checkStatement(bodyStatement(st, toks[a.Body].From), cat, doc)...)
+			}
+			state.apply(a)
 			continue
 		}
 		out = append(out, checkStatement(st, cat, doc)...)
+		if ok && a.DML {
+			out = append(out, checkDDL(st, a, cat, state)...)
+		}
 	}
 	return out
 }

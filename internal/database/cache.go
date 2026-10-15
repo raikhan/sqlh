@@ -159,6 +159,9 @@ type DBCache struct {
 	// Functions: callable functions (built-ins, then also the database's
 	// once the background load is done). Nil for caches built by hand.
 	Functions *FunctionCatalog
+	// Objects: indexes, constraints, sequences, triggers, user types (the
+	// background load); nil until loaded or when the database can't list them.
+	Objects *SchemaObjects
 }
 
 func (dc *DBCache) Database(dbName string) (db string, ok bool) {

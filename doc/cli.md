@@ -15,7 +15,7 @@ runs standalone, on the connection in the file's header (see [Query files](#quer
 | `sqlh connections` / `ls` | list connections, `*` = current |
 | `sqlh status [--all]` | workspace, connection, running query, results dir (`--all`: all servers) |
 | `sqlh cancel` | cancel the running query |
-| `sqlh refresh` | reload schema metadata (after DDL) |
+| `sqlh refresh` | reload schema metadata (done automatically after a run that executed DDL, unless `refreshAfterDDL: false`; for changes made elsewhere) |
 | `sqlh latest` | path of the newest result CSV: `vd $(sqlh latest)` |
 | `sqlh open [CSV…]` | open the newest result CSV (or the given ones) in `results.viewer`, see [Viewer](#viewer) |
 | `sqlh tables [-s SCHEMA] [--all]` | tables/views as you'd type them (default schema unqualified, others `schema.table`, quoted when needed); `-p` picks one (preview: `describe`); with `--file F --line L --col C` the tables related to the statement's come first and after `JOIN` it inserts the join clause, see [Table picker](#table-picker) |
@@ -254,7 +254,7 @@ path survives); with the default `sh`, write `'%{buffer_name}'`. `r`/`e` open th
 | `space i C` / `D` | switch connection / database (fzf); the buffer's connection header follows |
 | `space i S` | status: connection, running query, results directory (popup, Esc closes) |
 | `space i X` | cancel the running query (`:lsp-workspace-command sqlh.cancel`) |
-| `space i U` | reload schema metadata after DDL (`:lsp-workspace-command sqlh.refresh`) |
+| `space i U` | reload schema metadata (`:lsp-workspace-command sqlh.refresh`; runs that execute DDL reload it themselves) |
 
 Not bound, but there: `run --limit ask` (pick a row limit — preset, typed number or `all` —
 then run), `run` without `--open` (CSV only), `dump --fresh` (never reuse) and

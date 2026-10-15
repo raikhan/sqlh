@@ -83,6 +83,41 @@ type jobState struct {
 	// the session may have changed data (any statement that isn't a plain
 	// read, a new session).
 	results map[resultKey]resultRecord
+
+	// executed: DDL statements run successfully (connection \t database \t
+	// normalised text); their objects aren't linted any more (DROP TABLE t:
+	// t is gone now, which is the point).
+	executed map[string]bool
+}
+
+// maxExecuted bounds the remembered DDL statements.
+const maxExecuted = 2000
+
+// normalizeSQL: a statement without leading comments, white space collapsed.
+func normalizeSQL(sql string) string {
+	return strings.Join(strings.Fields(exec.StripLeadingComments(sql)), " ")
+}
+
+func (js *jobState) rememberDDL(prefix, sql string) {
+	js.mu.Lock()
+	defer js.mu.Unlock()
+	if js.executed == nil || len(js.executed) >= maxExecuted {
+		js.executed = map[string]bool{}
+	}
+	js.executed[prefix+normalizeSQL(sql)] = true
+}
+
+// executedDDLFilter tells whether a statement was run (nil without a prefix,
+// i.e. no connection).
+func (js *jobState) executedDDLFilter(prefix string) func(string) bool {
+	if prefix == "" {
+		return nil
+	}
+	return func(sql string) bool {
+		js.mu.Lock()
+		defer js.mu.Unlock()
+		return js.executed[prefix+normalizeSQL(sql)]
+	}
 }
 
 // resultKey identifies a statement's result: connection, database override
@@ -338,6 +373,10 @@ type runEnv struct {
 	limit      int
 	null       string
 	reuse      *resultRecord // dump: copy this result instead of running
+	// executedPrefix keys the DDL statements run (connection \t database \t)
+	executedPrefix string
+	// refresh reloads the schema cache (nil: refreshAfterDDL off)
+	refresh func(context.Context) error
 }
 
 // startRun validates a request and starts it as a background job. Call with
@@ -380,6 +419,18 @@ func (s *Server) startRun(ctx context.Context, req runRequest) (*job, error) {
 		}
 	}
 	env.resultsDir = exec.ExpandDir(cfg.Dir, env.workspace, env.alias)
+	env.executedPrefix = env.alias + "\t" + env.db + "\t"
+	if s.getConfig().RefreshAfterDDLEnabled() {
+		if repo, err := s.newDBRepository(ctx); err == nil {
+			env.refresh = func(ctx context.Context) error {
+				if err := s.worker.ReCache(ctx, repo); err != nil {
+					return err
+				}
+				s.jsonKeys.Clear()
+				return nil
+			}
+		}
+	}
 	switch {
 	case req.kind == jobExport:
 		env.limit = 0
@@ -466,7 +517,25 @@ func (s *Server) runJob(ctx context.Context, j *job, session *sql.Conn, stmts []
 		outcomes []exec.Outcome
 		files    []string
 		tables   []*exec.Table
+		ddlRan   bool
 	)
+	// afterDDL: once DDL ran, reload the schema cache (also when a later
+	// statement failed) and re-lint (the statements run are no longer
+	// checked). Returns a note for the summary.
+	afterDDL := func() string {
+		if !ddlRan {
+			return ""
+		}
+		defer func() { go s.relintAll() }()
+		if env.refresh == nil || ctx.Err() != nil {
+			return ""
+		}
+		if err := env.refresh(ctx); err != nil {
+			log.Println("refresh after DDL:", err)
+			return " · schema refresh failed: " + err.Error()
+		}
+		return " · schema refreshed"
+	}
 	for i, st := range stmts {
 		if len(stmts) > 1 {
 			prog.Report(fmt.Sprintf("statement %d of %d", i+1, len(stmts)))
@@ -525,9 +594,14 @@ func (s *Server) runJob(ctx context.Context, j *job, session *sql.Conn, stmts []
 			if len(stmts) > 1 {
 				msg = fmt.Sprintf("line %d: %s (%d of %d statements done)", out.Line+1, msg, i, len(stmts))
 			}
+			msg += afterDDL()
 			j.err = errors.New(env.alias + ": " + msg)
 			notify(false, j.err.Error())
 			return
+		}
+		if exec.IsDDL(st) {
+			ddlRan = true
+			s.jobs.rememberDDL(env.executedPrefix, st.SQL)
 		}
 		outcomes = append(outcomes, out)
 		tables = append(tables, table)
@@ -562,9 +636,10 @@ func (s *Server) runJob(ctx context.Context, j *job, session *sql.Conn, stmts []
 	res.Files = files
 	res.ElapsedMS = elapsed.Milliseconds()
 
+	note := afterDDL()
 	if req.kind == jobText {
 		res.Table = report.Text(outcomes, tables, req.vertical)
-		res.Summary = fmt.Sprintf("%s: %s", env.alias, report.Duration(elapsed))
+		res.Summary = fmt.Sprintf("%s: %s", env.alias, report.Duration(elapsed)) + note
 		prog.End("done")
 		j.result = res
 		if req.fromCLI {
@@ -582,7 +657,7 @@ func (s *Server) runJob(ctx context.Context, j *job, session *sql.Conn, stmts []
 		return
 	}
 
-	res.Summary = report.Summary(env.alias, env.workspace, outcomes, files, elapsed, req.out == "")
+	res.Summary = report.Summary(env.alias, env.workspace, outcomes, files, elapsed, req.out == "") + note
 	prog.End(res.Summary)
 	j.result = res
 	notify(true, res.Summary)

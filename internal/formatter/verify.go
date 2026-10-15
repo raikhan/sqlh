@@ -105,7 +105,7 @@ func formatOnce(text string, params lsp.DocumentFormattingParams, cfg *config.Co
 	if !ok1 || !ok2 || start > end {
 		return "", skip("the formatter returned an invalid range")
 	}
-	return src[:start] + e.NewText + src[end:], nil
+	return layoutDDL(src[:start]+e.NewText+src[end:], src, params, cfg), nil
 }
 
 // offsetOf converts an LSP position (UTF-16 columns) to a byte offset.

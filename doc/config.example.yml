@@ -7,6 +7,12 @@ lowercaseKeywords: true
 # Mixed-case names are left alone.
 lowercaseIdentifiers: true
 
+# Underline unknown tables, columns, … (checked against the schema cache). Default: true.
+# diagnostics: true
+# Reload the schema cache after a run that executed DDL (CREATE, ALTER, DROP, RENAME,
+# COMMENT). Default: true. `space i U` / `sqlh refresh` reload by hand.
+# refreshAfterDDL: true
+
 # Relationships between tables (table picker, join completion)
 relations:
   insert: join   # after JOIN the table picker inserts "t alias ON …" (join) or the name (name)
