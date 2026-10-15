@@ -150,6 +150,13 @@ type CompletionParams struct {
 	CompletionContext CompletionContext `json:"context"`
 }
 
+// CompletionTriggerKind values (CompletionContext.TriggerKind).
+const (
+	CompletionTriggerKindInvoked          = 1
+	CompletionTriggerKindTriggerCharacter = 2
+	CompletionTriggerKindIncomplete       = 3
+)
+
 type CompletionContext struct {
 	TriggerKind      int     `json:"triggerKind"`
 	TriggerCharacter *string `json:"triggerCharacter"`

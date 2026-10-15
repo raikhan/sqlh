@@ -79,6 +79,10 @@ checked against the target table.
     with the background load (Oracle: the allowed schemas; a non-owner login may not see
     another owner's triggers and sequences).
 
+    A space triggers completion where names are expected (after `DROP VIEW`, `ALTER TABLE`,
+    `REFERENCES`, `FROM`, `JOIN`, …), so the list comes up without typing a first letter;
+    at other spaces the server answers with nothing (no popup).
+
     The schema cache is reloaded after a run that executed DDL (`refreshAfterDDL: false` to
     turn off; `space i U` / `sqlh refresh` still reload by hand).
 

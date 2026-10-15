@@ -96,8 +96,12 @@ func completionTypeIs(completionTypes []completionType, expect completionType) b
 }
 
 func (c *Completer) Complete(text string, params lsp.CompletionParams, lowercaseKeywords bool) ([]lsp.CompletionItem, error) {
+	// A space is a trigger character so that a list of names comes up right
+	// after DROP VIEW, FROM, … (editors only auto-complete after typed word
+	// characters); everywhere else a space-triggered request gets nothing.
+	spaceTrigger := isSpaceTrigger(params)
 	// DDL statements and DML tails (RETURNING, ON CONFLICT, MERGE)
-	if items, ok := c.ddlComplete(text, params, lowercaseKeywords); ok {
+	if items, ok := c.ddlComplete(text, params, lowercaseKeywords, spaceTrigger); ok {
 		return items, nil
 	}
 	parsed, err := parser.Parse(text)
@@ -111,6 +115,13 @@ func (c *Completer) Complete(text string, params lsp.CompletionParams, lowercase
 	}
 
 	nodeWalker := parseutil.NewNodeWalker(parsed, pos)
+	if spaceTrigger {
+		switch parseutil.CheckSyntaxPosition(nodeWalker) {
+		case parseutil.TableReference, parseutil.JoinClause:
+		default:
+			return []lsp.CompletionItem{}, nil
+		}
+	}
 	ctx := getCompletionTypes(nodeWalker)
 	if err != nil {
 		return nil, err
@@ -234,6 +245,12 @@ func (c *Completer) Complete(text string, params lsp.CompletionParams, lowercase
 	populateSortText(items)
 
 	return items, nil
+}
+
+// isSpaceTrigger: the request was triggered by typing a space.
+func isSpaceTrigger(params lsp.CompletionParams) bool {
+	tc := params.CompletionContext.TriggerCharacter
+	return params.CompletionContext.TriggerKind == lsp.CompletionTriggerKindTriggerCharacter && tc != nil && *tc == " "
 }
 
 var upperIdentRe = regexp.MustCompile(`\b[A-Z][A-Z0-9_$#]*\b`)

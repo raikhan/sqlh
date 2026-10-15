@@ -735,6 +735,14 @@ for the default list, ~450 for PostgreSQL), unfiltered by context.
   in 75 ms; live completion on pg_local and Oracle (CADE via `cade.`); end to end over stdio
   (`/tmp/sqlh-e2e/e2e.py`: complete, hover, diagnostics, run DDL → refreshed cache, executed
   statements not flagged); formatter battery: 18 formatted, 0 corrupted.
+- [x] Follow-up (testing in Helix): no list right after `DROP VIEW ` while `select * from `
+      had one. Helix only auto-requests after 2 typed word characters (debounced, sent with
+      the cursor position when it fires); after `drop ` the new keyword menu stayed open while
+      typing `view`, so nothing was requested after the space (`select * from` got lucky: `*`
+      closed the menu). Fix: `" "` is a completion trigger character; space-triggered requests
+      are answered only at name positions (DDL slots with names/types, FROM/JOIN/INTO/UPDATE
+      tables), else `[]` (no popup). Verified by driving Helix 25.07 through a pty with
+      `hx -v --log` and a workspace `.helix/languages.toml` pointing at the test build.
 - Known limits: Oracle logins other than the owner see unqualified names of the login schema
   only (as for queries; `cade.` works); `CREATE FUNCTION/PROCEDURE/PACKAGE` bodies, roles
   after `GRANT … TO`, `PARTITION` clauses are not followed (regular completer / quiet lint).

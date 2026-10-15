@@ -178,3 +178,48 @@ func TestDDLCompletionRanking(t *testing.T) {
 		t.Errorf("Code %q should sort before Name %q", a, b)
 	}
 }
+
+// A space triggers completion only where names are expected.
+func TestSpaceTrigger(t *testing.T) {
+	tx := newTestContext()
+	tx.initServer(t)
+	defer tx.tearDown()
+	tx.addWorkspaceConfig(t, &config.Config{Connections: []*database.DBConfig{{Driver: "mock"}}})
+	tx.waitSecondary(t)
+	space := " "
+	cases := []struct {
+		text string
+		want []string // nil: no items
+	}{
+		{"DROP TABLE ", []string{"city", "country"}},
+		{"ALTER TABLE city DROP COLUMN ", []string{"Name"}},
+		{"CREATE TABLE t (id ", []string{"INTEGER"}},
+		{"SELECT * FROM ", []string{"city"}},
+		{"SELECT * FROM city c JOIN ", []string{"country"}},
+		{"DROP ", nil},                   // keywords only
+		{"CREATE TABLE t (id int ", nil}, // keywords only
+		{"SELECT a, ", nil},              // not a table position
+		{"SELECT * FROM city WHERE ", nil},
+	}
+	for _, c := range cases {
+		tx.textDocumentDidOpen(t, testFileURI, c.text)
+		params := lsp.CompletionParams{
+			TextDocumentPositionParams: lsp.TextDocumentPositionParams{
+				TextDocument: lsp.TextDocumentIdentifier{URI: testFileURI},
+				Position:     lsp.Position{Line: 0, Character: len(c.text)},
+			},
+			CompletionContext: lsp.CompletionContext{TriggerKind: lsp.CompletionTriggerKindTriggerCharacter, TriggerCharacter: &space},
+		}
+		var got []lsp.CompletionItem
+		if err := tx.conn.Call(tx.ctx, "textDocument/completion", params, &got); err != nil {
+			t.Fatal(err)
+		}
+		if c.want == nil {
+			if len(got) != 0 {
+				t.Errorf("%q: %d items, want none", c.text, len(got))
+			}
+			continue
+		}
+		testCompletionItem(t, c.want, nil, got)
+	}
+}

@@ -12,11 +12,14 @@ import (
 
 // ddlComplete completes DDL statements and DML tails (internal/ddl); ok is
 // false when the position is the regular completer's.
-func (c *Completer) ddlComplete(text string, params lsp.CompletionParams, lower bool) ([]lsp.CompletionItem, bool) {
+func (c *Completer) ddlComplete(text string, params lsp.CompletionParams, lower, spaceTrigger bool) ([]lsp.CompletionItem, bool) {
 	line, char := params.Position.Line, params.Position.Character
 	a, ok := ddl.AtCursor(text, line, char, sqlsplit.DialectOf(string(c.Driver)))
 	if !ok || a.Slot == nil || a.Handoff {
 		return nil, false
+	}
+	if spaceTrigger && !listsNames(a.Slot) {
+		return []lsp.CompletionItem{}, true // keywords only: not worth a popup at every space
 	}
 	lastWord := ddl.Partial(text, line, char)
 	parenFollows := charAfterCursor(text, line, char) == '('
@@ -27,6 +30,11 @@ func (c *Completer) ddlComplete(text string, params lsp.CompletionParams, lower 
 	items = filterCandidates(items, lastWord)
 	populateSortText(items)
 	return items, true
+}
+
+// listsNames: a slot with names or types, worth offering right after a space.
+func listsNames(s *ddl.Slot) bool {
+	return len(s.Kinds) > 0 || s.Defined || s.Types || s.Excluded
 }
 
 func (c *Completer) slotCandidates(a *ddl.Analysis, lower bool, lastWord string, parenFollows bool) []lsp.CompletionItem {

@@ -208,7 +208,8 @@ func (s *Server) handleInitialize(ctx context.Context, conn *jsonrpc2.Conn, req 
 			HoverProvider:      true,
 			CodeActionProvider: true,
 			CompletionProvider: &lsp.CompletionOptions{
-				TriggerCharacters: []string{"(", ".", "'"},
+				// " ": names right after DROP VIEW, FROM, JOIN, … (see completer)
+				TriggerCharacters: []string{"(", ".", "'", " "},
 			},
 			SignatureHelpProvider: &lsp.SignatureHelpOptions{
 				TriggerCharacters:   []string{"(", ","},
