@@ -46,7 +46,7 @@ func (h Header) ErrSwitch() error {
 		return nil
 	}
 	return fmt.Errorf("the header's db=/schema= are no longer supported: a connection is one database and schema; " +
-		"make a connection for it (sqlh tui: duplicate and edit one) and name it with conn=")
+		"make a connection for it (the app, sqlh: duplicate and edit one) and name it with conn=")
 }
 
 // Parse finds the header among the leading comments of text (before the

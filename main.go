@@ -39,28 +39,16 @@ func realMain() error {
 		Before:  cmd.Before,
 		Name:    name,
 		Version: fmt.Sprintf("Version:%s, Revision:%s\n", version, revision),
-		Usage:   "SQL language server (Oracle, PostgreSQL, SQLite) and query runner.",
-		Flags: []cli.Flag{
-			&cli.StringFlag{
-				Name:    "log",
-				Aliases: []string{"l"},
-				Usage:   "Also log to this file. (in addition to stderr)",
-			},
-			&cli.StringFlag{
-				Name:    "config",
-				Aliases: []string{"c"},
-				Usage:   "Specifies an alternative per-user configuration file. If a configuration file is given on the command line, the workspace option (initializationOptions) will be ignored.",
-			},
-			&cli.BoolFlag{
-				Name:    "trace",
-				Aliases: []string{"t"},
-				Usage:   "Print all requests and responses.",
-			},
-		},
+		Usage:   "database browser (no command: the app for the workspace around the current directory, -C DIR), SQL language server (lsp; Oracle, PostgreSQL, SQLite) and query runner.",
+		Flags: append(lspFlags(), &cli.StringFlag{
+			Name: "dir", Aliases: []string{"C"},
+			Usage: "the app: the workspace `DIR` (default: the project around the current directory)",
+		}),
 		Commands: append(cli.Commands{
 			{
 				Name:   "lsp",
-				Usage:  "run the language server on stdio (same as no command)",
+				Usage:  "run the language server on stdio (for editors: command sqlh, args [lsp])",
+				Flags:  lspFlags(),
 				Action: serve,
 			},
 			{
@@ -83,7 +71,12 @@ func realMain() error {
 			},
 		}, cmd.Commands()...),
 		Action: func(c *cli.Context) error {
-			return serve(c)
+			// on a terminal: the app; else an editor started the language
+			// server the old way (no `lsp`): serve it
+			if fi, err := os.Stdin.Stat(); err == nil && fi.Mode()&os.ModeCharDevice == 0 {
+				return serve(c)
+			}
+			return cmd.TUI(c)
 		},
 	}
 	cli.VersionFlag = &cli.BoolFlag{
@@ -103,6 +96,28 @@ func realMain() error {
 	}
 
 	return nil
+}
+
+// lspFlags: the language server's flags (also on the app, where --config
+// and --log apply too).
+func lspFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringFlag{
+			Name:    "log",
+			Aliases: []string{"l"},
+			Usage:   "Also log to this file. (in addition to stderr)",
+		},
+		&cli.StringFlag{
+			Name:    "config",
+			Aliases: []string{"c"},
+			Usage:   "Specifies an alternative per-user configuration file. If a configuration file is given on the command line, the workspace option (initializationOptions) will be ignored.",
+		},
+		&cli.BoolFlag{
+			Name:    "trace",
+			Aliases: []string{"t"},
+			Usage:   "Print all requests and responses.",
+		},
+	}
 }
 
 func serve(c *cli.Context) error {

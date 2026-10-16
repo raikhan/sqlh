@@ -75,7 +75,7 @@ func (s *Server) startControl() {
 				jsonrpc2.NewBufferedStream(nc, jsonrpc2.VSCodeObjectCodec{}),
 				jsonrpc2.AsyncHandler(jsonrpc2.HandlerWithError(s.handleControl)),
 				// its own logger writes to stderr: follow the log package's
-				// output (sqlh tui sends it to a file)
+				// output (the app sends it to a file)
 				jsonrpc2.SetLogger(log.Default()))
 			s.trackControlConn(conn)
 		}
@@ -326,7 +326,7 @@ func (s *Server) handleControl(ctx context.Context, conn *jsonrpc2.Conn, req *js
 	return nil, &jsonrpc2.Error{Code: jsonrpc2.CodeMethodNotFound, Message: "unknown method " + req.Method}
 }
 
-// RunHeadless starts a server without an editor for a workspace (`sqlh tui`):
+// RunHeadless starts a server without an editor for a workspace (the app (`sqlh`)):
 // connected, serving the control socket until an editor's server takes it
 // (MethodRelease) or Stop.
 func RunHeadless(cfg *config.Config, configPath, workspace string) (*Server, error) {

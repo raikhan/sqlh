@@ -40,11 +40,11 @@ type Config struct {
 	RefreshAfterDDL *bool `json:"refreshAfterDDL" yaml:"refreshAfterDDL"`
 	// Relations: the table picker and join completion.
 	Relations RelationsConfig `json:"relations" yaml:"relations"`
-	// Panel: the side panel next to the editor (`sqlh panel`, `sqlh tui`).
+	// Panel: the side panel next to the editor (`sqlh panel`, the app (`sqlh`)).
 	Panel PanelConfig `json:"panel" yaml:"panel"`
 	// Picker: the inline picker.
 	Picker PickerConfig `json:"picker" yaml:"picker"`
-	// TUI: the standalone app (`sqlh tui`).
+	// TUI: the standalone app (the app (`sqlh`)).
 	TUI TUIConfig `json:"tui" yaml:"tui"`
 }
 
@@ -113,12 +113,12 @@ func (p PanelConfig) InsertKeysOrDefault() []string {
 	return DefaultInsertKeys
 }
 
-// TUIConfig controls `sqlh tui`.
+// TUIConfig controls the app (`sqlh`).
 type TUIConfig struct {
 	// QueriesDir: where new query files go: relative to the workspace root or
 	// absolute ("~" expanded). Default: queries.
 	QueriesDir string `json:"queriesDir" yaml:"queriesDir"`
-	// Editor: the editor `sqlh tui` opens query files in (the file is
+	// Editor: the editor the app (`sqlh`) opens query files in (the file is
 	// appended). Default: hx.
 	Editor []string `json:"editor" yaml:"editor"`
 }

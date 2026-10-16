@@ -138,8 +138,8 @@ the cursor (its tables and their relationships), **Queries** (query files) and *
 a run and its diff; SQL highlighted). Enter navigates; Ctrl-Y inserts at
 the cursor — after `JOIN` with its alias and `ON` condition, or as a whole join chain. `/`
 searches like an omni bar (`:` tables, `.` columns, `@` connections, …). Every key is
-configurable, per tab; `?` lists the tab's keys, searchable. `sqlh tui` is the same as an
-app. The panel closes with its Helix. See
+configurable, per tab; `?` lists the tab's keys, searchable. `sqlh` (no command) is the
+same as an app; the language server is `sqlh lsp`. The panel closes with its Helix. See
 [doc/cli.md](doc/cli.md#panel).
 
 #### Query files
@@ -299,7 +299,7 @@ if executable('sqlh')
         autocmd!
         autocmd User lsp_setup call lsp#register_server({
         \   'name': 'sqlh',
-        \   'cmd': {server_info->['sqlh']},
+        \   'cmd': {server_info->['sqlh', 'lsp']},
         \   'whitelist': ['sql'],
         \   'workspace_config': {
         \     'sqlh': {
@@ -329,7 +329,7 @@ In `coc-settings.json` opened by `:CocConfig`
     "languageserver": {
         "sql": {
             "command": "sqlh",
-            "args": ["-config", "$HOME/.config/sqlh/config.yml"],
+            "args": ["lsp", "-config", "$HOME/.config/sqlh/config.yml"],
             "filetypes": ["sql"],
             "shell": true
         }
@@ -341,6 +341,7 @@ In `coc-settings.json` opened by `:CocConfig`
 
 ```lua
 require'lspconfig'.sqlh.setup{
+  cmd = { "sqlh", "lsp" },
   on_attach = function(client, bufnr)
     require('sqlh').on_attach(client, bufnr) -- require sqlh.nvim
   end

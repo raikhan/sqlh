@@ -80,7 +80,7 @@ type Server struct {
 	lint lintState
 	// panel: subscribers, panels and their pending actions (panel.go).
 	panel panelState
-	// headless: started by `sqlh tui` without an editor (RunHeadless); it
+	// headless: started by the app (`sqlh`) without an editor (RunHeadless); it
 	// gives the control socket to an editor's server.
 	headless bool
 	// releasedAt: when a headless server gave its socket to an editor's

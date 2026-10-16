@@ -103,7 +103,7 @@ func panelOpenCmd(c *cli.Context) error {
 	defer cl.Close()
 	hd, err := herdr.FromEnv()
 	if err != nil {
-		return errors.New("the panel runs next to the editor in Herdr (outside Herdr: sqlh tui)")
+		return errors.New("the panel runs next to the editor in Herdr (outside Herdr: sqlh, the app)")
 	}
 	editor := herdr.CurrentPane()
 	cur, err := cursorOf(c)
@@ -503,13 +503,13 @@ type panelBackend struct {
 	mu   sync.Mutex
 	cl   *control.Client
 	file string // the file last opened in the editor (under mu)
-	// startServer starts a server when there is none (sqlh tui: headless)
+	// startServer starts a server when there is none (the app: headless)
 	startServer func() error
-	// ownServer: startServer's server is the one serving (sqlh tui)
+	// ownServer: startServer's server is the one serving (the app)
 	ownServer func() bool
 }
 
-// editor returns the editor's pane and process (they change in sqlh tui).
+// editor returns the editor's pane and process (they change in the app).
 func (b *panelBackend) editor() (string, int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -575,7 +575,7 @@ func (b *panelBackend) resubscribe() {
 // watch reconnects when the server goes away (e.g. :lsp-restart, the
 // editor exiting). When ours gave the socket to an editor's server, that one
 // is given editorGrace to appear; when an editor's server went, ours takes
-// over at once (sqlh tui).
+// over at once (the app).
 func (b *panelBackend) watch() {
 	for {
 		ours := b.ownServer != nil && b.ownServer()

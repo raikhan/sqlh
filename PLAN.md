@@ -1879,6 +1879,12 @@ Herdr grants the app's keyboard-enhancement request (`Flags:1`, disambiguate) an
   `MINUS`); current schema per connection (`sqlh schema`, header `schema=`, CADE works from
   read-only logins); lineage for UNION views; go to definition of tables and `sqlh ddl`.
 
+- **2026-10-17** `sqlh` (no command) is the app; the language server is `sqlh lsp` (its
+  flags `--config`/`--log`/`--trace` on it too). Without a terminal on stdin (an editor
+  started `sqlh` the old way) the bare command still serves the language server. `sqlh tui`
+  stays as a hidden alias. Helix `languages.toml` (user's and the e2e one): `args = ["lsp", …]`;
+  README editor examples and doc/cli.md updated.
+
 - **2026-10-16** `sqlh/status` re-reads an edited config file (as `connections` does): the
   panel's settings (`panel.placement`, keys, …) count from the next `space i t` without
   `:lsp-restart`.

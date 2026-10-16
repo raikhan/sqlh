@@ -1,5 +1,5 @@
 // Package tui is sqlh's terminal UI: the panel next to the editor (`sqlh
-// panel`), the same as an app (`sqlh tui`), and the inline picker. It talks
+// panel`), the same as an app (the app (`sqlh`)), and the inline picker. It talks
 // to the workspace's server through a Backend, so it can be tested without a
 // server, a database or a terminal multiplexer.
 package tui
@@ -42,7 +42,7 @@ type Backend interface {
 	// BackToEditor focuses the editor's pane.
 	BackToEditor() error
 	// EditorAlive reports whether the panel's editor still runs; the panel
-	// exits when it doesn't (sqlh tui: detaches it and stays).
+	// exits when it doesn't (the app: detaches it and stays).
 	EditorAlive() bool
 	// Editor describes the attached editor ("" = none: inserting copies).
 	Editor() string
@@ -52,7 +52,7 @@ type Backend interface {
 	// NewQuery creates the next query_<N>.sql with a connection header and
 	// body, and returns its path.
 	NewQuery(body string) (string, error)
-	// OpenFile opens a file in the editor (sqlh tui: a new one if none).
+	// OpenFile opens a file in the editor (the app: a new one if none).
 	OpenFile(path string) error
 	// RenameQuery renames a query file (name: relative to the queries
 	// folder, .sql added without an extension); through the editor when it
@@ -109,7 +109,7 @@ type Options struct {
 	Cursor *control.Cursor
 	// Workspace: the workspace root (titles).
 	Workspace string
-	// Standalone: `sqlh tui`: starts on the Objects tab and outlives
+	// Standalone: the app (`sqlh`): starts on the Objects tab and outlives
 	// editors (else the panel starts on Statement and ends with its editor).
 	Standalone bool
 }

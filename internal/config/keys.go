@@ -85,7 +85,7 @@ func keyListOf(v interface{}) (KeyList, error) {
 	return nil, fmt.Errorf("%v is not a key or a list of keys", v)
 }
 
-// DefaultPanelKeys are the panel's (and sqlh tui's) keys, by action.
+// DefaultPanelKeys are the panel's (and the app's) keys, by action.
 var DefaultPanelKeys = Keymap{
 	"up": {"k", "up", "ctrl+p"}, "down": {"j", "down", "ctrl+n"},
 	"top": {"g", "home"}, "bottom": {"G", "end"},

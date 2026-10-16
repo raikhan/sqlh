@@ -1,6 +1,7 @@
 package cmd
 
-// `sqlh tui`: the panel as a standalone app. Without an editor's server for
+// `sqlh` (no command; also the hidden `sqlh tui`): the panel as a
+// standalone app. Without an editor's server for
 // the workspace it runs a headless one in-process (handing the socket over
 // when Helix starts); `n` creates a query file and opens it in an editor pane
 // the app then belongs to, as its panel.
@@ -32,14 +33,18 @@ import (
 
 func tuiCommand() *cli.Command {
 	return &cli.Command{
-		Name:  "tui",
-		Usage: "the database browser as an app: object tree, previews, history, query files (c: new query, opened in Helix next to it)",
+		Name:   "tui",
+		Hidden: true, // the app is `sqlh` without a command
+		Usage:  "the database browser as an app: object tree, previews, history, query files (c: new query, opened in Helix next to it)",
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "dir", Aliases: []string{"C"}, Usage: "the workspace: `DIR` (default: the project around the current directory)"},
 		},
 		Action: tuiCmd,
 	}
 }
+
+// TUI runs the app (`sqlh` without a command).
+func TUI(c *cli.Context) error { return tuiCmd(c) }
 
 func tuiCmd(c *cli.Context) error {
 	ws := workspaceRoot(startDir(c))

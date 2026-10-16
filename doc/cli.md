@@ -1,6 +1,10 @@
 # sqlh CLI
 
-`sqlh` with no command (or `sqlh lsp`) is the language server. The other commands work
+`sqlh` with no command is the app — the [panel](#panel) as a program, see [sqlh](#sqlh-the-app).
+`sqlh lsp` is the language server: editors start it as `sqlh` with the argument `lsp`
+(Helix: `[language-server.sqlh] command = "sqlh", args = ["lsp"]`; for configurations from
+before, `sqlh` without a command and without a terminal — an editor's pipes — still serves
+the language server). The other commands work
 with the server of the current workspace — the same connection, session and **unsaved
 editor buffers** — via a Unix socket. Without a running server, `run`, `export`,
 `connections` and `latest` work standalone from the config. `dump` from the terminal always
@@ -27,7 +31,8 @@ runs standalone, on the connection in the file's header (see [Query files](#quer
 | `sqlh panel` | open (or focus) the side panel of this Helix pane: connections, objects, the statement at the cursor, queries, history; Ctrl-Y inserts at Helix's cursor (Herdr); see [Panel](#panel) |
 | `sqlh panel take` | print what the panel chose, for the cursor (the hidden Helix binding `space i P`) |
 | `sqlh keys [SECTION]` | every key binding action for the config — `panel.keys` (every tab, then each tab's own: `connections`, `objects`, `statement`, `queries`, `history`; `search`, `form`) and `picker.keys` — with its keys as configured, the default when it differs, and what it does (`--defaults`: ignore the config; `--json`); SECTION: `panel`, `picker` or a tab |
-| `sqlh tui` | the panel as an app, for the workspace around the current directory (`-C DIR`): `c` new query opened in Helix next to it; see [sqlh tui](#sqlh-tui) |
+| `sqlh` | (no command) the panel as an app, for the workspace around the current directory (`-C DIR`): `c` new query opened in Helix next to it; see [sqlh](#sqlh-the-app) |
+| `sqlh lsp` | the language server on stdio (for editors; `--config`, `--log`, `--trace`) |
 
 A connection is one database and schema: to work in another, add a connection for it (the
 panel duplicates and edits connections). There is no switching of databases or schemas
@@ -143,7 +148,7 @@ press **Ctrl-Y**: it is inserted at Helix's cursor and the focus goes back to He
 ─ Describe │ DDL │ Sample ─────────────────
 ```
 
-Five tabs, `1`–`5` (it starts on **Statement**; `sqlh tui` on **Objects**):
+Five tabs, `1`–`5` (it starts on **Statement**; `sqlh` on **Objects**):
 
 1. **Connections** — the configured connections as a table (connection, database, schema,
    env; the database and schema shrink, then go, in a narrow pane), the current one marked
@@ -202,7 +207,7 @@ Keys (all configurable, see below):
 - **Ctrl-Y** inserts: a table (after `JOIN` with the alias and `ON` condition, or the
   chain), a column (`alias.col` when its table is in the statement; Space marks several:
   `o.id, o.total`), an object's name, a query. With the cursor on a table name it is copied to
-  the clipboard instead. Without an editor (`sqlh tui` alone) it copies, and says so.
+  the clipboard instead. Without an editor (`sqlh` alone) it copies, and says so.
 - `.` (or `a`) — the actions of the selection, each with a letter: for a table **insert** (as
   Ctrl-Y), **insert the name**, **insert `JOIN … ON …`** (`J`: after `JOIN` the clause,
   elsewhere with the keyword on its own line; an error when the table relates to none of the
@@ -302,12 +307,12 @@ that moment* (one undo step). Each Helix pane has its own panel and its own pend
 The panel pane is started through the shell startup hook of `~/.config/helix`
 (`HELIX_HELPER_ARGV` and `HELIX_ORIGIN_PANE_ID` in the new pane's environment); without that
 hook `exec sqlh panel run …` is typed into the new shell. `SQLH_NO_FOCUS=1` keeps the focus
-where it is (scripted tests). While the panel (or `sqlh tui`) runs, the log goes to
+where it is (scripted tests). While the panel (or the app, `sqlh`) runs, the log goes to
 `--log FILE`, else `tui.log` in sqlh's cache directory: nothing is written over the screen.
 
-## sqlh tui
+## sqlh, the app
 
-`sqlh tui` is the [panel](#panel) as an app, started from a shell (in Herdr) rather than from
+`sqlh` (no command; `-C DIR` for another workspace) is the [panel](#panel) as an app, started from a shell (in Herdr) rather than from
 Helix; it starts on **Objects**.
 
 - `c` creates the next `query_<N>.sql` in `tui.queriesDir` (N = the highest existing number + 1,

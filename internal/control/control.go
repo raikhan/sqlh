@@ -52,7 +52,7 @@ const (
 	// MethodPanelTake hands it out once (`sqlh panel take`).
 	MethodPanelAction = "sqlh/panelAction"
 	MethodPanelTake   = "sqlh/panelTake"
-	// MethodRelease asks a headless server (`sqlh tui` without an editor) to
+	// MethodRelease asks a headless server (the app (`sqlh`) without an editor) to
 	// give the socket to an editor's server starting for the workspace.
 	MethodRelease = "sqlh/release"
 	// MethodPanels lists the registered panels ([]PanelInfo).
@@ -627,7 +627,7 @@ type Info struct {
 	Workspace string    `json:"workspace"`
 	PID       int       `json:"pid"`
 	Started   time.Time `json:"started"`
-	// Headless: started by `sqlh tui` without an editor; it gives way to an
+	// Headless: started by the app (`sqlh`) without an editor; it gives way to an
 	// editor's server (MethodRelease).
 	Headless bool `json:"headless,omitempty"`
 }

@@ -143,7 +143,7 @@ type tabState struct {
 	zTop bool
 }
 
-// Panel is the Bubble Tea model of the panel (and of sqlh tui).
+// Panel is the Bubble Tea model of the panel (and of the app).
 type Panel struct {
 	be     Backend
 	opt    Options

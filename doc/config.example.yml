@@ -30,7 +30,7 @@ results:
   # opens results (`sqlh open`, `run --open`); "{}" = the file(s). Default: open / xdg-open
   # viewer: ["~/.config/helix/open-in-herdr-pane.nu", "0.8", "vd", "{}"]
 
-# The side panel next to Helix (`sqlh panel`, space i t) and `sqlh tui`
+# The side panel next to Helix (`sqlh panel`, space i t) and the app (`sqlh`)
 panel:
   placement: right            # right (default), left, up or down: half of the editor's pane
   # keys sent to Helix to insert what the panel chose: they must run
@@ -60,7 +60,7 @@ panel:
 #     nameOnly: ctrl+t        # the table picker: insert the other form (name / JOIN)
 tui:
   queriesDir: queries         # new query files: relative to the workspace, or absolute
-  # editor: [hx]              # the editor `sqlh tui` opens query files in (file appended)
+  # editor: [hx]              # the editor the app (`sqlh`) opens query files in (file appended)
 
 connections:
   - alias: pg_local
