@@ -22,7 +22,8 @@ const (
 	skConn
 	skFile
 	skRun
-	skStmt // the statement's tables (the Statement tab's own)
+	skStmt  // the statement's tables (the Statement tab's own)
+	skChain // tables a chain of joins reaches (Statement's `:`)
 	skAll
 )
 
@@ -43,7 +44,7 @@ var searchKinds = []struct {
 }
 
 var searchKindNames = []string{"tables & views", "columns", "indexes", "constraints", "triggers", "sequences",
-	"connections", "queries", "runs", "this statement", "everything"}
+	"connections", "queries", "runs", "this statement", "join chains", "everything"}
 
 // prefixOf: a kind's prefix (0: none).
 func prefixOf(kind int) rune {
@@ -108,7 +109,7 @@ func parseSearch(q string, tab int) (int, string) {
 		if r != 0 {
 			for _, k := range searchKinds {
 				if k.prefix == r {
-					return k.kind, q[len(string(r)):]
+					return tabSpecific(k.kind, tab), q[len(string(r)):]
 				}
 			}
 		}
@@ -117,14 +118,30 @@ func parseSearch(q string, tab int) (int, string) {
 	return tabKind(tab), q
 }
 
+// tabSpecific: in Statement, `:` finds join chains (tables are Objects').
+func tabSpecific(kind, tab int) int {
+	if kind == skTable && tab == tabStmt {
+		return skChain
+	}
+	return kind
+}
+
+// prefixIn: a kind's prefix in a tab.
+func prefixIn(kind, tab int) rune {
+	if kind == skChain {
+		return ':'
+	}
+	return prefixOf(kind)
+}
+
 // cycleKind: Tab in the search: the next kind (the tab's own, then those
 // with a prefix), the query kept.
 func (p *Panel) cycleKind(d int) tea.Cmd {
 	kind, q := parseSearch(p.query, p.cur)
 	order := []int{tabKind(p.cur)}
 	for _, k := range searchKinds {
-		if k.kind != order[0] {
-			order = append(order, k.kind)
+		if kk := tabSpecific(k.kind, p.cur); kk != order[0] {
+			order = append(order, kk)
 		}
 	}
 	i := 0
@@ -136,7 +153,7 @@ func (p *Panel) cycleKind(d int) tea.Cmd {
 	next := order[(i+d+len(order))%len(order)]
 	p.query = q
 	if next != tabKind(p.cur) {
-		p.query = string(prefixOf(next)) + q
+		p.query = string(prefixIn(next, p.cur)) + q
 	}
 	p.rsel, p.rtop = 0, 0
 	return tea.Batch(p.runSearch(), p.previewCmd())
@@ -146,6 +163,9 @@ func (p *Panel) cycleKind(d int) tea.Cmd {
 func (p *Panel) searchItems(kind int) []searchItem {
 	var out []searchItem
 	want := func(k int) bool { return kind == skAll || kind == k }
+	if kind == skChain {
+		return p.chainItems() // nearest first
+	}
 	if kind == skStmt {
 		for _, n := range p.tabs[tabStmt].roots {
 			if n.kind == nStmtTable {
@@ -227,6 +247,9 @@ func (p *Panel) runSearch() tea.Cmd {
 		p.allColsLoading = true
 		be := p.be
 		cmd = func() tea.Msg { c, err := be.AllColumns(); return allColsMsg{c, err} }
+	}
+	if kind == skChain {
+		cmd = tea.Batch(cmd, p.loadChains())
 	}
 	p.skind = kind
 	p.items = p.searchItems(kind)
@@ -314,6 +337,8 @@ func (p *Panel) searchKey(k tea.KeyMsg) tea.Cmd {
 // insertSearched: ctrl+y on a result.
 func (p *Panel) insertSearched(it *searchItem) tea.Cmd {
 	switch it.kind {
+	case skChain:
+		return p.chainTo(it.text, true)
 	case skTable, skStmt:
 		return p.insert(control.PanelAction{Kind: control.ActionTable, Table: it.obj.Insert}, it.obj.Insert)
 	case skColumn:
@@ -331,6 +356,8 @@ func (p *Panel) insertSearched(it *searchItem) tea.Cmd {
 // reveal goes to a result in its tab: opens the way to it and selects it.
 func (p *Panel) reveal(it *searchItem) tea.Cmd {
 	switch it.kind {
+	case skChain:
+		return p.chainTo(it.text, false)
 	case skStmt:
 		p.switchTab(tabStmt)
 		return p.revealWhere(func(n *node) bool { return n.id == it.node })

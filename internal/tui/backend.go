@@ -17,6 +17,9 @@ type Backend interface {
 	Connections() ([]control.Connection, error)
 	Columns(table string) ([]control.ColumnItem, error)
 	Relations(table string) (*control.RelationsResult, error)
+	// Chains: the tables a chain of joins reaches from the statement's
+	// tables (target ""), or the shortest chains to target.
+	Chains(from []string, target string) (*control.ChainsResult, error)
 	// AllColumns: every column of the catalog (column search).
 	AllColumns() ([]control.ColumnRef, error)
 	Context(c control.Cursor) (*control.ContextResult, error)

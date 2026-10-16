@@ -604,6 +604,11 @@ func (b *panelBackend) watch() {
 // to serve it.
 const editorGrace = 3 * time.Second
 
+func (b *panelBackend) Chains(from []string, target string) (out *control.ChainsResult, err error) {
+	err = call(b.client(), control.MethodChains, control.ChainsParams{From: from, Target: target}, &out)
+	return
+}
+
 func (b *panelBackend) Catalog() (out *control.CatalogResult, err error) {
 	err = call(b.client(), control.MethodCatalog, nil, &out)
 	return

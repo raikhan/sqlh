@@ -207,6 +207,12 @@ type Panel struct {
 	rtop    int
 	// pendingReveal: a search result to select once its table has loaded
 	pendingReveal func(*node) bool
+	// pendingPath: a join chain the Statement tree is being opened along
+	pendingPath *control.Chain
+	// chains: the tables join chains reach from the statement's (chainsFrom)
+	chains        *control.ChainsResult
+	chainsFrom    string
+	chainsLoading bool
 
 	menu    *menu
 	pal     *palette
@@ -295,6 +301,7 @@ func (p *Panel) resetCaches() {
 	p.samples = map[string]sampleEntry{}
 	p.versions = map[string][]history.Entry{}
 	p.allCols, p.allColsLoading = nil, false
+	p.chains, p.chainsFrom, p.chainsLoading = nil, "", false
 }
 
 func (p *Panel) tab() *tabState { return &p.tabs[p.cur] }
@@ -606,7 +613,7 @@ func (p *Panel) rebuild() []tea.Cmd {
 		restoreSelection(t)
 	}
 	p.tryPendingReveal()
-	return cmds
+	return append(cmds, p.walkPath()...)
 }
 
 // restore applies the remembered expansion to n and its descendants (nodes
@@ -885,6 +892,23 @@ func (p *Panel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return p, p.runSearch()
 		}
 		return p, nil
+	case chainsMsg:
+		if msg.from != p.chainsFrom {
+			return p, nil
+		}
+		p.chainsLoading = false
+		if msg.err != nil {
+			p.flash(msg.err.Error(), true)
+			p.chains = &control.ChainsResult{}
+		} else {
+			p.chains = msg.res
+		}
+		if p.search {
+			return p, p.runSearch()
+		}
+		return p, nil
+	case chainToMsg:
+		return p, p.onChainTo(msg)
 	case fileMsg:
 		p.fileTexts[msg.path] = fileEntry{text: msg.text, err: msg.err, at: time.Now()}
 		return p, nil

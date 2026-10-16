@@ -150,6 +150,17 @@ type RelationsConfig struct {
 	// Maybe: also offer relationships guessed from column names (customer_id →
 	// customer.id, when no foreign key is declared). Default: true.
 	Maybe *bool `json:"maybe" yaml:"maybe"`
+	// ChainDepth: the panel's join-chain search goes at most this many
+	// joins from the statement's tables. Default 4.
+	ChainDepth int `json:"chainDepth" yaml:"chainDepth"`
+}
+
+// ChainDepthOrDefault is relations.chainDepth, default 4.
+func (r RelationsConfig) ChainDepthOrDefault() int {
+	if r.ChainDepth > 0 {
+		return r.ChainDepth
+	}
+	return 4
 }
 
 // InsertMode returns "join" or "name".

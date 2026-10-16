@@ -47,30 +47,37 @@ func ConnectionPickItems(conns []control.Connection) (header string, items []Pic
 			schemaW = max(schemaW, lipgloss.Width(s), len("schema"))
 		}
 	}
-	header = "    " + fit("connection", aliasW) + "  " + fit("database", dbW) + "  "
+	// the picker puts 3 cells before each row; then the icon, as the
+	// Connections tab: "⛁ alias ● database  schema  env"
+	const icon = "⛁ "
+	header = strings.Repeat(" ", 3+lipgloss.Width(icon)) + fit("connection", aliasW) + "   " + fit("database", dbW) + "  "
 	if schemaW > 0 {
 		header += fit("schema", schemaW) + "  "
 	}
 	header = ansiDim + header + " env" + ansiReset
 	for _, c := range conns {
-		mark := "  "
-		name := label(c)
-		if c.Group != "" {
-			name = ansiDim + c.Group + "/" + ansiReset + c.Alias
-		}
+		name := c.Alias
 		if c.Current {
-			mark = "● "
-			name = ansiBold + label(c) + ansiReset
+			name = ansiBold + c.Alias + ansiReset
 		}
-		row := mark + name + strings.Repeat(" ", aliasW-lipgloss.Width(label(c))) + "  " + ansiDim + fit(c.Database, dbW) + "  "
+		if c.Group != "" {
+			name = ansiDim + c.Group + "/" + ansiReset + name
+		}
+		mark := " "
+		if c.Current {
+			mark = "●"
+		}
+		row := "\x1b[36m" + icon + ansiReset + name + strings.Repeat(" ", aliasW-lipgloss.Width(label(c))) + " " + mark + " " +
+			ansiDim + fit(c.Database, dbW) + "  "
 		if schemaW > 0 {
 			row += fit(schemaOf(c), schemaW) + "  "
 		}
 		row += ansiReset
+		tail := ""
 		if c.Environment != "" {
-			row += ansiEnv[c.Environment] + " " + fit(c.Environment, 4) + " " + ansiReset
+			tail = ansiEnv[c.Environment] + " " + fit(c.Environment, 4) + " " + ansiReset
 		}
-		items = append(items, PickItem{Value: c.Alias, Display: row,
+		items = append(items, PickItem{Value: c.Alias, Display: row, Tail: tail,
 			Match: strings.Join([]string{c.Alias, c.Group, c.Database, schemaOf(c), c.Environment}, " ")})
 	}
 	return header, items

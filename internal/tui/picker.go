@@ -13,7 +13,9 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 )
 
 // PickItem is a line of the picker.
@@ -22,6 +24,9 @@ type PickItem struct {
 	Display string // what is shown (may contain ANSI); default Value
 	Match   string // what typing matches; default Value
 	Dim     bool   // shown dimmed (secondary entries)
+	// Tail is drawn after Display as is, also on the highlighted row (whose
+	// Display loses its colours to the selection's): a coloured chip.
+	Tail string
 }
 
 func (it PickItem) display() string {
@@ -96,6 +101,9 @@ func Pick(items []PickItem, opt PickOptions) (PickResult, bool, error) {
 		return PickResult{}, false, ErrNoTTY
 	}
 	defer tty.Close()
+	// the colours the terminal has: stdout may be a pipe (Helix's :pipe-to),
+	// lipgloss would decide on none from it
+	lipgloss.SetColorProfile(termenv.NewOutput(tty).EnvColorProfile())
 	// Helix enables the kitty keyboard protocol: push "no flags" so Esc and
 	// Ctrl keys arrive plainly, pop afterwards.
 	_, _ = tty.WriteString("\x1b[>0u")
@@ -416,13 +424,23 @@ func (p *picker) View() string {
 	for i := p.top; i < len(p.results) && len(list) < lh; i++ {
 		m := p.results[i]
 		it := p.items[m.index]
-		mark := "  "
+		mark, plainMark := "  ", "  "
 		if p.marked[it.Value] {
-			mark = stMarked.Render("● ")
+			mark, plainMark = stMarked.Render("● "), "● "
 		}
 		if i == p.sel {
-			text := "▌" + strings.TrimPrefix(mark, " ") + ansi.Strip(it.display())
-			list = append(list, stSel.Render(fit(text, listW)))
+			// the same cells as the other rows: a 1-cell bar, the mark, the text
+			text := "▌" + plainMark + ansi.Strip(it.display())
+			if it.Tail == "" {
+				list = append(list, stSel.Render(fit(text, listW)))
+				continue
+			}
+			tw := lipgloss.Width(it.Tail)
+			row := stSel.Render(fit(text, max(listW-tw, 0)))
+			if lipgloss.Width(text)+tw <= listW {
+				row = stSel.Render(text) + it.Tail + stSel.Render(strings.Repeat(" ", listW-lipgloss.Width(text)-tw))
+			}
+			list = append(list, fit(row, listW))
 			continue
 		}
 		disp := it.display()
@@ -432,7 +450,7 @@ func (p *picker) View() string {
 		if it.Dim {
 			disp = stDim.Render(ansi.Strip(disp))
 		}
-		list = append(list, fit(" "+mark+disp, listW))
+		list = append(list, fit(" "+mark+disp+it.Tail, listW))
 	}
 	for len(list) < lh {
 		list = append(list, strings.Repeat(" ", listW))

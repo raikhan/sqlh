@@ -1565,6 +1565,139 @@ below a relation, leave out the tables already on its path (and the statement's)
 only its Relations (no indexes/constraints/columns clutter); a separate key goes to the
 table in Objects.
 
+### Phase 14 — the connections popup, join-chain search (2026-10-16) ✅ done (branch `tui-experiment`)
+
+Decisions in 14.4, status in 14.5.
+
+#### 14.1 `space i C`: the popup's highlighted row misaligned
+
+The inline picker draws the highlighted row as `▌` + one mark cell + the text stripped of
+ANSI; the other rows as a space + two mark cells + the text. So the highlighted row sits one
+cell left of the others (and of the header), and its env chip loses its colour.
+
+- [ ] Picker: the highlighted row gets the same prefix width as the others (`▌` + two cells).
+      All pickers benefit (tables, columns, …).
+- [ ] Header offset: the header line lines up with the rows' text (today 1 cell short).
+- [ ] The env chip keeps its colour on the highlighted row: `PickItem.Tail` (a styled suffix
+      the selection background doesn't strip), used for the chip.
+- [ ] Closer to the app's table (optional, 14.4): the `●` of the current connection in a
+      column after the alias (as in the Connections tab), the connection icon before it.
+- [ ] Test: every row's columns (highlighted or not) and the header's start at the same cells.
+
+#### 14.2 Statement search: `:` finds join chains
+
+In the Statement tab, `:` today searches all tables and views — the same as Objects' `/`.
+Instead it finds **tables reachable from the statement's tables by a chain of
+relationships**, to find a join path quickly:
+
+- [ ] Server: `sqlh/chains` (control method) on the relationship graph the server already
+      holds (`catalog.Relations` per table, in memory: no database queries):
+  - `{From: the statement's tables, MaxDepth}` → every reachable table not in the statement,
+    with its distance (fewest joins) and how many shortest chains reach it (breadth-first,
+    the loop-free rule of 13.4: a chain never revisits a table);
+  - `{From, Target}` → the chains to that table (anchor + hops with columns), shortest first,
+    capped (14.4).
+  - Only joinable relationships (with columns: foreign keys, view-inherited, `maybe` when
+    `relations.maybe` is on); not "used by views".
+- [ ] Search list (`:` in Statement): the reachable tables, nearest first, each with the
+      shortest chain as detail (`orders → customer → region · 2 joins`, `+2 more`).
+- [ ] Enter on a result: the Statement tree opens along each of its chains — the anchor table,
+      its Relations, the first hop, its Relations, … the target, selected (the first chain's).
+      Relations load lazily on the way (a pending path walk, like the pending reveal, continued
+      after each load). Other open branches: see 14.4.
+- [ ] Ctrl-Y on a result: inserts the shortest chain (the same as Ctrl-Y on its row after the
+      walk); several equally short: 14.4.
+- [ ] Objects keeps `:` as today (and `/` in Statement still finds the statement's tables).
+- [ ] The legend and Tab cycling show the kind in Statement as "join chains".
+- [ ] Tests: graph fixtures (a → b → c, a → d → c: two shortest chains to c; a cycle b ↔ e;
+      the depth cap), the walk opening both chains in the tree, Ctrl-Y inserting the chain.
+
+#### 14.5 Status ✅
+
+- [x] 14.1 picker: the highlighted row `▌` + the two mark cells (as the others); its colour
+      profile from /dev/tty (`termenv.NewOutput(tty).EnvColorProfile()` → the default
+      renderer: the selection's background and the dims show under `:pipe-to`);
+      `PickItem.Tail` keeps the env chip on the highlighted row. The connections table: the
+      icon, `●` after the alias, header at the rows' cells (test draws the picker and checks
+      every row's columns, highlighted included).
+- [x] 14.2 `catalog.Chains` (breadth-first over `catalog.Relations`, joinable edges only,
+      statement tables at distance 0 so never passed through; counts of shortest chains;
+      chains to a target in the from/relationship order, capped), `sqlh/chains`,
+      `relations.chainDepth` (4). TUI: `skChain` (`:` in Statement via `tabSpecific`), list
+      loaded once per set of statement tables, `walkPath` opens anchor → Relations → hop → …
+      across lazy loads (continued from `rebuild`), Ctrl-Y inserts `Mode: join` with the
+      chain. Tests: TestChains (two shortest chains, a two-way relationship, depth cap, two
+      statement tables), TestPanelChainSearch. Live: `:` in Statement listed customer,
+      order_line, v_orders, region (2 joins); Enter opened orders → customer → region;
+      Ctrl-Y after `join` inserted `customer c ON …` + `JOIN region r ON r.id = c.region_id`.
+
+#### 14.3 Order of work (14.4 Q4)
+
+Recommended: 14.1 and 14.2 first, then the Bubble Tea v2 port (Phase 15) on the finished
+code, with a commit in between.
+
+- Neither depends on v2: 14.1 is a few lines of the picker; 14.2 is server logic (graph
+  search), tree walking and the search list — plain Go, not library API.
+- The v2 port is mechanical but touches every view, key and mouse handler: done once, over
+  the final code, with the whole test suite (33 TUI tests, the cmd and handler ones) as the safety net, and a
+  known-good commit to compare against if something regresses.
+- Only the `ctrl+:` / `ctrl+R` defaults wait for v2.
+
+#### 14.4 Decided (2026-10-16)
+
+1. Popup: the alignment is required; the highlighted row as a coloured row (like the app)
+   rather than only the `▌` is wanted if it comes cheaply; the rest (icon, `●` column) nice to
+   have. No 5th column (the group stays a dim `CADE/` prefix).
+   Found while planning: the highlighted row *is* drawn with the selection background, but
+   under Helix's `:pipe-to` stdout is a pipe, so lipgloss decides there are no colours —
+   the picker must take its colour profile from /dev/tty.
+2. Chains: at most 4 joins by default, `relations.chainDepth`.
+3. Enter opens only the shortest chain (the first, 4.) to the table and selects it; the rest
+   of the tree stays as it is.
+4. Ctrl-Y with several equally short chains: the first (the focused table's first, then the
+   statement's order).
+5. Order: Phase 14, a commit, then Phase 15 (v2).
+
+### Phase 15 — Bubble Tea v2 (planned 2026-10-16)
+
+Why: v2 reads the kitty keyboard protocol, so keys like `ctrl+:` and `ctrl+R` (= ctrl+shift+r)
+reach the panel; v1 reads only the classic encoding. Probed in Herdr (`/tmp/keyprobe`, v2.0.10):
+Herdr grants the app's keyboard-enhancement request (`Flags:1`, disambiguate) and forwards
+`ctrl+r`, `ctrl+shift+r`, `ctrl+:` (code `:`), `ctrl+shift+;` and `ctrl+;` as distinct keys
+(sent with `herdr pane send-keys`; a real Ghostty keypress still to confirm, 15.4).
+
+#### 15.1 The port
+
+- [ ] Modules: `charm.land/bubbletea/v2`, `charm.land/lipgloss/v2`, `charm.land/bubbles/v2`
+      (textinput, cursor), `charmbracelet/x/ansi` updated. easyredmine-tui (v2.0.2, its
+      help palette, `keyPressFor`) as the reference for the patterns.
+- [ ] Models: `View() tea.View` (alt screen, mouse mode and keyboard enhancements set on the
+      view, not as program options); `tea.KeyPressMsg` (`String()`, `Keystroke()`, `Code`,
+      `ShiftedCode`, `Mod`); mouse: `MouseClickMsg` / `MouseWheelMsg`; `tea.ExecProcess` as is.
+- [ ] Colours: lipgloss v2 has no `AdaptiveColor`; light/dark from `tea.BackgroundColorMsg`
+      (`lipgloss.LightDark`), the styles built once the background is known; the colour
+      profile is tea's (downsampled on output), which also fixes the picker's colours on
+      /dev/tty (no raw-ANSI chips needed).
+- [ ] The inline picker on /dev/tty: v2's inline (non-alt-screen) renderer; it negotiates the
+      keyboard protocol itself — the manual push/pop of kitty flags around it (for Helix)
+      reviewed: Helix must get its own flags back after the picker.
+- [ ] Keys: config names stay as they are (`ctrl+y`, `G`, `space`, `shift+tab`, `]`); a
+      matcher maps a key press to every name it can have (`ctrl+R` = `ctrl+shift+r`,
+      `ctrl+:` = ctrl + `:` or ctrl+shift+`;`, `G` = `shift+g`), so configs keep working.
+      `receivable` (13.10) relaxed accordingly.
+- [ ] Defaults: `editConfig` `ctrl+:`, `reloadConfig` `ctrl+R` (15.4: fallbacks?).
+- [ ] Tests: the key helper builds `tea.KeyPressMsg`; everything else unchanged; `-race`.
+- [ ] Live: panel, `sqlh tui`, pickers from Helix (`space i T`, `space i C`), the form,
+      mouse clicks on the tab bar, `ctrl+e`/`ctrl+:` editing the config.
+
+#### 15.2 Decided (2026-10-16)
+
+1. No backup keys: `ctrl+:` / `ctrl+R` only; the `?` palette is the way in elsewhere.
+2. A real keypress in Ghostty → Herdr → v2: Ctrl-: arrives as `ctrl+shift+;` (code `;`,
+   no shifted code: the layout's `:` isn't reported), Ctrl-Shift-<letter> as
+   `ctrl+shift+<lower>`. So the matcher maps `ctrl+:` → `ctrl+shift+;` (US layout) and
+   `ctrl+R` → `ctrl+shift+r`.
+
 ### Phase 5 — later / optional
 
 - [ ] `EXPLAIN` to buffer
@@ -1638,6 +1771,10 @@ table in Objects.
 - **2026-10-16** Phase 7 done: fix for UNION lineage in derived tables/CTEs (+ Oracle
   `MINUS`); current schema per connection (`sqlh schema`, header `schema=`, CADE works from
   read-only logins); lineage for UNION views; go to definition of tables and `sqlh ddl`.
+
+- **2026-10-16** Phase 14: pickers' highlighted row aligned and coloured (colour profile from
+  /dev/tty), the connections popup like the tab; `:` in Statement finds join chains
+  (`sqlh/chains`) and opens the tree along the shortest one.
 
 - **2026-10-16** Phase 13: search legend + kinds (indexes/constraints/triggers apart), menu
   inserts fixed (`J`, join outside JOIN), loop-free relation chains, Statement-tab search,

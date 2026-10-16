@@ -71,6 +71,9 @@ const (
 	MethodAllColumns = "sqlh/allColumns"
 	// MethodReloadConfig re-reads the config file (the panel edited it).
 	MethodReloadConfig = "sqlh/reloadConfig"
+	// MethodChains: the tables a chain of joins reaches from the statement's
+	// tables, or the shortest chains to one (ChainsParams → ChainsResult).
+	MethodChains = "sqlh/chains"
 	// MethodFileOpen tells whether the editor has a file open (FileParams →
 	// bool).
 	MethodFileOpen = "sqlh/fileOpen"
@@ -195,6 +198,37 @@ type HistoryParams struct {
 	Line    int    `json:"line,omitempty"`
 	Col     int    `json:"col,omitempty"`
 	Limit   int    `json:"limit,omitempty"` // recent runs (default 50)
+}
+
+// ChainsParams: the statement's tables (as typed); Target "" lists the
+// reachable tables, else the chains to Target.
+type ChainsParams struct {
+	From   []string `json:"from"`
+	Target string   `json:"target,omitempty"`
+	// MaxDepth: at most this many joins (0: relations.chainDepth).
+	MaxDepth int `json:"maxDepth,omitempty"`
+	Limit    int `json:"limit,omitempty"` // chains to Target (default 5)
+}
+
+// ChainTarget: a reachable table: Joins away, by Chains shortest chains,
+// Via the first one's tables (the statement's first).
+type ChainTarget struct {
+	Table  string   `json:"table"`
+	Kind   string   `json:"kind,omitempty"`
+	Joins  int      `json:"joins"`
+	Chains int      `json:"chains"`
+	Via    []string `json:"via"`
+}
+
+// Chain: a join chain from a statement table.
+type Chain struct {
+	Anchor string    `json:"anchor"`
+	Hops   []JoinHop `json:"hops"`
+}
+
+type ChainsResult struct {
+	Targets []ChainTarget `json:"targets"`
+	Chains  []Chain       `json:"chains"`
 }
 
 // FileParams: a file (absolute path).

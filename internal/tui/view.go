@@ -445,6 +445,10 @@ func (p *Panel) viewSearch(w, h int) []string {
 	switch {
 	case len(p.results) == 0 && p.allColsLoading:
 		out = append(out, fit(stDim.Render(" loading the columns…"), w))
+	case len(p.results) == 0 && p.skind == skChain && p.chainsLoading:
+		out = append(out, fit(stDim.Render(" following the relationships…"), w))
+	case len(p.results) == 0 && p.skind == skChain && len(p.stmtTables()) == 0:
+		out = append(out, fit(stDim.Render(" no tables in the statement to start from"), w))
 	case len(p.results) == 0:
 		out = append(out, fit(stDim.Render(" no match"), w))
 	}
@@ -493,11 +497,14 @@ func (p *Panel) searchLegend() []string {
 		lines = append(lines, row("", searchKindNames[def], "this tab's (no prefix)", true))
 	}
 	for _, k := range searchKinds {
-		about := k.about
-		if k.kind == def {
+		kind, about := tabSpecific(k.kind, p.cur), k.about
+		if kind == skChain {
+			about = "tables a chain of joins reaches from the statement's"
+		}
+		if kind == def {
 			about += " · this tab's (no prefix)"
 		}
-		lines = append(lines, row(string(k.prefix), searchKindNames[k.kind], about, k.kind == def))
+		lines = append(lines, row(string(k.prefix), searchKindNames[kind], about, kind == def))
 	}
 	return lines
 }

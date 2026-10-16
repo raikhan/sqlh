@@ -59,13 +59,6 @@ func TestPanelStatementSearch(t *testing.T) {
 	if p.cur != tabStmt || p.selected() == nil || p.selected().label != "customer c" {
 		t.Errorf("stays in Statement: tab %d %+v", p.cur, p.selected())
 	}
-	// : all tables, to Objects
-	key(p, "/")
-	typeText(p, ":v_or")
-	key(p, "enter")
-	if p.cur != tabObjects || p.selected().label != "v_orders" {
-		t.Errorf(": goes to Objects: tab %d", p.cur)
-	}
 }
 
 func TestPanelRelationsNoLoop(t *testing.T) {
@@ -288,5 +281,53 @@ func TestPanelReloadConfig(t *testing.T) {
 		if err == nil {
 			t.Errorf("%s accepted", bad)
 		}
+	}
+}
+
+func (f *fakeBackend) Chains(from []string, target string) (*control.ChainsResult, error) {
+	cust := control.JoinHop{Table: "customer", Cols: [][2]string{{"customer_id", "id"}}}
+	if target == "" {
+		return &control.ChainsResult{Targets: []control.ChainTarget{
+			{Table: "customer", Kind: "table", Joins: 1, Chains: 1, Via: []string{"orders", "customer"}},
+			{Table: "order_line", Kind: "table", Joins: 1, Chains: 1, Via: []string{"orders", "order_line"}},
+			{Table: "region", Kind: "table", Joins: 2, Chains: 1, Via: []string{"orders", "customer", "region"}},
+		}}, nil
+	}
+	if target == "region" {
+		return &control.ChainsResult{Chains: []control.Chain{{Anchor: "orders", Hops: []control.JoinHop{cust,
+			{Table: "region", Cols: [][2]string{{"region_id", "id"}}}}}}}, nil
+	}
+	return &control.ChainsResult{}, nil
+}
+
+func TestPanelChainSearch(t *testing.T) {
+	be := &fakeBackend{ctx: &control.ContextResult{InJoin: true, Tables: []control.ScopeTable{{Name: "orders", Alias: "o", Ref: "o"}}}}
+	p := newTestPanel(t, be, &control.Cursor{File: "/w/q.sql", Line: 3, Col: 1})
+	key(p, "/")
+	typeText(p, ":")
+	if p.skind != skChain || strings.Join(searchTexts(p), ",") != "customer,order_line,region" {
+		t.Fatalf("chains: %d %v", p.skind, searchTexts(p))
+	}
+	if view := plain(p.View()); !strings.Contains(view, "2 joins · orders → customer → region") {
+		t.Errorf("detail:\n%s", view)
+	}
+	typeText(p, "reg")
+	key(p, "enter")
+	n := p.selected()
+	if p.cur != tabStmt || n == nil || n.kind != nRelation || n.table != "region" || len(n.path) != 2 || n.anchor != "orders" {
+		t.Fatalf("walked to %+v (tab %d)\n%s", n, p.cur, plain(p.View()))
+	}
+	// ctrl+y inserts the chain as a join
+	key(p, "/")
+	typeText(p, ":reg")
+	key(p, "ctrl+y")
+	if len(be.acts) != 1 || be.acts[0].Mode != "join" || be.acts[0].Anchor != "orders" || len(be.acts[0].Path) != 2 {
+		t.Errorf("insert: %+v", be.acts)
+	}
+	// Objects keeps : for tables
+	key(p, "2", "/")
+	typeText(p, ":reg")
+	if p.skind != skTable {
+		t.Errorf("Objects : is %d", p.skind)
 	}
 }

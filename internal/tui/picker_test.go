@@ -154,15 +154,32 @@ func TestConnectionPickItems(t *testing.T) {
 	if strings.Join(vals, ",") != "pg_local,scratch,cadeprod" {
 		t.Errorf("order %v", vals)
 	}
+	// drawn by the picker: every row's columns under the header's, the
+	// highlighted one too, the chip kept on it
+	pk := newPicker(its, PickOptions{Header: header})
+	pk.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	view := strings.Split(pk.View(), "\n")
+	h = plain(view[1])
 	col := func(s, sub string) int { return len([]rune(s[:strings.Index(s, sub)])) }
-	for _, it := range its {
-		row := plain(it.Display)
+	for i, it := range its {
+		row := plain(view[2+i])
 		db := map[string]string{"cadeprod": "CADEPROD", "pg_local": "sdsai", "scratch": "scratch.db"}[it.Value]
-		if col(row, db)+2 != col(h, "database") {
+		name := it.Value
+		if name == "cadeprod" {
+			name = "CADE/cadeprod"
+		}
+		if col(row, db) != col(h, "database") || col(row, name) != col(h, "connection") {
 			t.Errorf("%s not aligned:\n%s\n%s", it.Value, h, row)
 		}
+		env := map[string]string{"cadeprod": "prod", "pg_local": "dev", "scratch": "dev"}[it.Value]
+		if len([]rune(row[:strings.LastIndex(row, env)])) != col(h, "env") {
+			t.Errorf("%s env not aligned:\n%s\n%s", it.Value, h, row)
+		}
 	}
-	if !strings.Contains(its[2].Match, "CADE") || !strings.HasPrefix(plain(its[0].Display), "● pg_local") {
+	if !strings.Contains(view[2], "\x1b[30;42m") && !strings.Contains(pk.View(), "dev ") {
+		t.Errorf("chip lost on the highlighted row: %q", view[2])
+	}
+	if !strings.Contains(its[2].Match, "CADE") || !strings.HasPrefix(plain(its[0].Display), "⛁ pg_local") || !strings.Contains(its[0].Display, "●") {
 		t.Errorf("items %+v", its)
 	}
 }

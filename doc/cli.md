@@ -166,7 +166,11 @@ Five tabs, `1`–`5` (it starts on **Statement**; `sqlh tui` on **Objects**):
    edits and from the requests Helix sends — completion, hover, …; `space i t` syncs it), open
    (`panel.statement: collapsed`: closed), their relationships first, written as the
    statement refers to them (`sds.input_id`). `/` finds among the statement's tables (name or
-   alias) and stays here; `:` searches all tables. Once `H` has closed the tables, tables
+   alias) and stays here. `:` finds **join chains**: the tables a chain of relationships
+   reaches from the statement's tables (at most `relations.chainDepth` joins, default 4),
+   nearest first, each with its shortest chain (`2 joins · orders → customer → region`,
+   `+1 more` when there are several); Enter opens the tree along the (first) shortest chain
+   and selects the table, Ctrl-Y inserts that chain as joins. Once `H` has closed the tables, tables
    joining the statement later arrive closed too, until `L` opens them again.
 4. **Queries** — the files of `tui.queriesDir` (default `queries`), newest first; Enter opens
    one in Helix, `n` creates the next `query_<N>.sql` (a `SELECT * FROM` of the highlighted
@@ -201,7 +205,7 @@ Keys (all configurable, see below):
 - `/` — search, like an omni bar: it finds what the tab lists (connections in Connections,
   queries in Queries, runs in History, the statement's tables in Statement, tables and views
   in Objects — all of them for an empty query); a first character picks another kind: `:`
-  tables and views, `.` columns (`.cust`, or `.orders.tot` for table.column), `#` indexes,
+  tables and views (in Statement: join chains, see above), `.` columns (`.cust`, or `.orders.tot` for table.column), `#` indexes,
   `!` constraints, `^` triggers, `~` sequences, `@` connections, `*` everything. While the
   query is empty the preview lists these; Tab / Shift-Tab switch the kind (rewriting the
   prefix). Enter goes to the result (in its tab), Ctrl-Y inserts it.

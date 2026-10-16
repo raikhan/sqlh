@@ -17,6 +17,7 @@ lowercaseIdentifiers: true
 relations:
   insert: join   # after JOIN the table picker inserts "t alias ON …" (join) or the name (name)
   maybe: true    # also offer relationships guessed from column names (customer_id → customer.id)
+  # chainDepth: 4 # the panel's join-chain search (`:` in Statement): at most this many joins
 
 # Query results ("Run → CSV" / "Export → CSV" code actions)
 results:
