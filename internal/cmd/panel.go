@@ -302,7 +302,10 @@ func panelTakeCmd(c *cli.Context) error {
 			return err
 		}
 	}
-	text, copyIt := panelText(api, res.Action, ctx)
+	text, copyIt, err := panelText(api, res.Action, ctx)
+	if err != nil {
+		return err
+	}
 	if copyIt || res.Action.Copy {
 		if err := copyToClipboard(strings.TrimSpace(text)); err != nil {
 			return err
@@ -345,15 +348,18 @@ func stmtTable(ctx *control.ContextResult, table string) (control.ScopeTable, bo
 
 // panelText turns a panel action into the text to insert at the cursor
 // described by ctx; copy: put it on the clipboard instead (the cursor is on
-// a table name, inserting would split it).
-func panelText(api catalogAPI, a control.PanelAction, ctx *control.ContextResult) (string, bool) {
+// a table name, inserting would split it). A table's Mode: "" — the join
+// clause after JOIN, else the name; name; join — the join clause, with the
+// JOIN keyword when the cursor isn't after one (an error when the table
+// relates to none of the statement's).
+func panelText(api catalogAPI, a control.PanelAction, ctx *control.ContextResult) (string, bool, error) {
 	space := ""
 	if ctx.NeedSpace {
 		space = " "
 	}
 	switch a.Kind {
 	case control.ActionText:
-		return space + a.Text, false
+		return space + a.Text, false, nil
 	case control.ActionColumns:
 		prefix := ""
 		if t, ok := stmtTable(ctx, a.Table); ok && (t.Alias != "" || len(ctx.Tables) > 1) {
@@ -363,18 +369,51 @@ func panelText(api catalogAPI, a control.PanelAction, ctx *control.ContextResult
 		for i, col := range a.Columns {
 			cols[i] = prefix + col
 		}
-		return space + strings.Join(cols, ", "), false
+		return space + strings.Join(cols, ", "), false, nil
 	}
 	// a table
+	if a.Mode == "join" {
+		clause, ok := joinClause(api, a, ctx)
+		switch {
+		case len(ctx.Tables) == 0:
+			return "", false, fmt.Errorf("%s: no tables in the statement to join to", a.Table)
+		case !ok:
+			return "", false, fmt.Errorf("%s relates to none of the statement's tables", a.Table)
+		case ctx.InJoin:
+			return space + clause, false, nil
+		}
+		kw := "JOIN"
+		if ctx.LowercaseKeywords {
+			kw = "join"
+		}
+		lead := ""
+		if ctx.NeedSpace {
+			lead = "\n" + ctx.Indent
+		}
+		return lead + kw + " " + clause, false, nil
+	}
 	if ctx.Focus != "" && !ctx.InJoin {
-		return a.Table, true
+		return a.Table, true, nil
 	}
 	mode := a.Mode
 	if mode == "" {
 		mode = ctx.Insert
 	}
 	if !ctx.InJoin || len(ctx.Tables) == 0 || mode == "name" {
-		return space + a.Table, false
+		return space + a.Table, false, nil
+	}
+	if clause, ok := joinClause(api, a, ctx); ok {
+		return space + clause, false, nil
+	}
+	return space + a.Table, false, nil
+}
+
+// joinClause: `customer c ON c.id = o.customer_id` (a chain from a.Anchor
+// when it is in the statement, else a join to a related table of the
+// statement); ok false when nothing relates.
+func joinClause(api catalogAPI, a control.PanelAction, ctx *control.ContextResult) (string, bool) {
+	if len(ctx.Tables) == 0 {
+		return "", false
 	}
 	taken := map[string]bool{}
 	for _, t := range ctx.Tables {
@@ -389,7 +428,7 @@ func panelText(api catalogAPI, a control.PanelAction, ctx *control.ContextResult
 				steps[i] = catalog.JoinStep{Insert: h.Table, Cols: h.Cols}
 			}
 			steps[0].AnchorRef = t.Ref
-			return space + catalog.ComposeJoin(steps, taken, ctx.LowercaseKeywords, ctx.Indent), false
+			return catalog.ComposeJoin(steps, taken, ctx.LowercaseKeywords, ctx.Indent), true
 		}
 	}
 	// a table related to one of the statement's (the focused one first)
@@ -412,11 +451,11 @@ func panelText(api catalogAPI, a control.PanelAction, ctx *control.ContextResult
 		for _, r := range rel.Relations {
 			if len(r.Cols) > 0 && sameTable(r.Insert, a.Table) {
 				step := catalog.JoinStep{Insert: a.Table, Cols: r.Cols, AnchorRef: t.Ref}
-				return space + catalog.ComposeJoin([]catalog.JoinStep{step}, taken, ctx.LowercaseKeywords, ctx.Indent), false
+				return catalog.ComposeJoin([]catalog.JoinStep{step}, taken, ctx.LowercaseKeywords, ctx.Indent), true
 			}
 		}
 	}
-	return space + a.Table, false
+	return "", false
 }
 
 // ---- sqlh panel run ---------------------------------------------------------
@@ -666,7 +705,7 @@ func (b *panelBackend) Act(a control.PanelAction) error {
 	if err := call(b.client(), control.MethodPanelAction, control.PanelActionParams{EditorPane: pane, Action: a}, &ok); err != nil {
 		return err
 	}
-	if err := b.hd.SendKeys(pane, b.insertKeys...); err != nil {
+	if err := b.hd.SendKeys(pane, b.panelSettings().InsertKeys...); err != nil {
 		return err
 	}
 	return b.hd.Focus(pane)
@@ -743,14 +782,112 @@ func (b *panelBackend) setFile(f string) {
 }
 
 func (b *panelBackend) queriesDir() string {
-	if b.settings.QueriesDir != "" {
-		return b.settings.QueriesDir
+	if d := b.panelSettings().QueriesDir; d != "" {
+		return d
 	}
 	return filepath.Join(b.ws, "queries")
 }
 
 // QueryFiles lists the query folder's .sql files, newest first.
 func (b *panelBackend) QueryFiles() ([]string, error) { return queryFiles(b.queriesDir()) }
+
+// openInEditor: the attached editor has the file open (its server says).
+func (b *panelBackend) openInEditor(path string) bool {
+	pane, _ := b.editor()
+	if b.hd == nil || pane == "" || !b.editorRuns() {
+		return false
+	}
+	var open bool
+	if err := call(b.client(), control.MethodFileOpen, control.FileParams{File: path}, &open); err != nil {
+		return false
+	}
+	return open
+}
+
+// helixCommand types a command into the editor (`:open 'x'`).
+func (b *panelBackend) helixCommand(cmd string) error {
+	pane, _ := b.editor()
+	if err := b.hd.SendKeys(pane, "esc", ":"); err != nil {
+		return err
+	}
+	if err := b.hd.SendText(pane, cmd); err != nil {
+		return err
+	}
+	return b.hd.SendKeys(pane, "enter")
+}
+
+// queryTarget: where a query file named name goes.
+func (b *panelBackend) queryTarget(name string) string {
+	dst := name
+	if strings.HasPrefix(dst, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			dst = filepath.Join(home, dst[2:])
+		}
+	}
+	if !filepath.IsAbs(dst) {
+		dst = filepath.Join(b.queriesDir(), dst)
+	}
+	if filepath.Ext(dst) == "" {
+		dst += ".sql"
+	}
+	return filepath.Clean(dst)
+}
+
+func (b *panelBackend) RenameQuery(path, name string) (string, error) {
+	dst := b.queryTarget(name)
+	if dst == filepath.Clean(path) {
+		return "", errors.New("that is its name")
+	}
+	if _, err := os.Stat(dst); err == nil {
+		return "", fmt.Errorf("%s exists", filepath.Base(dst))
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return "", err
+	}
+	if b.openInEditor(path) {
+		// Helix renames its buffer and the file (:move acts on the current
+		// buffer: show this one first)
+		if err := b.helixCommand("open " + helixQuote(path)); err != nil {
+			return "", err
+		}
+		if err := b.helixCommand("move " + helixQuote(dst)); err != nil {
+			return "", err
+		}
+		for deadline := time.Now().Add(3 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+			if _, err := os.Stat(dst); err == nil {
+				b.setFile(dst)
+				return dst, nil
+			}
+		}
+		return "", errors.New("the editor didn't move it (unsaved changes?)")
+	}
+	return dst, os.Rename(path, dst)
+}
+
+func (b *panelBackend) EnsureFile(path, text string) (bool, error) {
+	if _, err := os.Stat(path); err == nil || !os.IsNotExist(err) {
+		return false, err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return false, err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
+	if err != nil {
+		return false, err
+	}
+	if _, err := f.WriteString(text); err != nil {
+		f.Close()
+		return false, err
+	}
+	return true, f.Close()
+}
+
+func (b *panelBackend) DeleteQuery(path string) error {
+	if b.openInEditor(path) {
+		return fmt.Errorf("%s is open in the editor: close it there first (:buffer-close)", filepath.Base(path))
+	}
+	return os.Remove(path)
+}
 
 // maxPreviewFile: a query file's preview reads this much.
 const maxPreviewFile = 256 << 10
@@ -813,10 +950,43 @@ func (b *panelBackend) OpenFile(path string) error {
 // ---- connections in the config file -------------------------------------------
 
 func (b *panelBackend) configPath() (string, error) {
-	if b.settings.ConfigPath == "" {
+	st := b.panelSettings()
+	if st.ConfigPath == "" {
 		return "", errors.New("the server's config doesn't come from a file (the editor's initializationOptions): edit it there")
 	}
-	return b.settings.ConfigPath, nil
+	return st.ConfigPath, nil
+}
+
+// panelSettings: the settings (they change on a reload).
+func (b *panelBackend) panelSettings() control.PanelSettings {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	st := b.settings
+	if st.InsertKeys == nil {
+		st.InsertKeys = b.insertKeys
+	}
+	return st
+}
+
+// ConfigPath: the config file the server reads.
+func (b *panelBackend) ConfigPath() (string, error) { return b.configPath() }
+
+// ReloadSettings: the server re-reads the config; the panel's settings
+// from it.
+func (b *panelBackend) ReloadSettings() (*control.PanelSettings, error) {
+	var msg string
+	if err := call(b.client(), control.MethodReloadConfig, nil, &msg); err != nil {
+		return nil, err
+	}
+	st, err := serverStatus(b.client())
+	if err != nil {
+		return nil, err
+	}
+	b.mu.Lock()
+	b.settings = *st.Panel
+	b.insertKeys = st.Panel.InsertKeys
+	b.mu.Unlock()
+	return st.Panel, nil
 }
 
 // readConfigFile parses a config file for editing (missing: empty).

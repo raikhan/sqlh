@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/raikhan/sqlh/internal/control"
 )
 
 func pkey(p *picker, keys ...string) tea.Cmd {
@@ -132,5 +134,35 @@ func TestPickScripted(t *testing.T) {
 	t.Setenv(PickEnv, "zz")
 	if _, ok, _ := Pick(items("orders"), PickOptions{}); ok {
 		t.Error("no match should cancel")
+	}
+}
+
+func TestConnectionPickItems(t *testing.T) {
+	header, its := ConnectionPickItems([]control.Connection{
+		{Alias: "cadeprod", Group: "CADE", Database: "CADEPROD", Schema: "CADE", Environment: "prod"},
+		{Alias: "pg_local", Database: "sdsai", Schema: "cadetst", Environment: "dev", Current: true},
+		{Alias: "scratch", Database: "scratch.db", Environment: "dev"},
+	})
+	h := plain(header)
+	if !strings.Contains(h, "connection") || !strings.Contains(h, "schema") {
+		t.Fatalf("header %q", h)
+	}
+	var vals []string
+	for _, it := range its {
+		vals = append(vals, it.Value)
+	}
+	if strings.Join(vals, ",") != "pg_local,scratch,cadeprod" {
+		t.Errorf("order %v", vals)
+	}
+	col := func(s, sub string) int { return len([]rune(s[:strings.Index(s, sub)])) }
+	for _, it := range its {
+		row := plain(it.Display)
+		db := map[string]string{"cadeprod": "CADEPROD", "pg_local": "sdsai", "scratch": "scratch.db"}[it.Value]
+		if col(row, db)+2 != col(h, "database") {
+			t.Errorf("%s not aligned:\n%s\n%s", it.Value, h, row)
+		}
+	}
+	if !strings.Contains(its[2].Match, "CADE") || !strings.HasPrefix(plain(its[0].Display), "● pg_local") {
+		t.Errorf("items %+v", its)
 	}
 }

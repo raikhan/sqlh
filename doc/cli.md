@@ -11,8 +11,8 @@ runs standalone, on the connection in the file's header (see [Query files](#quer
 | `sqlh run` | run SQL → CSV, first N rows (`--limit N`, default `results.previewLimit`; `--limit all`; `--limit ask` picks it); prints the CSV path(s) on stdout, summary on stderr; `--open`: open the CSV in the viewer; `--bg`: return at once |
 | `sqlh export` | same, all rows |
 | `sqlh dump FILE…` | run query files on the connection in their header → `<file>.csv` in the current directory (`-d DIR`, `-o FILE`), all rows; see [Query files](#query-files-connection-header-and-dump) |
-| `sqlh connect [alias]` | switch the editor's connection (no alias: pick); remembered per workspace; `--file F`: also point F's connection header at it |
-| `sqlh connections` / `ls` | list connections, `*` = current |
+| `sqlh connect [alias]` | switch the editor's connection (no alias: pick from the connections table — connection, database, schema, env — filtered as you type); remembered per workspace; `--file F`: also point F's connection header at it |
+| `sqlh connections` / `ls` | list connections, `*` = current; `-p` picks one from the table and prints its alias |
 | `sqlh status [--all]` | workspace, connection, current schema, running query, results dir (`--all`: all servers) |
 | `sqlh cancel` | cancel the running query |
 | `sqlh refresh` | reload schema metadata (done automatically after a run that executed DDL, unless `refreshAfterDDL: false`; for changes made elsewhere) |
@@ -156,27 +156,34 @@ Five tabs, `1`–`5` (it starts on **Statement**; `sqlh tui` on **Objects**):
    current connection reconnects.
 2. **Objects** — the current connection's schema: tables, views, materialized views,
    sequences, types; the other schemas of its `schemas:` list as folders below. A table opens
-   to its relations (which open further: Ctrl-Y on a table reached through relations inserts
-   the whole join chain after `JOIN`), the views using it, its indexes, constraints and
-   triggers, and its columns.
+   to its relations, the views using it, its indexes, constraints and triggers, and its
+   columns. A related table opens like any table, so the tree below a table is a **chain of
+   joins**: Ctrl-Y on a table reached through relations inserts the whole chain after `JOIN`
+   (`customer c ON c.id = o.customer_id` + `JOIN region r ON r.id = c.region_id`), when the
+   chain's first table is in the statement. A chain never returns to its own tables (no
+   loops: below `orders → customer`, customer's relations leave out `orders`).
 3. **Statement** — follows the cursor: the tables of the statement you are editing (from your
    edits and from the requests Helix sends — completion, hover, …; `space i t` syncs it), open
    (`panel.statement: collapsed`: closed), their relationships first, written as the
-   statement refers to them (`sds.input_id`). `H` closes them all — and tables joining the
-   statement later arrive closed — until `L` opens them all again.
+   statement refers to them (`sds.input_id`). `/` finds among the statement's tables (name or
+   alias) and stays here; `:` searches all tables. Once `H` has closed the tables, tables
+   joining the statement later arrive closed too, until `L` opens them again.
 4. **Queries** — the files of `tui.queriesDir` (default `queries`), newest first; Enter opens
    one in Helix, `n` creates the next `query_<N>.sql` (a `SELECT * FROM` of the highlighted
    table, if any). The preview shows the file (highlighted) and its last run, when the
-   loaded history has it.
+   loaded history has it. `R` renames a file (relative to the folder; `.sql` added; a file
+   open in the attached Helix is renamed there, with `:move`, so its buffer follows), `X`
+   deletes one (asks first; not while it is open in Helix).
 5. **History** — **This statement**: the versions of the statement you are editing (earlier
    runs of a similar query in the same file), newest first, the current text marked; then the
-   workspace's recent queries, each opening (Enter) to its versions. The preview's **Query**
+   workspace's recent queries on the current connection (`c`: all connections), each opening
+   (Enter) to its versions. The preview's **Query**
    tab shows the run (when, connection, rows, time, error, result file) and its SQL; **Diff**
    compares it with the statement at the cursor (a version of it), else with today's version
    in its file (the statement most like it, from Helix's buffer); `.` `r` **replaces the
    statement in the buffer** with a version (one undo step). `o` opens a run's result in
    `results.viewer` (it must open its own window or pane, like the Herdr pane script), `e` its
-   file.
+   file — recreated (its connection header and the run's SQL) when it is gone.
 
 Keys (all configurable, see below):
 
@@ -185,14 +192,19 @@ Keys (all configurable, see below):
   chain), a column (`alias.col` when its table is in the statement; Space marks several:
   `o.id, o.total`), an object's name, a query. With the cursor on a table name it is copied to
   the clipboard instead. Without an editor (`sqlh tui` alone) it copies, and says so.
-- `.` (or `a`) — the actions of the selection: insert the name / a join / `SELECT * FROM` /
+- `.` (or `a`) — the actions of the selection, each with a letter: for a table **insert** (as
+  Ctrl-Y), **insert the name**, **insert `JOIN … ON …`** (`J`: after `JOIN` the clause,
+  elsewhere with the keyword on its own line; an error when the table relates to none of the
+  statement's), `SELECT * FROM` /
   all columns, copy, a new query file, the DDL, a sample; for connections connect, edit,
   duplicate, delete; for runs replace, insert, copy, open.
 - `/` — search, like an omni bar: it finds what the tab lists (connections in Connections,
-  queries in Queries, runs in History, else tables and views — all of them for an empty
-  query); a first character picks another kind: `:` tables and views, `.` columns (`.cust`,
-  or `.orders.tot` for table.column), `#` indexes and constraints, `~` sequences,
-  `@` connections, `*` everything. Enter goes to the result (in its tab), Ctrl-Y inserts it.
+  queries in Queries, runs in History, the statement's tables in Statement, tables and views
+  in Objects — all of them for an empty query); a first character picks another kind: `:`
+  tables and views, `.` columns (`.cust`, or `.orders.tot` for table.column), `#` indexes,
+  `!` constraints, `^` triggers, `~` sequences, `@` connections, `*` everything. While the
+  query is empty the preview lists these; Tab / Shift-Tab switch the kind (rewriting the
+  prefix). Enter goes to the result (in its tab), Ctrl-Y inserts it.
 - Tab / Shift-Tab switch the preview's tabs, which depend on the selection: a table or view
   has **Describe** (columns, relationships, a view's definition), **DDL** (as go to
   definition shows it) and **Sample**; a column Describe and Sample; an index, constraint,
@@ -201,8 +213,14 @@ Keys (all configurable, see below):
   J/K scroll the preview. SQL is highlighted in the colours of Helix's `modus_vivendi_tinted`
   theme; `panel.syntax.<class>: "#rrggbb"` changes them (`keyword`, `comment`, `string`,
   `number`, `function`, `type`, `alias`, `parameter`, `operator`).
-- `H` collapses the tab's tree (Statement: see above), `L` expands all in Statement, `z`
-  scrolls the selected row to the top (vim's `zt`).
+- `H` closes the deepest open level of the tab's tree (open relations, then the tables, then
+  the groups; again for the next level), `L` (Statement) opens the next level, `z` scrolls
+  the selected row to the top (vim's `zt`).
+- `ctrl+e` opens the config file the server reads in `$VISUAL` / `$EDITOR` (else `vi`), in
+  the panel's pane, and reloads it when you quit the editor; `ctrl+r` reloads it (after
+  editing it elsewhere). The panel takes the new keys, icons, colours and statement setting
+  at once; the server its connections and the rest. A broken file is refused: the error stays
+  on screen until a key, the old config stays.
 - **Sample** shows one row of the table as `column  value`, wrapped to fit; `]`/`[` the
   next/previous of up to 50 fetched. On a column, `s` counts its most common values. Samples
   run on a pooled session of their own (never the editor's: they neither wait for nor block a
@@ -218,8 +236,9 @@ Keys (all configurable, see below):
 
 Actions belong to tabs: the Connections tab has `newConnection` … `deleteConnection`;
 Objects and Statement `insert`, `mark`, `sample`, `nextRow`, `prevRow`, `newQuery`, `refresh`
-(Statement also `expandAll`); Queries `newQuery`; History `insert`, `openResult`, `editFile`;
-the rest are in every tab. A key of another tab says so in the footer.
+(Statement also `expandAll`); Queries `newQuery`, `renameQuery`, `deleteQuery`; History
+`insert`, `openResult`, `editFile`, `historyAllConns`; the rest are in every tab. A key of
+another tab says so in the footer.
 
 `panel.keys.<action>: key` (or a list) in the config replaces an action's keys in every tab;
 `panel.keys.<tab>.<action>` (tabs `connections`, `objects`, `statement`, `queries`, `history`;
@@ -244,16 +263,20 @@ The defaults:
 | `insert` `copy` `actions` `search` | `ctrl+y`, `y`, `. a`, `/` |
 | `previewNext` `previewPrev` `previewDown` `previewUp` | `tab`, `shift+tab`, `J`, `K` |
 | `sample` `nextRow` `prevRow` | `s`, `]`, `[` |
-| `newQuery` `openResult` `editFile` | `n`, `o`, `e` |
+| `newQuery` `renameQuery` `deleteQuery` | `n`, `R`, `X` |
+| `openResult` `editFile` `historyAllConns` | `o`, `e`, `c` |
 | `newConnection` `editConnection` `duplicateConnection` `deleteConnection` | `C`, `E`, `D`, `X` |
 | `refresh` `help` `quit` `backToEditor` | `r`, `?`, `q`, `backspace` |
+| `editConfig` `reloadConfig` | `ctrl+e`, `ctrl+r` |
 | `tab1` … `tab5` | `1` … `5` |
-| `searchUp` `searchDown` `searchOpen` `searchInsert` `searchCancel` | `↑ ctrl+p ctrl+k`, `↓ ctrl+n ctrl+j`, `enter`, `ctrl+y`, `esc` |
+| `searchUp` `searchDown` `searchOpen` `searchInsert` `searchCancel` `searchNextKind` `searchPrevKind` | `↑ ctrl+p ctrl+k`, `↓ ctrl+n ctrl+j`, `enter`, `ctrl+y`, `esc`, `tab`, `shift+tab` |
 | `formSave` `formTest` `formCancel` `formNext` `formPrev` | `ctrl+s`, `ctrl+t`, `esc`, `tab ↓`, `shift+tab ↑` |
 
 Key names are Bubble Tea's (`ctrl+y`, `shift+tab`, `backspace`, `space`, `G`, `]`). A key
 on two actions of one tab (or of the search, or the form), an unknown action or an action a
-tab doesn't have are config errors.
+tab doesn't have are config errors, and so are keys the terminal can't send distinctly to
+the panel (Bubble Tea v1 reads the classic encoding: `ctrl+R` arrives as `ctrl+r`, `ctrl+:`
+not at all; ctrl goes with a lower-case letter or `@ [ \ ] ^ _`).
 
 How Ctrl-Y reaches Helix (which has no API for it): the panel stores the choice in the server
 and sends Helix `panel.insertKeys` (default `esc space i P`); that binding runs
@@ -465,7 +488,7 @@ path survives); with the default `sh`, write `'%{buffer_name}'`. `r`/`e` open th
 | `space i P` | (pressed by the panel) insert what the panel chose at the cursor |
 | `space i T` | insert a table with the inline picker (related first; after `JOIN` the join clause), see [Table picker](#table-picker) |
 | `space i f` | format the file (`:format`) |
-| `space i C` | switch connection (picker); the buffer's connection header follows |
+| `space i C` | switch connection: the connections table (connection, database, schema, env), filtered as you type; the buffer's connection header follows |
 | `space i s` | status: connection, schema, running query, results directory (popup, Esc closes) |
 | `space i X` | cancel the running query (`:lsp-workspace-command sqlh.cancel`) |
 | `space i U` | reload schema metadata (`:lsp-workspace-command sqlh.refresh`; runs that execute DDL reload it themselves) |

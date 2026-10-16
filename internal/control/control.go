@@ -71,6 +71,9 @@ const (
 	MethodAllColumns = "sqlh/allColumns"
 	// MethodReloadConfig re-reads the config file (the panel edited it).
 	MethodReloadConfig = "sqlh/reloadConfig"
+	// MethodFileOpen tells whether the editor has a file open (FileParams →
+	// bool).
+	MethodFileOpen = "sqlh/fileOpen"
 	// MethodCurrentVersion finds today's version of a run's statement in its
 	// file (CurrentVersionParams → CurrentVersionResult): the panel's diff.
 	MethodCurrentVersion = "sqlh/currentVersion"
@@ -192,6 +195,11 @@ type HistoryParams struct {
 	Line    int    `json:"line,omitempty"`
 	Col     int    `json:"col,omitempty"`
 	Limit   int    `json:"limit,omitempty"` // recent runs (default 50)
+}
+
+// FileParams: a file (absolute path).
+type FileParams struct {
+	File string `json:"file"`
 }
 
 // CurrentVersionParams: a file and the SQL of an earlier run of it.

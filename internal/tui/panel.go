@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -183,7 +185,9 @@ type Panel struct {
 	expanded map[string]bool // ids of expanded nodes (kept across rebuilds)
 	// stmtCollapsed: the Statement tab's tables arrive collapsed
 	stmtCollapsed bool
-	marked        map[string]bool // ids of marked columns
+	// histAll: History lists the runs on every connection (else the current one's)
+	histAll bool
+	marked  map[string]bool // ids of marked columns
 
 	connLay connColumns // the Connections table's columns (per frame)
 
@@ -208,6 +212,7 @@ type Panel struct {
 	pal     *palette
 	form    *connForm
 	confirm *confirm
+	prompt  *prompt
 
 	msg    string
 	msgErr bool
@@ -215,6 +220,8 @@ type Panel struct {
 
 	popup   string
 	popupAt time.Time
+	// popupSticky: the popup stays until a key
+	popupSticky bool
 
 	disconnected bool
 	reloadAt     time.Time
@@ -383,6 +390,7 @@ type doneMsg struct {
 	reload bool
 	popup  bool // say it in a popup
 	tab    int  // switch to this tab + 1 (0: stay)
+	files  bool // the query files changed
 }
 type tickMsg struct{}
 type aliveMsg struct {
@@ -588,7 +596,7 @@ func (p *Panel) rebuild() []tea.Cmd {
 	}
 	p.tabs[tabStmt].roots = buildStatement(p.ctx, p.stmtRels, p.cursor, p.editor != "" || !p.opt.Standalone, !p.stmtCollapsed, p.ic)
 	p.tabs[tabQueries].roots = buildQueryFiles(p.files, p.ic)
-	p.tabs[tabHistory].roots = buildHistory(p.hist, p.ic)
+	p.tabs[tabHistory].roots = buildHistory(p.hist, p.historyConn(), p.ic)
 	var cmds []tea.Cmd
 	for i := range p.tabs {
 		t := &p.tabs[i]
@@ -725,29 +733,40 @@ func (p *Panel) setExpanded(n *node, e bool) tea.Cmd {
 	return nil
 }
 
+// historyConn: the connection History's recent runs are filtered by ("" = all).
+func (p *Panel) historyConn() string {
+	if p.histAll || p.cat == nil {
+		return ""
+	}
+	return p.cat.Connection
+}
+
 // tabPrefix: the ids of a tab's nodes start with it.
 var tabPrefix = [numMainTabs]string{"conns/", "obj/", "stmt/", "files/", "hist/"}
 
-// collapseAll closes every node of the tab (the Statement tab's tables
-// arrive collapsed from now on, until expandAll).
+// collapseAll closes the deepest open level of the tab's visible tree
+// (pressed again, the next one). In Statement, once the tables are closed,
+// tables joining later arrive closed too (until expandAll).
 func (p *Panel) collapseAll() tea.Cmd {
 	t := p.tab()
 	t.zTop = false
 	if n := p.selected(); n != nil {
 		t.selID = n.id
 	}
-	for id := range p.expanded {
-		if strings.HasPrefix(id, tabPrefix[p.cur]) {
-			delete(p.expanded, id)
+	rows := p.rows()
+	deepest := -1
+	for _, n := range rows {
+		if n.expanded && n.expandable() {
+			deepest = max(deepest, n.depth)
 		}
 	}
-	walkAll(t.roots, func(n *node) {
-		if n.expandable() {
+	for _, n := range rows {
+		if n.expanded && n.expandable() && n.depth == deepest {
 			n.expanded = false
 			p.expanded[n.id] = false
 		}
-	})
-	if p.cur == tabStmt {
+	}
+	if p.cur == tabStmt && deepest == 0 {
 		p.stmtCollapsed = true
 		for id := range p.expanded {
 			if strings.HasPrefix(id, tabPrefix[tabStmt]) {
@@ -759,21 +778,41 @@ func (p *Panel) collapseAll() tea.Cmd {
 	return p.previewCmd()
 }
 
-// expandAll opens the Statement tab's tables (and their relations), and
-// keeps new ones open.
+// expandAll opens the next level of the Statement tab's visible tree: the
+// tables (new ones then arrive open), then their groups, and so on.
 func (p *Panel) expandAll() tea.Cmd {
 	t := p.tab()
 	t.zTop = false
 	if n := p.selected(); n != nil {
 		t.selID = n.id
 	}
-	p.stmtCollapsed = false
-	for id := range p.expanded {
-		if strings.HasPrefix(id, tabPrefix[tabStmt]) {
-			delete(p.expanded, id)
+	rows := p.rows()
+	shallowest := -1
+	for _, n := range rows {
+		if !n.expanded && n.expandable() && (shallowest < 0 || n.depth < shallowest) {
+			shallowest = n.depth
 		}
 	}
-	cmds := p.rebuild()
+	if shallowest < 0 {
+		return nil
+	}
+	if p.cur == tabStmt && shallowest == 0 {
+		p.stmtCollapsed = false
+		for id := range p.expanded {
+			if strings.HasPrefix(id, tabPrefix[tabStmt]) {
+				delete(p.expanded, id)
+			}
+		}
+		cmds := p.rebuild()
+		return tea.Batch(append(cmds, p.previewCmd())...)
+	}
+	var cmds []tea.Cmd
+	for _, n := range rows {
+		if !n.expanded && n.expandable() && n.depth == shallowest {
+			cmds = append(cmds, p.setExpanded(n, true))
+		}
+	}
+	restoreSelection(t)
 	return tea.Batch(append(cmds, p.previewCmd())...)
 }
 
@@ -924,7 +963,29 @@ func (p *Panel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.reload {
 			return p, p.loadCatalog()
 		}
+		if msg.files {
+			return p, p.poll()
+		}
 		return p, nil
+	case configEditedMsg:
+		if msg.err != nil {
+			p.flash("editor: "+msg.err.Error(), true)
+		}
+		return p, p.reloadSettings()
+	case settingsMsg:
+		if msg.err != nil {
+			// stays until a key: the message may be long
+			p.popup, p.popupAt, p.popupSticky = "config not loaded: "+msg.err.Error(), time.Now(), true
+			return p, nil
+		}
+		p.applySettings(msg.st)
+		p.flash("config reloaded", false)
+		return p, tea.Batch(append(p.rebuild(), p.loadCatalog(), p.previewCmd())...)
+	case queryRenamedMsg:
+		p.flash("renamed to "+relPath(p.opt.Workspace, msg.path), false)
+		path := msg.path
+		p.pendingReveal = func(n *node) bool { return n.kind == nQueryFile && n.file == path }
+		return p, p.poll()
 	case popupDoneMsg:
 		if msg.at.Equal(p.popupAt) {
 			p.popup = ""
@@ -1085,8 +1146,15 @@ func (p *Panel) onKey(k tea.KeyMsg) tea.Cmd {
 	if key == "ctrl+c" {
 		return tea.Quit
 	}
+	if p.popupSticky {
+		p.popup, p.popupSticky = "", false
+		return nil
+	}
 	if p.form != nil {
 		return p.formKey(k)
+	}
+	if p.prompt != nil {
+		return p.promptKey(k)
 	}
 	if p.confirm != nil {
 		c := p.confirm
@@ -1231,7 +1299,22 @@ func (p *Panel) do(action string) tea.Cmd {
 		return p.newQueryCmd()
 	case "editFile":
 		if n != nil && n.kind == nHistory && n.run.File != "" {
-			return p.openFileCmd(n.run.File)
+			return p.editRunFile(n.run)
+		}
+	case "editConfig":
+		return p.editConfig()
+	case "reloadConfig":
+		return p.reloadSettings()
+	case "historyAllConns":
+		p.histAll = !p.histAll
+		return tea.Batch(append(p.rebuild(), p.previewCmd())...)
+	case "renameQuery":
+		if n != nil && n.kind == nQueryFile {
+			return p.renameQuery(n.file)
+		}
+	case "deleteQuery":
+		if n != nil && n.kind == nQueryFile {
+			p.deleteQuery(n.file)
 		}
 	case "newConnection":
 		return p.newConnection()
@@ -1396,6 +1479,29 @@ func (p *Panel) markedColumns(n *node) []string {
 	return cols
 }
 
+// editRunFile opens a run's file; when it is gone, recreates it first with
+// the run's connection header and SQL.
+func (p *Panel) editRunFile(e *history.Entry) tea.Cmd {
+	be, path := p.be, e.File
+	text := "-- sqlh: conn=" + e.Conn + "\n\n" + strings.TrimRight(e.SQL, "\n") + "\n"
+	if e.Conn == "" {
+		text = strings.TrimRight(e.SQL, "\n") + "\n"
+	}
+	return func() tea.Msg {
+		created, err := be.EnsureFile(path, text)
+		if err != nil {
+			return doneMsg{err: err}
+		}
+		if err := be.OpenFile(path); err != nil {
+			return doneMsg{err: err}
+		}
+		if created {
+			return doneMsg{text: shortPath(path) + " was gone: recreated with this run's SQL", files: true}
+		}
+		return doneMsg{text: "opened " + shortPath(path)}
+	}
+}
+
 func (p *Panel) openFileCmd(path string) tea.Cmd {
 	be := p.be
 	return func() tea.Msg {
@@ -1466,6 +1572,86 @@ func (p *Panel) connectCmd(alias string) tea.Cmd {
 		}
 		return doneMsg{text: "connected to " + alias, reload: true, tab: tabObjects + 1}
 	}
+}
+
+// ---- the config file --------------------------------------------------------------
+
+type configEditedMsg struct{ err error }
+
+type settingsMsg struct {
+	st  *control.PanelSettings
+	err error
+}
+
+// editConfig opens the config file in $VISUAL / $EDITOR (else vi) in this
+// pane, then reloads.
+func (p *Panel) editConfig() tea.Cmd {
+	path, err := p.be.ConfigPath()
+	if err != nil {
+		p.flash(err.Error(), true)
+		return nil
+	}
+	editor := strings.Fields(os.Getenv("VISUAL"))
+	if len(editor) == 0 {
+		editor = strings.Fields(os.Getenv("EDITOR"))
+	}
+	if len(editor) == 0 {
+		editor = []string{"vi"}
+	}
+	c := exec.Command(editor[0], append(editor[1:], path)...)
+	return tea.ExecProcess(c, func(err error) tea.Msg { return configEditedMsg{err} })
+}
+
+// reloadSettings: the server re-reads the config; the panel takes its
+// settings (keys, icons, colours, …) from it.
+func (p *Panel) reloadSettings() tea.Cmd {
+	be := p.be
+	p.flash("reloading the config…", false)
+	return func() tea.Msg { st, err := be.ReloadSettings(); return settingsMsg{st, err} }
+}
+
+// applySettings: new settings from the config file.
+func (p *Panel) applySettings(st *control.PanelSettings) {
+	p.opt.Keys, p.opt.Icons, p.opt.Syntax = st.Keys, st.Icons, st.Syntax
+	p.km = panelKeymap(st.Keys)
+	p.ic = iconSet(st.Icons)
+	p.sx = newSyntax(st.Syntax)
+	if st.StatementCollapsed != p.opt.StatementCollapsed {
+		p.opt.StatementCollapsed, p.stmtCollapsed = st.StatementCollapsed, st.StatementCollapsed
+	}
+}
+
+// ---- query files ----------------------------------------------------------------
+
+// renameQuery asks for a query file's new name (relative to the queries
+// folder; .sql added when there is no extension).
+func (p *Panel) renameQuery(file string) tea.Cmd {
+	be := p.be
+	p.prompt = newPrompt("Rename "+shortPath(file), "relative to the queries folder (a/b.sql: into a folder); enter: rename · esc: cancel",
+		strings.TrimSuffix(shortPath(file), ".sql"), func(name string) tea.Cmd {
+			return func() tea.Msg {
+				dst, err := be.RenameQuery(file, name)
+				if err != nil {
+					return doneMsg{err: err}
+				}
+				return queryRenamedMsg{dst}
+			}
+		})
+	return nil
+}
+
+type queryRenamedMsg struct{ path string }
+
+func (p *Panel) deleteQuery(file string) {
+	be := p.be
+	p.confirm = &confirm{question: "Delete " + shortPath(file) + "? y/n", yes: func() tea.Cmd {
+		return func() tea.Msg {
+			if err := be.DeleteQuery(file); err != nil {
+				return doneMsg{err: err}
+			}
+			return doneMsg{text: "deleted " + shortPath(file), files: true}
+		}
+	}}
 }
 
 // ---- connections --------------------------------------------------------------
@@ -1570,13 +1756,19 @@ func (p *Panel) openMenu(n *node) {
 		if n.kind == nRelation {
 			base.Anchor, base.Path = n.anchor, n.path
 		}
-		add("i", "insert (join after JOIN)", func() tea.Cmd { return p.insert(base, table) })
+		add("i", "insert (as "+p.k("insert")+": the join after JOIN, else the name)", func() tea.Cmd { return p.insert(base, table) })
 		name := base
 		name.Mode = "name"
 		add("n", "insert the name", func() tea.Cmd { return p.insert(name, table) })
 		join := base
 		join.Mode = "join"
-		add("j", "insert a join", func() tea.Cmd { return p.insert(join, table) })
+		add("J", "insert JOIN "+table+" … ON …", func() tea.Cmd {
+			if err := p.joinable(join); err != nil {
+				p.flash(err.Error(), true)
+				return nil
+			}
+			return p.insert(join, table)
+		})
 		sel := kw("SELECT") + " *\n" + kw("FROM") + " " + table
 		add("s", "insert SELECT * FROM "+table, func() tea.Cmd {
 			return p.insert(control.PanelAction{Kind: control.ActionText, Text: sel}, sel)
@@ -1593,7 +1785,7 @@ func (p *Panel) openMenu(n *node) {
 			return p.insert(control.PanelAction{Kind: control.ActionColumns, Table: table, Columns: names}, strings.Join(names, ", "))
 		})
 		add("y", "copy the name", func() tea.Cmd { return p.copyCmd(table) })
-		add("q", "new query file: SELECT * FROM "+table, func() tea.Cmd { return p.newQueryCmd() })
+		add("Q", "new query file: SELECT * FROM "+table, func() tea.Cmd { return p.newQueryCmd() })
 		add("d", "show the DDL", func() tea.Cmd { p.setPreviewTab(ptDDL); return p.previewCmd() })
 		add("S", "show a sample row", func() tea.Cmd { return p.sampleNow() })
 	case nColumn:
@@ -1620,6 +1812,8 @@ func (p *Panel) openMenu(n *node) {
 		add("o", "open in the editor", func() tea.Cmd { return p.openFileCmd(file) })
 		add("y", "copy the path", func() tea.Cmd { return p.copyCmd(file) })
 		add("n", "new query file", func() tea.Cmd { return p.newQueryCmd() })
+		add("R", "rename", func() tea.Cmd { return p.renameQuery(file) })
+		add("X", "delete", func() tea.Cmd { p.deleteQuery(file); return nil })
 	case nHistory:
 		e := n.run
 		if p.cursor != nil {
@@ -1638,7 +1832,7 @@ func (p *Panel) openMenu(n *node) {
 			add("o", "open the result", func() tea.Cmd { return p.openCmd(e.Result) })
 		}
 		if e.File != "" {
-			add("e", "open its file in the editor", func() tea.Cmd { return p.openFileCmd(e.File) })
+			add("e", "open its file in the editor", func() tea.Cmd { return p.editRunFile(e) })
 		}
 	}
 	switch n.kind {
@@ -1672,6 +1866,32 @@ func (p *Panel) menuKey(key string) tea.Cmd {
 		}
 	}
 	return nil
+}
+
+// joinable: a join of a's table can be written into the statement at the
+// cursor (as far as the panel knows; the editor side checks again).
+func (p *Panel) joinable(a control.PanelAction) error {
+	if p.ctx == nil || len(p.ctx.Tables) == 0 {
+		return fmt.Errorf("%s: no tables in the statement to join to", a.Table)
+	}
+	same := func(x, y string) bool { return strings.EqualFold(unquote(lastPart(x)), unquote(lastPart(y))) }
+	for _, t := range p.ctx.Tables {
+		if a.Anchor != "" && len(a.Path) > 0 && same(t.Name, a.Anchor) {
+			return nil
+		}
+		name := t.Name
+		if t.Schema != "" {
+			name = t.Schema + "." + t.Name
+		}
+		if r := p.stmtRels[strings.ToUpper(name)]; r != nil {
+			for _, rel := range r.Relations {
+				if len(rel.Cols) > 0 && same(rel.Insert, a.Table) {
+					return nil
+				}
+			}
+		}
+	}
+	return fmt.Errorf("%s relates to none of the statement's tables", a.Table)
 }
 
 // ---- mouse ------------------------------------------------------------------

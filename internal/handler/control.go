@@ -183,6 +183,13 @@ func (s *Server) handleControl(ctx context.Context, conn *jsonrpc2.Conn, req *js
 		return s.allColumns()
 	case control.MethodCatalog:
 		return s.controlCatalog()
+	case control.MethodFileOpen:
+		var p control.FileParams
+		if err := unmarshal(req, &p); err != nil {
+			return nil, err
+		}
+		_, ok := s.openURI(p.File)
+		return ok, nil
 	case control.MethodCurrentVersion:
 		var p control.CurrentVersionParams
 		if err := unmarshal(req, &p); err != nil {

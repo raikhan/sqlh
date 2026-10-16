@@ -39,6 +39,11 @@ func (p *Panel) subtitle() string {
 		return statementTitle(p.ctx, p.cursor)
 	case tabQueries:
 		return "n: new query"
+	case tabHistory:
+		if c := p.historyConn(); c != "" {
+			return "recent runs on " + c + " · " + p.k("historyAllConns") + ": all connections"
+		}
+		return "recent runs on all connections · " + p.k("historyAllConns") + ": the current one's"
 	}
 	return ""
 }
@@ -98,13 +103,19 @@ func (p *Panel) View() string {
 		body = overlay(body, p.viewForm(p.width, bodyH), p.width)
 	case p.pal != nil:
 		body = overlay(body, p.viewPalette(p.width, bodyH), p.width)
+	case p.prompt != nil:
+		body = overlay(body, p.viewPrompt(p.width), p.width)
 	case p.menu != nil:
 		body = overlay(body, p.viewMenu(), p.width)
 	case p.confirm != nil:
 		body = overlay(body, strings.Split(stPopup.Render(p.confirm.question), "\n"), p.width)
 	}
 	if p.popup != "" {
-		box := strings.Split(stPopup.Render(ansi.Truncate(p.popup, max(p.width-8, 10), "…")), "\n")
+		text := strings.Split(ansi.Wrap(p.popup, max(p.width-8, 10), " /,"), "\n")
+		if len(text) > 6 {
+			text = append(text[:5], "…")
+		}
+		box := strings.Split(stPopup.Render(strings.Join(text, "\n")), "\n")
 		body = overlayAt(body, box, p.width, max(len(body)-len(box)-1, 0))
 	}
 	lines = append(lines, body...)
@@ -184,6 +195,10 @@ func (p *Panel) viewTabBar() string {
 }
 
 func (p *Panel) viewPreviewTabs(w int) string {
+	if p.legendShown() {
+		s := stBorder.Render("─ ") + stBold.Render("Search") + " "
+		return fit(s+stBorder.Render(strings.Repeat("─", max(w-lipgloss.Width(s), 0))), w)
+	}
 	tabs := previewTabs(p.previewNode())
 	cur := p.previewTab()
 	var parts []string
@@ -400,7 +415,7 @@ func (p *Panel) viewSearch(w, h int) []string {
 	kind := searchKindNames[p.skind]
 	prompt := stKey.Render("/ ") + p.query + stAccent.Render("▏") + stDim.Render(fmt.Sprintf("  %s · %d", kind, len(p.results)))
 	out := []string{fit(prompt, w)}
-	lh := h - 2
+	lh := h - 1
 	p.rsel = clamp(p.rsel, 0, len(p.results)-1)
 	if p.rsel < p.rtop {
 		p.rtop = p.rsel
@@ -408,7 +423,7 @@ func (p *Panel) viewSearch(w, h int) []string {
 	if p.rsel >= p.rtop+lh {
 		p.rtop = p.rsel - lh + 1
 	}
-	for i := p.rtop; i < len(p.results) && len(out) < h-1; i++ {
+	for i := p.rtop; i < len(p.results) && len(out) < h; i++ {
 		m := p.results[i]
 		it := p.items[m.index]
 		icon := it.icon + " "
@@ -433,10 +448,10 @@ func (p *Panel) viewSearch(w, h int) []string {
 	case len(p.results) == 0:
 		out = append(out, fit(stDim.Render(" no match"), w))
 	}
-	for len(out) < h-1 {
+	for len(out) < h {
 		out = append(out, strings.Repeat(" ", w))
 	}
-	return append(out, fit(stDim.Render(" : tables  . columns  # indexes  ~ sequences  @ connections  * all"), w))
+	return out
 }
 
 // highlight marks matched runes.
@@ -459,8 +474,41 @@ func highlight(s string, pos []int) string {
 	return b.String()
 }
 
+// legendShown: the search's kinds take the preview while its query is empty.
+func (p *Panel) legendShown() bool { return p.search && p.query == "" }
+
+// searchLegend: the search's kinds and their prefixes.
+func (p *Panel) searchLegend() []string {
+	def := tabKind(p.cur)
+	lines := []string{stBold.Render("Search") + stDim.Render(" "+searchKindNames[def]+" · "+p.k("searchNextKind")+" "+p.k("searchPrevKind")+": other kinds"),
+		stDim.Render("or start with:")}
+	row := func(prefix, name, about string, on bool) string {
+		mark := "  "
+		if on {
+			mark = stAccent.Render("▸ ")
+		}
+		return mark + stKey.Render(fit(prefix, 3)) + fit(name, 16) + stDim.Render(about)
+	}
+	if prefixOf(def) == 0 {
+		lines = append(lines, row("", searchKindNames[def], "this tab's (no prefix)", true))
+	}
+	for _, k := range searchKinds {
+		about := k.about
+		if k.kind == def {
+			about += " · this tab's (no prefix)"
+		}
+		lines = append(lines, row(string(k.prefix), searchKindNames[k.kind], about, k.kind == def))
+	}
+	return lines
+}
+
 func (p *Panel) viewPreview(w, h int) []string {
-	lines := p.previewLines(w)
+	var lines []string
+	if p.legendShown() {
+		lines = p.searchLegend()
+	} else {
+		lines = p.previewLines(w)
+	}
 	p.pscroll = clamp(p.pscroll, 0, max(len(lines)-h, 0))
 	out := make([]string, 0, h)
 	for i := p.pscroll; i < len(lines) && len(out) < h; i++ {
@@ -1017,6 +1065,8 @@ func (p *Panel) viewFooter() string {
 		hints = [][2]string{{"y", "yes"}, {"n", "no"}}
 	case p.pal != nil:
 		hints = [][2]string{{"enter", "run"}, {"esc", "close"}, {"@", "keys"}}
+	case p.prompt != nil:
+		hints = [][2]string{{"enter", "ok"}, {"esc", "cancel"}}
 	case p.menu != nil:
 		hints = [][2]string{{"enter", "run"}, {"esc", "close"}}
 	case p.search:

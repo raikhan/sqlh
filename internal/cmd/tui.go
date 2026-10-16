@@ -256,11 +256,12 @@ func (b *tuiBackend) OpenFile(path string) error {
 	if self == "" {
 		return errors.New("no Herdr pane")
 	}
-	argv := append(append([]string(nil), b.settings.Editor...), path)
-	if len(b.settings.Editor) == 0 {
+	st := b.panelSettings()
+	argv := append(append([]string(nil), st.Editor...), path)
+	if len(st.Editor) == 0 {
 		argv = append(b.cfg.TUI.EditorOrDefault(), path)
 	}
-	pane, err := splitEditor(b.hd, self, b.settings.Placement, b.ws, argv, self)
+	pane, err := splitEditor(b.hd, self, st.Placement, b.ws, argv, self)
 	if err != nil {
 		return err
 	}

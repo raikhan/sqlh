@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/raikhan/sqlh/internal/control"
@@ -32,11 +33,31 @@ func TestPanelText(t *testing.T) {
 		{"columns, single unaliased table", control.PanelAction{Kind: control.ActionColumns, Table: "orders", Columns: []string{"id"}},
 			&control.ContextResult{Tables: []control.ScopeTable{{Name: "orders", Ref: "orders"}}}, "id", false},
 		{"text, needs a space", control.PanelAction{Kind: control.ActionText, Text: "orders_id_seq"}, &control.ContextResult{NeedSpace: true}, " orders_id_seq", false},
+		{"join after JOIN", control.PanelAction{Kind: control.ActionTable, Table: "customer", Mode: "join"}, join,
+			"customer c ON c.id = o.customer_id", false},
+		{"join elsewhere: with the keyword, on its line", control.PanelAction{Kind: control.ActionTable, Table: "customer", Mode: "join"},
+			&control.ContextResult{NeedSpace: true, Indent: "  ", Tables: from.Tables}, "\n  JOIN customer c ON c.id = o.customer_id", false},
+		{"join on an empty line", control.PanelAction{Kind: control.ActionTable, Table: "customer", Mode: "join"},
+			&control.ContextResult{LowercaseKeywords: true, Tables: from.Tables}, "join customer c on c.id = o.customer_id", false},
+		{"join elsewhere, cursor on a table name: still the join", control.PanelAction{Kind: control.ActionTable, Table: "customer", Mode: "join"},
+			&control.ContextResult{Focus: "orders", Tables: from.Tables}, "JOIN customer c ON c.id = o.customer_id", false},
 	}
 	for _, c := range cases {
-		got, cp := panelText(api, c.a, c.ctx)
-		if got != c.want || cp != c.copy {
-			t.Errorf("%s: got %q (copy %v), want %q (copy %v)", c.name, got, cp, c.want, c.copy)
+		got, cp, err := panelText(api, c.a, c.ctx)
+		if err != nil || got != c.want || cp != c.copy {
+			t.Errorf("%s: got %q (copy %v, %v), want %q (copy %v)", c.name, got, cp, err, c.want, c.copy)
+		}
+	}
+	for _, c := range []struct {
+		name string
+		ctx  *control.ContextResult
+		want string
+	}{
+		{"unrelated", join, "relates to none"},
+		{"no tables", &control.ContextResult{InJoin: true}, "no tables"},
+	} {
+		if _, _, err := panelText(api, control.PanelAction{Kind: control.ActionTable, Table: "product", Mode: "join"}, c.ctx); err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("join %s: %v", c.name, err)
 		}
 	}
 }

@@ -74,8 +74,8 @@ func Commands() []*cli.Command {
 		{
 			Name:    "connections",
 			Aliases: []string{"ls"},
-			Usage:   "list connections (* = current)",
-			Flags:   []cli.Flag{dirFlag, jsonFlag},
+			Usage:   "list connections (* = current); -p picks one and prints its alias",
+			Flags:   []cli.Flag{dirFlag, jsonFlag, &cli.BoolFlag{Name: "pick", Aliases: []string{"p"}, Usage: "choose in the picker and print the alias"}},
 			Action:  connectionsCmd,
 		},
 		{
@@ -370,6 +370,14 @@ func connectionsCmd(c *cli.Context) error {
 			return err
 		}
 	}
+	if c.Bool("pick") {
+		alias, err := pickConnection(conns)
+		if err != nil {
+			return err
+		}
+		emit([]string{alias}, "")
+		return nil
+	}
 	if c.Bool("json") {
 		return printJSON(conns)
 	}
@@ -417,22 +425,11 @@ func connectCmd(c *cli.Context) error {
 	return nil
 }
 
-// pickConnection lets the user choose a connection.
+// pickConnection lets the user choose a connection: the Connections tab's
+// table (connection, database, schema, env), filtered as you type.
 func pickConnection(conns []control.Connection) (string, error) {
-	its := make([]tui.PickItem, len(conns))
-	for i, cn := range conns {
-		mark := " "
-		if cn.Current {
-			mark = "*"
-		}
-		env := ""
-		if cn.Environment != "" && cn.Environment != "dev" {
-			env = " [" + cn.Environment + "]"
-		}
-		its[i] = tui.PickItem{Value: cn.Alias, Match: cn.Alias,
-			Display: fmt.Sprintf("%s %-16s %-10s %s", mark, cn.Alias+env, cn.Driver, ansiDim+cn.Desc+ansiReset)}
-	}
-	vals, err := pick(its, tui.PickOptions{Prompt: "connection"})
+	header, its := tui.ConnectionPickItems(conns)
+	vals, err := pick(its, tui.PickOptions{Prompt: "connection", Header: header, NoSort: false, Height: 0.5})
 	if err != nil || len(vals) == 0 {
 		return "", err
 	}

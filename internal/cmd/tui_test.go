@@ -95,3 +95,29 @@ func TestEditConfigFile(t *testing.T) {
 		t.Error("a missing database connected")
 	}
 }
+
+func TestRenameDeleteQuery(t *testing.T) {
+	dir := t.TempDir()
+	b := &panelBackend{ws: dir}
+	q := filepath.Join(dir, "queries")
+	_ = os.MkdirAll(q, 0o755)
+	a, other := filepath.Join(q, "query_1.sql"), filepath.Join(q, "query_2.sql")
+	_ = os.WriteFile(a, []byte("select 1"), 0o644)
+	_ = os.WriteFile(other, []byte("select 2"), 0o644)
+	dst, err := b.RenameQuery(a, "reports/orders")
+	if err != nil || dst != filepath.Join(q, "reports", "orders.sql") {
+		t.Fatalf("rename: %s %v", dst, err)
+	}
+	if text, _ := os.ReadFile(dst); string(text) != "select 1" {
+		t.Errorf("moved text %q", text)
+	}
+	if _, err := b.RenameQuery(other, "reports/orders.sql"); err == nil {
+		t.Error("renamed over an existing file")
+	}
+	if err := b.DeleteQuery(dst); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(dst); !os.IsNotExist(err) {
+		t.Error("not deleted")
+	}
+}

@@ -61,7 +61,7 @@ func fuzzyScore(pattern, s string) (int, []int, bool) {
 				}
 				v := score[i-1][k] + 16 + bonus(j)
 				if k == j-1 {
-					v += 16
+					v += 28 // a run beats jumping to a word start
 				} else {
 					v -= min(j-k-1, 10)
 				}

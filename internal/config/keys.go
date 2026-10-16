@@ -101,13 +101,18 @@ var DefaultPanelKeys = Keymap{
 	"previewDown": {"J"}, "previewUp": {"K"},
 	"sample": {"s"}, "nextRow": {"]"}, "prevRow": {"["},
 	"newQuery": {"n"}, "openResult": {"o"}, "editFile": {"e"},
+	"renameQuery": {"R"}, "deleteQuery": {"X"}, "historyAllConns": {"c"},
 	"newConnection": {"C"}, "editConnection": {"E"}, "duplicateConnection": {"D"}, "deleteConnection": {"X"},
 	"refresh": {"r"}, "help": {"?"}, "quit": {"q"},
+	// out of the way: the terminal (Bubble Tea v1) can't tell ctrl+R or
+	// ctrl+: apart, see receivable
+	"editConfig": {"ctrl+e"}, "reloadConfig": {"ctrl+r"},
 	"backToEditor": {"backspace"},
 	"tab1":         {"1"}, "tab2": {"2"}, "tab3": {"3"}, "tab4": {"4"}, "tab5": {"5"},
 	// while searching (other keys type into the query)
 	"searchUp": {"up", "ctrl+p", "ctrl+k"}, "searchDown": {"down", "ctrl+n", "ctrl+j"},
 	"searchOpen": {"enter"}, "searchInsert": {"ctrl+y"}, "searchCancel": {"esc"},
+	"searchNextKind": {"tab"}, "searchPrevKind": {"shift+tab"},
 	// the connection form
 	"formSave": {"ctrl+s"}, "formTest": {"ctrl+t"}, "formCancel": {"esc"},
 	"formNext": {"tab", "down"}, "formPrev": {"shift+tab", "up"},
@@ -120,16 +125,16 @@ var PanelScopes = []string{"connections", "objects", "statement", "queries", "hi
 var PanelCommonActions = []string{"up", "down", "top", "bottom", "pageDown", "pageUp", "scrollTop",
 	"expand", "collapse", "collapseAll", "open", "copy", "actions", "search",
 	"previewNext", "previewPrev", "previewDown", "previewUp",
-	"help", "quit", "backToEditor", "tab1", "tab2", "tab3", "tab4", "tab5"}
+	"help", "quit", "backToEditor", "tab1", "tab2", "tab3", "tab4", "tab5", "editConfig", "reloadConfig"}
 
 // panelScopeOwn are each scope's own actions (tabs: besides the common ones).
 var panelScopeOwn = map[string][]string{
 	"connections": {"newConnection", "editConnection", "duplicateConnection", "deleteConnection"},
 	"objects":     {"insert", "mark", "sample", "nextRow", "prevRow", "newQuery", "refresh"},
 	"statement":   {"insert", "mark", "sample", "nextRow", "prevRow", "newQuery", "refresh", "expandAll"},
-	"queries":     {"newQuery"},
-	"history":     {"insert", "openResult", "editFile"},
-	"search":      {"searchUp", "searchDown", "searchOpen", "searchInsert", "searchCancel"},
+	"queries":     {"newQuery", "renameQuery", "deleteQuery"},
+	"history":     {"insert", "openResult", "editFile", "historyAllConns"},
+	"search":      {"searchUp", "searchDown", "searchOpen", "searchInsert", "searchCancel", "searchNextKind", "searchPrevKind"},
 	"form":        {"formSave", "formTest", "formCancel", "formNext", "formPrev"},
 }
 
@@ -196,6 +201,24 @@ func unknownActions(what string, set map[string]KeyList, known func(string) bool
 	return fmt.Errorf("%s: unknown action %s (actions: %s)", what, strings.Join(unknown, ", "), strings.Join(list, ", "))
 }
 
+// receivable: the terminal can send the key so that Bubble Tea (v1, no
+// kitty keyboard protocol) tells it apart: ctrl with a lower-case letter or
+// @ [ \ ] ^ _ (ctrl+R is ctrl+r, ctrl+: doesn't arrive).
+func receivable(k string) error {
+	rest, ok := strings.CutPrefix(k, "ctrl+")
+	if !ok || len([]rune(rest)) != 1 {
+		return nil
+	}
+	r := []rune(rest)[0]
+	if (r >= 'a' && r <= 'z') || strings.ContainsRune(`@[\]^_`, r) {
+		return nil
+	}
+	if r >= 'A' && r <= 'Z' {
+		return fmt.Errorf("%q: the terminal sends it as ctrl+%c (use that, or another key)", k, r-'A'+'a')
+	}
+	return fmt.Errorf("%q: the terminal can't send it distinctly (use ctrl with a letter, or another key)", k)
+}
+
 // clashes: a key on two actions of one keymap.
 func clashes(what string, km Keymap, actions []string) error {
 	owner := map[string]string{}
@@ -236,6 +259,13 @@ func checkPanelKeys(k PanelKeys) error {
 	}
 	maps := k.Keymaps()
 	for _, scope := range PanelScopes {
+		for a, keys := range maps[scope] {
+			for _, key := range keys {
+				if err := receivable(key); err != nil {
+					return fmt.Errorf("panel.keys.%s: %w", a, err)
+				}
+			}
+		}
 		if err := clashes("panel.keys ("+scope+")", maps[scope], PanelScopeActions(scope)); err != nil {
 			return err
 		}

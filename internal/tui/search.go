@@ -16,16 +16,61 @@ const (
 	skTable = iota
 	skColumn
 	skIndex
+	skConstraint
+	skTrigger
 	skSequence
 	skConn
 	skFile
 	skRun
+	skStmt // the statement's tables (the Statement tab's own)
 	skAll
 )
 
-var searchPrefixes = map[rune]int{':': skTable, '.': skColumn, '#': skIndex, '~': skSequence, '@': skConn, '*': skAll}
+// searchKinds: the kinds with a prefix, in the legend's (and Tab's) order.
+var searchKinds = []struct {
+	prefix rune
+	kind   int
+	about  string
+}{
+	{':', skTable, "tables, views, materialized views"},
+	{'.', skColumn, ".cust, or .orders.tot (table.column)"},
+	{'#', skIndex, ""},
+	{'!', skConstraint, ""},
+	{'^', skTrigger, ""},
+	{'~', skSequence, ""},
+	{'@', skConn, ""},
+	{'*', skAll, "all of the above, queries, runs"},
+}
 
-var searchKindNames = []string{"tables", "columns", "indexes", "sequences", "connections", "queries", "runs", "everything"}
+var searchKindNames = []string{"tables & views", "columns", "indexes", "constraints", "triggers", "sequences",
+	"connections", "queries", "runs", "this statement", "everything"}
+
+// prefixOf: a kind's prefix (0: none).
+func prefixOf(kind int) rune {
+	for _, k := range searchKinds {
+		if k.kind == kind {
+			return k.prefix
+		}
+	}
+	return 0
+}
+
+// objectKind: the search kind of a catalog object (-1: none).
+func objectKind(o control.CatalogObject) int {
+	switch {
+	case isTableKind(o.Kind) && o.Table == "":
+		return skTable
+	case o.Kind == "index":
+		return skIndex
+	case o.Kind == "constraint":
+		return skConstraint
+	case o.Kind == "trigger":
+		return skTrigger
+	case o.Kind == "sequence":
+		return skSequence
+	}
+	return -1
+}
 
 // searchItem is a search candidate.
 type searchItem struct {
@@ -39,6 +84,7 @@ type searchItem struct {
 	conn   control.Connection
 	file   string
 	run    *history.Entry
+	node   string // skStmt: the node's id
 }
 
 // tabKind: what a tab searches by default.
@@ -50,6 +96,8 @@ func tabKind(tab int) int {
 		return skFile
 	case tabHistory:
 		return skRun
+	case tabStmt:
+		return skStmt
 	}
 	return skTable
 }
@@ -57,30 +105,59 @@ func tabKind(tab int) int {
 // parseSearch splits a leading kind character off the query.
 func parseSearch(q string, tab int) (int, string) {
 	for _, r := range q {
-		if k, ok := searchPrefixes[r]; ok {
-			return k, q[len(string(r)):]
+		if r != 0 {
+			for _, k := range searchKinds {
+				if k.prefix == r {
+					return k.kind, q[len(string(r)):]
+				}
+			}
 		}
 		break
 	}
 	return tabKind(tab), q
 }
 
+// cycleKind: Tab in the search: the next kind (the tab's own, then those
+// with a prefix), the query kept.
+func (p *Panel) cycleKind(d int) tea.Cmd {
+	kind, q := parseSearch(p.query, p.cur)
+	order := []int{tabKind(p.cur)}
+	for _, k := range searchKinds {
+		if k.kind != order[0] {
+			order = append(order, k.kind)
+		}
+	}
+	i := 0
+	for j, k := range order {
+		if k == kind {
+			i = j
+		}
+	}
+	next := order[(i+d+len(order))%len(order)]
+	p.query = q
+	if next != tabKind(p.cur) {
+		p.query = string(prefixOf(next)) + q
+	}
+	p.rsel, p.rtop = 0, 0
+	return tea.Batch(p.runSearch(), p.previewCmd())
+}
+
 // searchItems lists the candidates of a kind.
 func (p *Panel) searchItems(kind int) []searchItem {
 	var out []searchItem
 	want := func(k int) bool { return kind == skAll || kind == k }
-	if p.cat != nil && (want(skTable) || want(skIndex) || want(skSequence)) {
+	if kind == skStmt {
+		for _, n := range p.tabs[tabStmt].roots {
+			if n.kind == nStmtTable {
+				out = append(out, searchItem{kind: skStmt, text: n.label, detail: "", icon: n.icon, node: n.id, obj: control.CatalogObject{Insert: n.table}})
+			}
+		}
+		return out // in the statement's order
+	}
+	if p.cat != nil && (want(skTable) || want(skIndex) || want(skConstraint) || want(skTrigger) || want(skSequence)) {
 		for _, s := range p.cat.Schemas {
 			for _, o := range s.Objects {
-				k := -1
-				switch {
-				case isTableKind(o.Kind) && o.Table == "":
-					k = skTable
-				case o.Kind == "index" || o.Kind == "constraint":
-					k = skIndex
-				case o.Kind == "sequence":
-					k = skSequence
-				}
+				k := objectKind(o)
 				if k < 0 || !want(k) {
 					continue
 				}
@@ -126,6 +203,9 @@ func (p *Panel) searchItems(kind int) []searchItem {
 		seen := map[string]bool{}
 		for i := range p.hist.Recent {
 			e := p.hist.Recent[i]
+			if c := p.historyConn(); c != "" && e.Conn != c {
+				continue
+			}
 			if e.Lineage != "" && seen[e.Lineage] {
 				continue
 			}
@@ -198,6 +278,10 @@ func (p *Panel) searchKey(k tea.KeyMsg) tea.Cmd {
 	case "searchDown":
 		p.rsel = clamp(p.rsel+1, 0, len(p.results)-1)
 		return p.previewCmd()
+	case "searchNextKind":
+		return p.cycleKind(1)
+	case "searchPrevKind":
+		return p.cycleKind(-1)
 	}
 	switch key {
 	case "backspace":
@@ -230,7 +314,7 @@ func (p *Panel) searchKey(k tea.KeyMsg) tea.Cmd {
 // insertSearched: ctrl+y on a result.
 func (p *Panel) insertSearched(it *searchItem) tea.Cmd {
 	switch it.kind {
-	case skTable:
+	case skTable, skStmt:
 		return p.insert(control.PanelAction{Kind: control.ActionTable, Table: it.obj.Insert}, it.obj.Insert)
 	case skColumn:
 		return p.insert(control.PanelAction{Kind: control.ActionColumns, Table: it.col.TableInsert, Columns: []string{it.col.Insert}}, it.col.Insert)
@@ -247,6 +331,9 @@ func (p *Panel) insertSearched(it *searchItem) tea.Cmd {
 // reveal goes to a result in its tab: opens the way to it and selects it.
 func (p *Panel) reveal(it *searchItem) tea.Cmd {
 	switch it.kind {
+	case skStmt:
+		p.switchTab(tabStmt)
+		return p.revealWhere(func(n *node) bool { return n.id == it.node })
 	case skConn:
 		p.switchTab(tabConns)
 		return p.revealWhere(func(n *node) bool { return n.kind == nConnItem && n.conn.Alias == it.conn.Alias })
@@ -269,16 +356,16 @@ func (p *Panel) reveal(it *searchItem) tea.Cmd {
 			return tea.Batch(cmd, c)
 		}
 		return cmd
-	case skIndex:
+	case skIndex, skConstraint, skTrigger:
 		p.switchTab(tabObjects)
 		owner := strings.ToUpper(it.obj.Table)
 		cmd := p.revealWhere(func(n *node) bool {
 			return n.kind == nTable && strings.EqualFold(n.obj.Name, owner) && strings.EqualFold(n.schema, it.schema)
 		})
 		if t := p.selected(); t != nil && t.kind == nTable {
-			name := it.obj.Name
+			name, tid := it.obj.Name, t.id
 			p.pendingReveal = func(n *node) bool {
-				return n.kind == nObject && n.obj.Name == name && n.parent != nil && n.parent.parent == t
+				return n.kind == nObject && n.obj.Name == name && n.parent != nil && n.parent.parent != nil && n.parent.parent.id == tid
 			}
 			c := p.setExpanded(t, true)
 			p.tryPendingReveal()

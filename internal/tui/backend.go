@@ -51,6 +51,15 @@ type Backend interface {
 	NewQuery(body string) (string, error)
 	// OpenFile opens a file in the editor (sqlh tui: a new one if none).
 	OpenFile(path string) error
+	// RenameQuery renames a query file (name: relative to the queries
+	// folder, .sql added without an extension); through the editor when it
+	// has the file open. It returns the new path.
+	RenameQuery(path, name string) (string, error)
+	// EnsureFile creates a file with text unless it exists (created: it
+	// didn't).
+	EnsureFile(path, text string) (created bool, err error)
+	// DeleteQuery deletes a query file (not one open in the editor).
+	DeleteQuery(path string) error
 	// FileText reads a query file (its preview; long ones cut).
 	FileText(path string) (string, error)
 	// CurrentVersion: the statement of a file most like an earlier run's
@@ -65,6 +74,12 @@ type Backend interface {
 	DeleteConnection(alias string) error
 	// TestConnection connects with the fields and disconnects.
 	TestConnection(f connedit.Fields) error
+
+	// ConfigPath: the config file the server reads.
+	ConfigPath() (string, error)
+	// ReloadSettings has the server re-read the config file and returns
+	// the panel's settings from it.
+	ReloadSettings() (*control.PanelSettings, error)
 }
 
 // Synthetic event kinds the backend sends besides the server's.

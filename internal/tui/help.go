@@ -45,6 +45,15 @@ var actionDesc = map[string]string{
 	"deleteConnection":    "Delete the connection",
 	"openResult":          "Open the run's result in the viewer",
 	"editFile":            "Open the run's file in the editor",
+	"renameQuery":         "Rename the query file",
+	"editConfig":          "Edit the config file in $EDITOR (reloads after)",
+	"reloadConfig":        "Reload the config file (keys, colours, connections, …)",
+	"historyAllConns":     "Recent runs: all connections / the current one's",
+	"deleteQuery":         "Delete the query file",
+	"searchUp":            "Search: previous result", "searchDown": "Search: next result",
+	"searchOpen": "Search: go to the result", "searchInsert": "Search: insert the result",
+	"searchCancel": "Search: back to the tree", "searchNextKind": "Search: next kind (prefix)",
+	"searchPrevKind": "Search: previous kind",
 }
 
 // actionTitle: an action's description, lower case (for notes).
@@ -67,7 +76,7 @@ var paletteGroups = []struct {
 	{"Navigation", []string{"open", "up", "down", "expand", "collapse", "collapseAll", "top", "bottom", "pageUp", "pageDown",
 		"scrollTop", "tab1", "tab2", "tab3", "tab4", "tab5"}},
 	{"Preview", []string{"previewNext", "previewPrev", "previewDown", "previewUp"}},
-	{"Global", []string{"search", "actions", "copy", "backToEditor", "help", "quit"}},
+	{"Global", []string{"search", "actions", "copy", "backToEditor", "editConfig", "reloadConfig", "help", "quit"}},
 }
 
 type paletteEntry struct {

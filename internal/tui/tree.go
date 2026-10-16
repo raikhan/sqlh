@@ -267,6 +267,9 @@ func fillTable(n *node, cols []control.ColumnItem, rel *control.RelationsResult,
 	if rel != nil {
 		var joins, uses []control.RelationItem
 		for _, r := range rel.Relations {
+			if onPath(n, r.Insert) {
+				continue // a chain of joins never returns to its tables
+			}
 			if r.Edge == "uses" && len(r.Cols) == 0 {
 				uses = append(uses, r)
 			} else {
@@ -319,6 +322,24 @@ func fillTable(n *node, cols []control.ColumnItem, rel *control.RelationsResult,
 		n.add(&node{kind: nInfo, label: "no columns"})
 	}
 	n.loaded, n.loading = true, false
+}
+
+// onPath: table is the anchor of n's chain or one of its hops (n itself
+// included).
+func onPath(n *node, table string) bool {
+	if n.kind != nRelation {
+		return false
+	}
+	same := func(x string) bool { return strings.EqualFold(unquote(lastPart(x)), unquote(lastPart(table))) }
+	if same(n.anchor) {
+		return true
+	}
+	for _, h := range n.path {
+		if same(h.Table) {
+			return true
+		}
+	}
+	return false
 }
 
 // refOf: how a table node is referred to in a join condition: the
@@ -427,7 +448,8 @@ func isPK(key string) bool {
 
 // buildHistory makes the History tab: the versions of the statement at the
 // cursor, then the workspace's recent queries (each expands to its versions).
-func buildHistory(h *control.HistoryResult, ic icons) []*node {
+// conn: only the recent runs on this connection ("" = all).
+func buildHistory(h *control.HistoryResult, conn string, ic icons) []*node {
 	if h == nil {
 		return []*node{top("hist", &node{kind: nInfo, label: "loading…"})}
 	}
@@ -447,8 +469,13 @@ func buildHistory(h *control.HistoryResult, ic icons) []*node {
 		roots = append(roots, g)
 	}
 	seen := map[string]bool{}
+	shown := 0
 	for i := range h.Recent {
 		e := h.Recent[i]
+		if conn != "" && e.Conn != conn {
+			continue
+		}
+		shown++
 		key := e.Lineage
 		if key == "" {
 			key = e.ID
@@ -460,8 +487,11 @@ func buildHistory(h *control.HistoryResult, ic icons) []*node {
 		roots = append(roots, top("hist", &node{kind: nHistory, label: runLabel(e), detail: firstLine(e.SQL), run: &e,
 			head: e.Lineage != "", lazy: e.Lineage != "", icon: ic.history}))
 	}
-	if len(h.Recent) == 0 {
+	switch {
+	case len(h.Recent) == 0:
 		roots = append(roots, top("hist", &node{kind: nInfo, label: "nothing run yet"}))
+	case shown == 0:
+		roots = append(roots, top("hist", &node{kind: nInfo, label: "no runs on " + conn + " yet"}))
 	}
 	return roots
 }

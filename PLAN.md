@@ -1368,6 +1368,203 @@ Fix:
 7. History preview: tab **Query** (the run and its SQL, default) and tab **Diff** (against the
    current version of that statement in the file / at the cursor).
 
+### Phase 13 — panel polish, round 3 (2026-10-16) ✅ done (branch `tui-experiment`)
+
+Feedback after Phase 12; decisions in 13.12, status in 13.14. Deviation: `ctrl+:` / `ctrl+R`
+(decision 8) can't reach the panel — Bubble Tea v1 reads the classic terminal encoding, where
+ctrl+R is ctrl+r and ctrl+: doesn't exist (no kitty keyboard protocol before Bubble Tea v2) —
+so the defaults are `ctrl+e` / `ctrl+r`, and such keys are now config errors.
+
+#### 13.1 Search: the kinds, visible
+
+The prefix legend sits on the search's last line and is cut in a narrow pane
+(`: tables . columns # indexes ~ sequences @ connect…`).
+
+- [ ] The legend leaves the bottom line. While the query is empty (just `/`), the preview
+      pane shows the legend instead of a preview: one line per kind, `prefix  kind  what it
+      finds` (and the tab's default kind marked).
+- [ ] Tab / Shift-Tab in the search cycle the kind (rewriting the prefix); the prompt line
+      already names it (`indexes · 320`).
+- [ ] The search's keys and the kinds are also in the `?` palette (search scope).
+
+#### 13.2 Indexes and constraints apart
+
+- [ ] `#` indexes only; a new prefix for constraints (13.12); triggers too, maybe.
+
+#### 13.3 The `.` menu
+
+- [ ] Its shortcut letters must not collide with navigation: "insert a join" `j` → `J`. The
+      menu keeps j/k/↑/↓ for moving, so no menu letter may be j or k.
+- [ ] The three inserts do what they say. Today "join" only applies after `JOIN`; elsewhere
+      all three insert the name.
+  - **insert** (= Ctrl-Y): after `JOIN` the join clause, else the name.
+  - **insert the name**: always the name.
+  - **insert a join**: after `JOIN`, `customer c ON c.id = o.customer_id`; elsewhere with the
+    keyword, `JOIN customer c ON c.id = o.customer_id` (on its own line, the statement's
+    indent). A table related to none of the statement's tables: an error, nothing inserted
+    (13.12).
+  - Labels say it: "insert (as Ctrl-Y)", "insert the name", "insert JOIN … ON …".
+
+#### 13.4 Relations: a chain of joins, without loops
+
+Today a related table opens to its own relations, and so on without end (batch_document →
+exclusion_reason → batch_document → batch …).
+
+The hierarchy below a table is a chain of joins (13.13): opening a relation is choosing the
+next join; it stays an exploration tool, so a related table keeps everything a table shows
+(relations, views, indexes, constraints, triggers, columns). Only the loops go:
+
+- [ ] Below a relation, its Relations leave out the tables already on its path (the anchor and
+      every hop): the tree ends where the chain can't grow. (Tables of the statement that are
+      not on the path stay: how they relate is worth seeing.)
+- [ ] Navigation stays h/l/Enter; no jump keys. (Ctrl-R / Ctrl-O are the inline picker's: a
+      flat list needs keys to drill in and back; the tree has h/l.)
+- [ ] Ctrl-Y anywhere in the chain inserts it up to that table, as now.
+- [ ] Test: a cycle (a → b → a) is not offered; a 3-hop chain still is.
+
+#### 13.4b Search in the Statement tab: the statement's own list
+
+Today `/` in Statement searches all tables, and choosing one goes to the Objects tab.
+
+- [ ] In Statement, `/` without a prefix is a fuzzy finder over the statement's tables (big
+      queries), matched by name or alias (`orders`, `o`): it stays in Statement and selects
+      the table's row. Other tabs unchanged (Objects still searches all its tables and views).
+- [ ] `:` searches all tables and views, as today (goes to Objects).
+- [ ] The legend (13.1) shows Statement's default kind ("this statement").
+- [ ] Ctrl-Y on a result inserts as Ctrl-Y in the tree would.
+
+#### 13.5 Collapse / expand one level at a time
+
+- [ ] `H` closes the deepest open level of the tab: open relations, then the open tables,
+      then the groups, down to the top level. Pressed again, the next level.
+- [ ] `L` (Statement) opens the next level: tables, then their groups.
+- [ ] Statement: "tables arrive collapsed" holds once `H` reaches the tables level, until `L`
+      opens it again.
+
+#### 13.6 Queries: rename, delete
+
+- [ ] `R` rename: a one-line form prefilled with the name (`.sql` added if missing; another
+      folder allowed, relative to the queries folder). `X` delete: asks first.
+- [ ] A file open in the attached Helix: rename through Helix (`:move <new>`, which renames
+      its buffer and the file); delete refused ("open in the editor") — see 13.12.
+- [ ] History records the file path. After a rename, the file's earlier runs no longer match
+      it; see 13.12.
+- [ ] Also in the `.` menu of a query file.
+
+#### 13.7 Connections as a standalone command
+
+- [ ] `sqlh connect` without an alias (Helix `space i C`) opens the Connections tab on its own,
+      instead of the inline picker:
+  - the table, groups, preview and filter (`/`);
+  - Enter connects the editor (and points the file's header at it, as now) and exits;
+  - Esc / `q` exits without a change;
+  - C/E/D/X work as in the panel.
+- [ ] Where it draws: see 13.12.
+- [ ] `sqlh connections -p` likewise (prints the alias instead of switching).
+
+#### 13.8 History: opening a run's file that is gone
+
+- [ ] `e` (and Enter on a file-less, non-expandable run…) on a run whose file no longer
+      exists: recreate it at its path (folders too), with the connection header of the run
+      (`-- sqlh: conn=<alias>`) and the run's SQL, then open it. A note says it was recreated.
+
+#### 13.9 History: the current connection's runs
+
+- [ ] The recent runs list only those on the current connection (`e.Conn`). A key toggles
+      "all connections" (13.12); the group/title says which (`Recent · pg_local`).
+- [ ] This statement's versions: see 13.12.
+
+#### 13.10 The config, from the app
+
+- [ ] `editConfig` (global): opens the config file the server reads (`Status.Panel.ConfigPath`)
+      in `$VISUAL` / `$EDITOR` (else `vi`) in the panel's own pane (Bubble Tea suspended,
+      `tea.ExecProcess`). Back in the app, it reloads (below).
+- [ ] `reloadConfig` (global): the server re-reads the file (`sqlh/reloadConfig`); the app
+      re-reads its settings (`sqlh/status` → keys, icons, syntax, statement, editor, queries
+      folder) and rebuilds its keymap and trees. A broken file: the error in a popup, the old
+      config stays (fix it with `editConfig` again).
+- [ ] Keys: see 13.12.
+
+#### 13.11 Docs, tests, live check
+
+- [ ] doc/cli.md, config example; tests per item (the menu's join outside `JOIN`
+      [`panelText`], relation → reveal + `ctrl+o`, H/L steps, rename/delete with a fake
+      editor, recreate, history filter, reload applying new keys); live check in Herdr.
+
+#### 13.12 Decided (2026-10-16)
+
+1. Search: the legend in the preview while the query is empty; Tab / Shift-Tab cycle kinds.
+2. Prefixes: `#` indexes, `!` constraints, `^` triggers.
+3. "insert a join" for a table related to none of the statement's: an error.
+4. Relations (13.4): the loop-free chain — below a relation, no table already on its path;
+   everything else a table shows stays; h/l navigate, no jump keys.
+9. Statement search (13.4b): `/` finds among the statement's tables (name or alias) and stays
+   in Statement; `:` for all tables. Only Statement changes.
+5. Rename via Helix `:move` when the file is open in the attached Helix, else on disk (also
+   without any editor); delete refused while open. History may lose the link after a
+   rename: a later "recreate the old file" function retrieves the old SQL.
+6. `sqlh connect` (no alias): a small list — the 4-column table with filtering — as a popup in
+   the middle of the screen or at the cursor (like today's picker).
+7. History: `c` toggles all connections for the recent runs. "This statement" is not
+   filtered (it belongs to the file, whose header names the connection).
+8. `editConfig` default `ctrl+:`, `reloadConfig` default `ctrl+R` (both global, both in the
+   `?` palette).
+
+#### 13.14 Status ✅
+
+- [x] 13.1 legend in the preview while the query is empty (`searchLegend`), Tab/Shift-Tab
+      cycle kinds (`searchNextKind`/`searchPrevKind`, search scope); the cut-off bottom line
+      gone. The search's keys are not in the `?` palette (`?` types into the query); the legend
+      names them.
+- [x] 13.2 `#` indexes, `!` constraints, `^` triggers (`objectKind`); reveal by table id (the
+      table's node is rebuilt when it loads).
+- [x] 13.3 menu: `J` join, `Q` new query file (`q` closed the menu); `panelText` → error and
+      `joinClause`; join mode outside `JOIN` writes `\n<indent>JOIN …` (or `JOIN …` at a line
+      start); the panel checks first (`joinable`, from the statement's relations).
+- [x] 13.4 `onPath`: a relation's relations (and views) leave out its chain's tables.
+- [x] 13.4b `skStmt`: the statement's tables, revealed in Statement.
+- [x] 13.5 H: deepest open visible level; L: shallowest closed (Statement); `stmtCollapsed` when
+      H reaches the tables / L opens them.
+- [x] 13.6 `R`/`X` in Queries (+ menu); `RenameQuery` (Helix `:open` + `:move` when the file is
+      open — `sqlh/fileOpen` asks the server — else `os.Rename`), `DeleteQuery` refuses an
+      open file; prompt box (`prompt.go`).
+- [x] 13.7 `tui.ConnectionPickItems` (aligned table, env chips in raw ANSI: the picker draws on
+      /dev/tty), `sqlh connect`, `sqlh connections -p`; standalone connections carry the
+      target/env/group. Fuzzy: a consecutive run now beats jumping to a word start (`shop`
+      ranked `shop_prod` over `shop`).
+- [x] 13.8 `EnsureFile` + `editRunFile`.
+- [x] 13.9 `historyConn`, `c` (`historyAllConns`), subtitle says which; search over runs follows.
+- [x] 13.10 `editConfig` (`tea.ExecProcess` $VISUAL/$EDITOR/vi) → `reloadConfig`
+      (`ReloadSettings`: `sqlh/reloadConfig` + status → keymap, icons, colours, statement);
+      an error stays in a popup until a key. `receivable` validates keys.
+- [x] 13.11 docs; tests: TestPanelSearchKinds, TestPanelStatementSearch,
+      TestPanelRelationsNoLoop, TestPanelMenuJoin, TestPanelQueryRenameDelete,
+      TestRenameDeleteQuery, TestPanelRunFileRecreated, TestPanelHistoryByConnection,
+      TestPanelReloadConfig, TestConnectionPickItems, TestPanelText (join cases); live in
+      Herdr: `space i C` table + filter + switch, Statement `/`, legend, H/L steps.
+
+#### 13.13 Note: how nested relations build join chains (for decision 4)
+
+A relation row carries its path from the table it was opened under (`anchor` + `path`
+hops). Ctrl-Y on a nested one, with the cursor after `JOIN` and the anchor in the
+statement, inserts the whole chain (`panelText` → `catalog.ComposeJoin`):
+
+```
+orders o                     (in the statement)
+  Relations
+    → customer               (hop 1: o.customer_id)
+      Relations
+        → region             (hop 2: c.region_id)   Ctrl-Y here →
+customer c ON c.id = o.customer_id
+JOIN region r ON r.id = c.region_id
+```
+
+The loop (batch_document → exclusion_reason → batch_document …) comes from offering every
+relation at every level, the chain's own tables included. A cycle-free variant keeps chains:
+below a relation, leave out the tables already on its path (and the statement's), and show
+only its Relations (no indexes/constraints/columns clutter); a separate key goes to the
+table in Objects.
+
 ### Phase 5 — later / optional
 
 - [ ] `EXPLAIN` to buffer
@@ -1441,6 +1638,11 @@ Fix:
 - **2026-10-16** Phase 7 done: fix for UNION lineage in derived tables/CTEs (+ Oracle
   `MINUS`); current schema per connection (`sqlh schema`, header `schema=`, CADE works from
   read-only logins); lineage for UNION views; go to definition of tables and `sqlh ddl`.
+
+- **2026-10-16** Phase 13: search legend + kinds (indexes/constraints/triggers apart), menu
+  inserts fixed (`J`, join outside JOIN), loop-free relation chains, Statement-tab search,
+  H/L by level, rename/delete query files, `sqlh connect` as the connections table, recreate a
+  run's missing file, History by connection, edit/reload the config from the panel.
 
 - **2026-10-16** Phase 12: connections table, SQL highlighting, collapse/expand all + `z`,
   `?` keys palette per tab with per-tab key config, preview tabs by selection (query file

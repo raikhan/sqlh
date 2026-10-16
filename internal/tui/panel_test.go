@@ -37,6 +37,9 @@ type fakeBackend struct {
 	tested    []connedit.Fields
 	conf      map[string]connedit.Fields
 	texts     map[string]string
+	renamed   []string
+	reloaded  *control.PanelSettings
+	reloadErr error
 	current   map[string]string // run SQL → today's version
 }
 
@@ -57,6 +60,8 @@ var fakeCatalog = &control.CatalogResult{
 			{Kind: "view", Name: "v_orders", Insert: "v_orders", Columns: 2},
 			{Kind: "sequence", Name: "orders_id_seq", Insert: "orders_id_seq"},
 			{Kind: "index", Name: "orders_customer_idx", Insert: "orders_customer_idx", Table: "orders", Detail: "(customer_id)"},
+			{Kind: "constraint", Name: "orders_pkey", Insert: "orders_pkey", Table: "orders", Detail: "primary key (id)"},
+			{Kind: "trigger", Name: "orders_audit", Insert: "orders_audit", Table: "orders"},
 		}},
 		{Name: "audit", Objects: []control.CatalogObject{
 			{Name: "log", Insert: "audit.log", Columns: 4},
@@ -257,6 +262,8 @@ func key(p *Panel, keys ...string) {
 			msg = tea.KeyMsg{Type: tea.KeyCtrlS}
 		case "ctrl+t":
 			msg = tea.KeyMsg{Type: tea.KeyCtrlT}
+		case "ctrl+r":
+			msg = tea.KeyMsg{Type: tea.KeyCtrlR}
 		case "ctrl+u":
 			msg = tea.KeyMsg{Type: tea.KeyCtrlU}
 		case "down":
@@ -454,7 +461,7 @@ func searchTexts(p *Panel) []string {
 func TestPanelSearch(t *testing.T) {
 	be := &fakeBackend{}
 	p := newTestPanel(t, be, nil)
-	key(p, "/")
+	key(p, "2", "/")
 	// tables (and views) only by default
 	got := strings.Join(searchTexts(p), ",")
 	if got != "audit.log,customer,order_line,orders,region,v_orders" {

@@ -26,7 +26,11 @@ func TestPanelCollapseAll(t *testing.T) {
 	if len(p.rows()) < 3 {
 		t.Fatalf("statement open: %v", labels(p.rows()))
 	}
-	key(p, "H")
+	key(p, "H") // one level: the open Relations
+	if got := strings.Join(labels(p.rows()), ","); !strings.HasPrefix(got, "orders o,Relations,Used by views") {
+		t.Fatalf("one level: %s", got)
+	}
+	key(p, "H") // the tables
 	if got := strings.Join(labels(p.rows()), ","); got != "orders o" {
 		t.Fatalf("collapsed: %s", got)
 	}
@@ -41,6 +45,10 @@ func TestPanelCollapseAll(t *testing.T) {
 	view := plain(p.View())
 	if !strings.Contains(view, "→ customer  o.customer_id") || strings.Count(view, "Relations  2") != 2 {
 		t.Fatalf("expand all:\n%s", view)
+	}
+	key(p, "L") // the next level: the tables' groups
+	if view := plain(p.View()); !strings.Contains(view, "orders_customer_idx") || strings.Contains(view, "→ region") {
+		t.Errorf("second L:\n%s", view)
 	}
 	// Objects: down to the groups; no expand all there
 	key(p, "2")

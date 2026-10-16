@@ -84,8 +84,10 @@ func standaloneConnections(c *cli.Context) ([]control.Connection, error) {
 	cur, _, _ := chooseConnection(cfg, workspaceRoot(startDir(c)), "")
 	var out []control.Connection
 	for i, cn := range cfg.Connections {
+		db, schema := cn.Target()
 		out = append(out, control.Connection{Index: i + 1, Alias: cn.Alias, Driver: string(cn.Driver),
-			Desc: database.DescribeConnection(cn), Current: i == cur})
+			Desc: database.DescribeConnection(cn), Current: i == cur, Environment: cn.Env(),
+			Group: strings.TrimSpace(cn.Group), Database: db, Schema: schema})
 	}
 	return out, nil
 }
