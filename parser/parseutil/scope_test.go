@@ -26,7 +26,9 @@ func renderCols(cols []*SubQueryColumn) string {
 	var parts []string
 	for _, c := range cols {
 		s := c.DisplayName()
-		if c.ParentTable != nil {
+		if c.NameOnly {
+			s += "~" + c.ParentTable.Name // names only
+		} else if c.ParentTable != nil {
 			if c.ColumnName == "*" {
 				s += "<-" + c.ParentTable.Name
 			} else {
@@ -119,6 +121,66 @@ func TestScope(t *testing.T) {
 			name:  "inner FROM does not leak out",
 			input: "select | from (select id from a) x where exists (select 1 from c)",
 			rels:  "x(sub)[id<-a.id]",
+		},
+		{
+			name:  "derived UNION: origin only where every branch agrees",
+			input: "select | from (select a.id, a.name, 1 as n from a union all select a.id, b.name, 2 from a join b on true) u",
+			rels:  "u(sub)[id<-a.id,name,n]",
+		},
+		{
+			name:  "derived UNION: matched by position, not by name",
+			input: "select | from (select id, code from a union select code, id from a) u",
+			rels:  "u(sub)[id,code]",
+		},
+		{
+			name:  "derived UNION: an unnamed expression keeps its position",
+			input: "select | from (select a.x as c1, a.y as c2 from a union select upper(z), a.x from a) u",
+			rels:  "u(sub)[c1,c2]",
+		},
+		{
+			name:  "derived UNION: stars of the same table line up",
+			input: "select | from (select *, a.id from a where k = 1 union select *, a.id from a where k = 2) u",
+			rels:  "u(sub)[*<-a,id<-a.id]",
+		},
+		{
+			name:  "derived UNION: stars of different tables give names only, later positions unknown",
+			input: "select | from (select *, a.id from a union select *, b.id from b) u",
+			rels:  "u(sub)[*~a,id]",
+		},
+		{
+			name:  "derived EXCEPT/MINUS: the subtracted branch adds no rows",
+			input: "select | from (select id from a except select id from b) u join (select id from a minus select id from b) v on true",
+			rels:  "u(sub)[id<-a.id] v(sub)[id<-a.id]",
+		},
+		{
+			name:  "derived INTERSECT: every branch must agree",
+			input: "select | from (select id from a intersect select id from b) u",
+			rels:  "u(sub)[id]",
+		},
+		{
+			name:  "parenthesised branches",
+			input: "select | from ((select id from a) union (select id from a where k = 1)) u",
+			rels:  "u(sub)[id<-a.id]",
+		},
+		{
+			name:  "CTE with UNION",
+			input: "with x as (select id from a union select id from b) select x.| from x",
+			rels:  "x(cte)[id]",
+		},
+		{
+			name:  "CTE column list: positions, unnamed expressions included",
+			input: "with x (c1, c2) as (select upper(n), t.id from t) select x.| from x",
+			rels:  "x(cte)[c1,c2<-t.id]",
+		},
+		{
+			name:  "CTE column list: positions unknown after a star",
+			input: "with x (c1, c2, c3) as (select a.id, *, a.id from a join b on true) select x.| from x",
+			rels:  "x(cte)[c1<-a.id,c2,c3]",
+		},
+		{
+			name:   "cursor in a MINUS branch sees its own tables",
+			input:  "select id from a minus select | from b",
+			tables: "b",
 		},
 		{
 			name:   "cursor inside a subquery sees its tables and the outer ones",

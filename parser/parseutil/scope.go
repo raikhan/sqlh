@@ -162,7 +162,37 @@ var setOperators = map[string]bool{
 	"UNION": true, "INTERSECT": true, "EXCEPT": true, "MINUS": true,
 }
 
-// isSubQueryList: a parenthesised query, (SELECT …) or (WITH … SELECT …).
+// setOperatorAt returns the set operator at nodes[i] ("" if none). Oracle's
+// MINUS is not a keyword for the lexer: an identifier MINUS counts when a
+// query follows it.
+func setOperatorAt(nodes []ast.Node, i int) string {
+	if kw := keywordOf(nodes[i]); setOperators[kw] {
+		return kw
+	}
+	if _, ok := nodes[i].(*ast.Identifier); ok && isWord(nodes[i], "MINUS") {
+		if _, next := nextNonWS(nodes, i); next != nil && (isKeyword(next, "SELECT", "ALL", "DISTINCT") || isSubQueryList(next)) {
+			return "MINUS"
+		}
+	}
+	return ""
+}
+
+// splitBranches splits nodes at set operators: ops[i] joins branches[i] and
+// branches[i+1].
+func splitBranches(nodes []ast.Node) (branches [][]ast.Node, ops []string) {
+	start := 0
+	for i := range nodes {
+		if op := setOperatorAt(nodes, i); op != "" {
+			branches = append(branches, nodes[start:i])
+			ops = append(ops, op)
+			start = i + 1
+		}
+	}
+	return append(branches, nodes[start:]), ops
+}
+
+// isSubQueryList: a parenthesised query, (SELECT …), (WITH … SELECT …) or
+// ((SELECT …) UNION …).
 func isSubQueryList(n ast.Node) bool {
 	p, ok := n.(*ast.Parenthesis)
 	if !ok {
@@ -172,7 +202,7 @@ func isSubQueryList(n ast.Node) bool {
 		if isWhitespaceNode(t) {
 			continue
 		}
-		return isKeyword(t, "SELECT", "WITH")
+		return isKeyword(t, "SELECT", "WITH") || isSubQueryList(t)
 	}
 	return false
 }
@@ -340,15 +370,7 @@ func queryLevels(stmt ast.TokenList, pos token.Pos) []ast.TokenList {
 // nodes that contains pos; the last branch when pos is after all of them and
 // the first one when it is not inside nodes at all.
 func branch(nodes []ast.Node, pos *token.Pos) []ast.Node {
-	var branches [][]ast.Node
-	start := 0
-	for i, n := range nodes {
-		if setOperators[keywordOf(n)] {
-			branches = append(branches, nodes[start:i])
-			start = i + 1
-		}
-	}
-	branches = append(branches, nodes[start:])
+	branches, _ := splitBranches(nodes)
 	if len(branches) == 1 || pos == nil {
 		return branches[0]
 	}
@@ -371,36 +393,47 @@ func branch(nodes []ast.Node, pos *token.Pos) []ast.Node {
 // buildScope builds the scope of the query list (statement or subquery body)
 // for the branch containing pos (nil: first branch).
 func buildScope(list ast.TokenList, parent *queryScope, pos *token.Pos) *queryScope {
-	sc := &queryScope{parent: parent}
-	if parent != nil {
-		sc.depth = parent.depth + 1
-	}
-	nodes := innerNodes(list)
-	defs, start := parseWith(nodes)
-	sc.ctes = defs
+	sc, rest := newScope(list, parent)
 	if sc.depth > maxResolveDepth {
 		return sc
 	}
 	if pos != nil {
-		for _, d := range defs {
+		for _, d := range sc.ctes {
 			if d.body != nil && token.ComparePos(*pos, d.body.Pos()) > 0 && token.ComparePos(*pos, d.body.End()) < 0 {
 				// pos is in a CTE body: the main query is not an enclosing query of it
 				return sc
 			}
 		}
 	}
-	b := branch(nodes[start:], pos)
-	sc.collect(b)
-	if !sc.sawTableKeyword {
+	sc.collectBranch(branch(rest, pos))
+	return sc
+}
+
+// newScope starts the scope of a query list with its WITH clause; rest is the
+// query after it.
+func newScope(list ast.TokenList, parent *queryScope) (sc *queryScope, rest []ast.Node) {
+	sc = &queryScope{parent: parent}
+	if parent != nil {
+		sc.depth = parent.depth + 1
+	}
+	nodes := innerNodes(list)
+	defs, start := parseWith(nodes)
+	sc.ctes = defs
+	return sc, nodes[start:]
+}
+
+// collectBranch gathers the relations of one SELECT branch.
+func (s *queryScope) collectBranch(b []ast.Node) {
+	s.collect(b)
+	if !s.sawTableKeyword {
 		// The FROM keyword may be swallowed by an unterminated quote while
 		// typing (SELECT ` FROM (…) t): take top-level aliased subqueries.
 		for _, n := range b {
 			if a, ok := n.(*ast.Aliased); ok && isSubQueryList(a.RealName) {
-				sc.addRef(a, false)
+				s.addRef(a, false)
 			}
 		}
 	}
-	return sc
 }
 
 // collect gathers the table references of nodes (recursing into everything but
@@ -550,23 +583,33 @@ func (d *cteDef) columns(from *queryScope) []*SubQueryColumn {
 		return namedColumns(d.colNames)
 	}
 	d.resolving = true
-	cols := selectColumns(d.body, from.definingScope(d))
+	items := selectItems(d.body, from.definingScope(d))
 	d.resolving = false
+	var cols []*SubQueryColumn
 	if d.colNames != nil {
-		renamed := make([]*SubQueryColumn, len(d.colNames))
+		// matched by position, as long as no star makes the positions unknown
+		cols = make([]*SubQueryColumn, len(d.colNames))
+		aligned := true
 		for i, name := range d.colNames {
 			c := &SubQueryColumn{ColumnName: name}
-			if i < len(cols) && cols[i].ColumnName != "*" {
-				cp := *cols[i]
-				cp.AliasName = name
-				if cp.ColumnName == "" {
-					cp.ColumnName = name
+			if aligned && i < len(items) {
+				if items[i].star {
+					aligned = false
+				} else if len(items[i].cols) == 1 {
+					cp := *items[i].cols[0]
+					cp.AliasName = name
+					if cp.ColumnName == "" {
+						cp.ColumnName = name
+					}
+					c = &cp
 				}
-				c = &cp
 			}
-			renamed[i] = c
+			cols[i] = c
 		}
-		cols = renamed
+	} else {
+		for _, it := range items {
+			cols = append(cols, it.cols...)
+		}
 	}
 	d.cols, d.resolved = cols, true
 	return cols
@@ -595,21 +638,77 @@ func namedColumns(names []string) []*SubQueryColumn {
 
 // ---- select list ----------------------------------------------------------------
 
-// selectColumns returns the output columns of a query body (its first SELECT
-// branch). Columns whose name can't be known (unaliased expressions) are left
-// out; star columns of database tables are kept as "*" with their table, to be
-// expanded against the schema cache.
+// selectColumns returns the output columns of a query body. Columns whose
+// name can't be known (unaliased expressions) are left out; star columns of
+// database tables are kept as "*" with their table, to be expanded against the
+// schema cache.
 func selectColumns(body ast.TokenList, outer *queryScope) []*SubQueryColumn {
+	var cols []*SubQueryColumn
+	for _, it := range selectItems(body, outer) {
+		cols = append(cols, it.cols...)
+	}
+	return cols
+}
+
+// selectItem is one item of a select list.
+type selectItem struct {
+	// cols: the output columns; none for an expression without a name, one
+	// "*" per table for a star of database tables, the columns of derived
+	// tables/CTEs for a star over them.
+	cols []*SubQueryColumn
+	star bool
+}
+
+// tableStar: a star over one database table, whose width the cache knows.
+func (it selectItem) tableStar() bool {
+	return it.star && len(it.cols) == 1 && it.cols[0].ColumnName == "*" && it.cols[0].ParentTable != nil
+}
+
+// selectItems returns the select list of a query body. With set operators
+// (UNION, …) the names are those of the first branch and the columns are
+// matched by position: a column keeps its origin only when every branch that
+// adds rows takes it from the same table column.
+func selectItems(body ast.TokenList, outer *queryScope) []selectItem {
 	if outer != nil && outer.depth >= maxResolveDepth {
 		return nil
 	}
-	sc := buildScope(body, outer, nil)
 	nodes := innerNodes(body)
 	_, start := parseWith(nodes)
-	nodes = branch(nodes[start:], nil)
+	branches, ops := splitBranches(nodes[start:])
+	first := branchItems(body, outer, branches[0])
+	if len(branches) == 1 {
+		return first
+	}
+	var others [][]selectItem
+	for i, b := range branches[1:] {
+		if ops[i] == "EXCEPT" || ops[i] == "MINUS" {
+			continue // removes rows, adds none
+		}
+		others = append(others, branchItems(body, outer, b))
+	}
+	return mergeBranches(first, others)
+}
+
+// branchItems returns the select list of one branch of body.
+func branchItems(body ast.TokenList, outer *queryScope, nodes []ast.Node) []selectItem {
+	sc, _ := newScope(body, outer)
+	i, n := nextNonWS(nodes, -1)
+	if n != nil && isKeyword(n, "ALL", "DISTINCT") { // UNION ALL, UNION DISTINCT
+		i, n = nextNonWS(nodes, i)
+	}
+	if n != nil && isSubQueryList(n) { // (SELECT …) UNION (SELECT …)
+		if sc.depth > maxResolveDepth {
+			return nil
+		}
+		return selectItems(n.(*ast.Parenthesis), sc)
+	}
+	nodes = nodes[i:]
+	if sc.depth <= maxResolveDepth {
+		sc.collectBranch(nodes)
+	}
 
 	// SELECT [DISTINCT | ALL | UNIQUE | DISTINCTROW] [ON (…)] [TOP n] list
-	i, n := nextNonWS(nodes, -1)
+	i, n = nextNonWS(nodes, -1)
 	if n == nil || !isKeyword(n, "SELECT") {
 		return nil
 	}
@@ -631,17 +730,92 @@ func selectColumns(body ast.TokenList, outer *queryScope) []*SubQueryColumn {
 		return nil
 	}
 
-	var items []ast.Node
+	var list []ast.Node
 	if il, ok := n.(*ast.IdentifierList); ok {
-		items = il.GetIdentifiers()
+		list = il.GetIdentifiers()
 	} else {
-		items = []ast.Node{n}
+		list = []ast.Node{n}
 	}
-	var cols []*SubQueryColumn
-	for _, item := range items {
-		cols = append(cols, sc.itemColumns(item)...)
+	items := make([]selectItem, 0, len(list))
+	for _, item := range list {
+		items = append(items, selectItem{cols: sc.itemColumns(item), star: isStarItem(item)})
 	}
-	return cols
+	return items
+}
+
+func isStarItem(item ast.Node) bool {
+	switch v := item.(type) {
+	case *ast.Identifier:
+		return v.NoQuoteString() == "*"
+	case *ast.MemberIdentifier:
+		return v.Child != nil && v.GetChildIdent().NoQuoteString() == "*"
+	}
+	return false
+}
+
+// mergeBranches matches the other branches' items to the first branch's by
+// position. Once a star doesn't line up with the same star, the positions of
+// the items after it are unknown.
+func mergeBranches(first []selectItem, others [][]selectItem) []selectItem {
+	out := make([]selectItem, len(first))
+	aligned := true
+	for k, it := range first {
+		same := aligned
+		for _, o := range others {
+			if k >= len(o) {
+				same, aligned = false, false
+				continue
+			}
+			if !sameItem(it, o[k]) {
+				same = false
+				if it.star || o[k].star {
+					aligned = false
+				}
+			}
+		}
+		if !same {
+			it = selectItem{cols: withoutOrigin(it.cols), star: it.star}
+			if it.star {
+				aligned = false
+			}
+		}
+		out[k] = it
+	}
+	return out
+}
+
+// sameItem: both items take their values from the same table column (or are
+// stars of the same table).
+func sameItem(a, b selectItem) bool {
+	if a.star || b.star {
+		return a.tableStar() && b.tableStar() && !a.cols[0].NameOnly && !b.cols[0].NameOnly &&
+			sameTable(a.cols[0].ParentTable, b.cols[0].ParentTable)
+	}
+	if len(a.cols) != 1 || len(b.cols) != 1 {
+		return false
+	}
+	x, y := a.cols[0], b.cols[0]
+	return x.ParentTable != nil && y.ParentTable != nil && !x.NameOnly && !y.NameOnly &&
+		sameTable(x.ParentTable, y.ParentTable) && strings.EqualFold(x.ColumnName, y.ColumnName)
+}
+
+func sameTable(a, b *TableInfo) bool {
+	return strings.EqualFold(a.Name, b.Name) && strings.EqualFold(a.DatabaseSchema, b.DatabaseSchema)
+}
+
+// withoutOrigin keeps the names of cols, not where they come from.
+func withoutOrigin(cols []*SubQueryColumn) []*SubQueryColumn {
+	out := make([]*SubQueryColumn, len(cols))
+	for i, c := range cols {
+		if c.ColumnName == "*" {
+			cp := *c
+			cp.NameOnly = true
+			out[i] = &cp
+			continue
+		}
+		out[i] = &SubQueryColumn{ParentName: c.ParentName, ColumnName: c.DisplayName()}
+	}
+	return out
 }
 
 func (s *queryScope) itemColumns(item ast.Node) []*SubQueryColumn {

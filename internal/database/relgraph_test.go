@@ -34,7 +34,8 @@ func testGraph(views []*ViewDef) *RelGraph {
 			tcol("v_orders", "region_id", "integer", "YES", "NO"), tcol("v_orders", "total", "numeric", "YES", "NO")},
 		"v_big": {tcol("v_big", "order_id", "integer", "YES", "NO"), tcol("v_big", "customer_id", "integer", "YES", "NO"),
 			tcol("v_big", "region_id", "integer", "YES", "NO"), tcol("v_big", "total", "numeric", "YES", "NO")},
-		"v_union": {tcol("v_union", "id", "integer", "YES", "NO"), tcol("v_union", "customer_id", "integer", "YES", "NO")},
+		"v_union":  {tcol("v_union", "id", "integer", "YES", "NO"), tcol("v_union", "customer_id", "integer", "YES", "NO")},
+		"v_dunion": {tcol("v_dunion", "oid", "integer", "YES", "NO"), tcol("v_dunion", "cid", "integer", "YES", "NO")},
 	}
 	var tables []string
 	for t := range cols {
@@ -65,6 +66,8 @@ var testViews = []*ViewDef{
      JOIN customer c ON ((c.id = o.customer_id)));`},
 	{Name: "v_big", Query: "select * from v_orders where total > 100"}, // dependencies from the query
 	{Name: "v_union", Query: "select id, customer_id from orders union all select id, region_id from customer"},
+	// UNION in a derived table: the first branch's columns are not the origin
+	{Name: "v_dunion", Query: "select u.id as oid, u.customer_id as cid from (select id, customer_id from orders union all select id, region_id from customer) u"},
 }
 
 // render lists the edges of a relation: "→ other kind cols [notes]".
@@ -143,11 +146,13 @@ func TestRelGraphViews(t *testing.T) {
 		"◇ v_orders uses")
 	// UNION: no lineage and no guesses
 	check(t, g, "v_union", "◇ customer uses", "◇ orders uses")
+	check(t, g, "v_dunion", "◇ customer uses", "◇ orders uses")
 	// view edges are listed for the view only; the table lists the views reading it
 	check(t, g, "orders",
 		"→ customer fk customer_id=id",
 		"← order_line fk id=order_id",
 		"→ employee maybe employee_id=employee_id [maybe, nullable]",
+		"◇ v_dunion uses",
 		"◇ v_orders uses",
 		"◇ v_union uses")
 	if cols := g.JoinVia("orders", "v_orders"); len(cols) != 1 || cols[0] != (ColPair{From: "id", To: "order_id"}) {

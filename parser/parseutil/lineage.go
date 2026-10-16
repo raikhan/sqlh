@@ -8,9 +8,11 @@ import (
 
 // QueryLineage describes the output of a query, e.g. a view's SELECT.
 type QueryLineage struct {
-	// Columns of the (first) SELECT branch. ParentTable is set for plain column
-	// references to a database table ("*" columns included, to be expanded
-	// against the schema); expressions have only a name.
+	// Columns of the query (names of the first SELECT branch). ParentTable is
+	// set for plain column references to a database table ("*" columns
+	// included, to be expanded against the schema; NameOnly: only for the
+	// names); expressions have only a name. With set operators a column has an
+	// origin only when every branch adding rows takes it from the same column.
 	Columns []*SubQueryColumn
 	// Compound: the query has set operators (UNION, …), so its rows may also
 	// come from other tables than the first branch's.
@@ -35,10 +37,8 @@ func ExtractQueryLineage(parsed ast.TokenList) *QueryLineage {
 	res := &QueryLineage{Columns: selectColumns(stmt, nil)}
 	nodes := innerNodes(stmt)
 	_, start := parseWith(nodes)
-	for _, n := range nodes[start:] {
-		if setOperators[keywordOf(n)] {
-			res.Compound = true
-		}
+	if _, ops := splitBranches(nodes[start:]); len(ops) > 0 {
+		res.Compound = true
 	}
 	ctes := map[string]bool{}
 	collectCTENames(stmt, ctes)

@@ -511,6 +511,10 @@ func parseAliasedWithoutAs(reader *astutil.NodeReader) ast.Node {
 	startIndex := reader.Index - 1
 	realName := reader.CurNode
 	endIndex, aliasedName := reader.PeekNode(true)
+	if strings.EqualFold(aliasedName.String(), "MINUS") {
+		// Oracle's set operator (not a keyword for the lexer): a MINUS b
+		return reader.CurNode
+	}
 	reader.NextNode(true)
 
 	return &ast.Aliased{

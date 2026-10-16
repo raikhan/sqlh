@@ -767,6 +767,10 @@ func (b *graphBuilder) analyseView(v *ViewDef) (vi *viewInfo) {
 		}
 		if c.ColumnName == "*" {
 			for _, tc := range b.cols(table) {
+				if c.NameOnly { // a UNION branch's star: the names, not the values
+					set(tc.Name, nil)
+					continue
+				}
 				set(tc.Name, &baseCol{table: table, col: tc.Name, inst: inst})
 			}
 			continue

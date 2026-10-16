@@ -37,6 +37,10 @@ func RelationColumns(info *parseutil.SubQueryInfo, dbCache *DBCache) []*Relation
 				}
 				tableCols, _ := tableColumns(dbCache, sc.ParentTable)
 				for _, tc := range tableCols {
+					if sc.NameOnly { // a UNION branch's star: the names, not the values
+						add(&RelationColumn{Name: tc.Name})
+						continue
+					}
 					add(&RelationColumn{Name: tc.Name, OriginTable: sc.ParentTable.Name, Origin: tc})
 				}
 				continue

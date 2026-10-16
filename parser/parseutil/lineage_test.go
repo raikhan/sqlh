@@ -42,9 +42,29 @@ func TestExtractQueryLineage(t *testing.T) {
 		{
 			name:     "union: compound, tables of every branch",
 			query:    "select id from a union all select id from b",
+			cols:     "id",
+			tables:   "a, b",
+			compound: true,
+		},
+		{
+			name:     "union of the same table column keeps the origin",
+			query:    "select id, name from a where k = 1 union all select id, upper(name) from a where k = 2",
+			cols:     "id<-a.id,name",
+			tables:   "a",
+			compound: true,
+		},
+		{
+			name:     "Oracle MINUS",
+			query:    "select id from a minus select id from b",
 			cols:     "id<-a.id",
 			tables:   "a, b",
 			compound: true,
+		},
+		{
+			name:   "UNION in a derived table",
+			query:  "select u.id from (select id from a union all select id from b) u",
+			cols:   "id",
+			tables: "a, b",
 		},
 		{
 			name:   "CTEs and subqueries: base tables only",

@@ -56,6 +56,10 @@ type SubQueryColumn struct {
 	ParentName  string
 	ColumnName  string
 	AliasName   string
+	// NameOnly: a "*" of the first branch of a set operation (UNION, …) whose
+	// other branches don't take the same columns: ParentTable gives the names,
+	// not where the values come from.
+	NameOnly bool
 }
 
 func (sc *SubQueryColumn) DisplayName() string {
