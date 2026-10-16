@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/raikhan/sqlh/internal/config"
@@ -1248,5 +1249,41 @@ func testCompletionItem(t *testing.T, expectLabels []string, badLabels []string,
 		if ok {
 			t.Errorf("should not be included in the results, got candidate %q", el)
 		}
+	}
+}
+
+// Keywords inside parentheses: a subquery is completed like a statement of
+// its own (it used to be taken for the clause around it, or for an INSERT
+// column list: names only).
+func TestCompleteKeywordsInParentheses(t *testing.T) {
+	tx := newTestContext()
+	tx.initServer(t)
+	defer tx.tearDown()
+	tx.addWorkspaceConfig(t, &config.Config{Connections: []*database.DBConfig{{Driver: "mock"}}})
+	cases := []struct {
+		in        string
+		want, bad []string
+	}{
+		{"SELECT * FROM (sel|", []string{"SELECT"}, nil},
+		{"SELECT * FROM (|", []string{"SELECT", "WITH", "city"}, nil},
+		{"SELECT * FROM (SELECT ID FROM city c uni|", []string{"UNION"}, nil},
+		{"SELECT * FROM (SELECT ID FROM city c wh|) x", []string{"WHERE"}, nil},
+		{"SELECT * FROM (SELECT ID FROM city wh|) x", []string{"WHERE"}, nil},
+		{"SELECT * FROM (SELECT ID FROM city c UNION ALL sel|", []string{"SELECT"}, nil},
+		{"SELECT * FROM (SELECT ID FROM city c UNION |", []string{"ALL", "SELECT"}, nil},
+		{"SELECT * FROM (SELECT ID fr|) x", []string{"FROM"}, nil},
+		{"SELECT * FROM (SELECT ID FROM |) x", []string{"city", "country"}, []string{"SELECT"}},
+		{"SELECT * FROM city WHERE ID IN (sel|", []string{"SELECT"}, nil},
+		{"SELECT * FROM city WHERE EXISTS (sel|", []string{"SELECT"}, nil},
+		{"WITH x AS (sel|", []string{"SELECT"}, nil},
+		{"SELECT * FROM city c WHERE (c.|", []string{"ID", "Name"}, []string{"SELECT"}},
+		{"SELECT 1 FROM city UNION ALL sel|", []string{"SELECT"}, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			i := strings.Index(c.in, "|")
+			got := tx.complete(t, c.in[:i]+c.in[i+1:], 0, i)
+			testCompletionItem(t, c.want, c.bad, got)
+		})
 	}
 }

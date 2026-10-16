@@ -222,6 +222,8 @@ func (c *Completer) Complete(text string, params lsp.CompletionParams, lowercase
 	if completionTypeIs(ctx.types, CompletionTypeKeyword) {
 		drivers := dialect.DataBaseKeywords(c.Driver)
 		items = append(items, c.keywordCandidates(lowercaseKeywords, drivers)...)
+	} else if len(ctx.keywords) > 0 {
+		items = append(items, c.keywordCandidates(lowercaseKeywords, ctx.keywords)...)
 	}
 	if completionTypeIs(ctx.types, CompletionTypeFunction) {
 		parenFollows := charAfterCursor(text, params.Position.Line, params.Position.Character) == '('
@@ -350,6 +352,9 @@ var noneParent = &completionParent{Type: ParentTypeNone}
 type CompletionContext struct {
 	types  []completionType
 	parent *completionParent
+	// keywords: a few keywords besides the types (SELECT, WITH where a
+	// subquery may start)
+	keywords []string
 }
 
 func getCompletionTypes(nw *parseutil.NodeWalker) *CompletionContext {
@@ -358,6 +363,14 @@ func getCompletionTypes(nw *parseutil.NodeWalker) *CompletionContext {
 	}
 
 	syntaxPos := parseutil.CheckSyntaxPosition(nw)
+	if parseutil.OnImplicitAlias(nw) {
+		// FROM t wh|: parsed as an alias, mostly the next keyword being typed
+		syntaxPos = parseutil.Unknown
+	}
+	var subqueryStart []string
+	if parseutil.AtParenStart(nw) && syntaxPos != parseutil.InsertColumn && syntaxPos != parseutil.InsertValue {
+		subqueryStart = []string{"SELECT", "WITH"} // FROM (|, IN (|, AS (|
+	}
 	var t []completionType
 	p := noneParent
 	switch {
@@ -510,10 +523,14 @@ func getCompletionTypes(nw *parseutil.NodeWalker) *CompletionContext {
 			}
 		}
 	}
-	return &CompletionContext{
+	ctx := &CompletionContext{
 		types:  t,
 		parent: p,
 	}
+	if !completionTypeIs(t, CompletionTypeKeyword) {
+		ctx.keywords = subqueryStart
+	}
+	return ctx
 }
 
 func filterCandidates(candidates []lsp.CompletionItem, lastWord string) []lsp.CompletionItem {
