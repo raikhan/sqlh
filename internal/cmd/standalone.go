@@ -17,6 +17,7 @@ import (
 	"github.com/raikhan/sqlh/internal/control"
 	"github.com/raikhan/sqlh/internal/database"
 	"github.com/raikhan/sqlh/internal/exec"
+	"github.com/raikhan/sqlh/internal/history"
 	"github.com/raikhan/sqlh/internal/report"
 	"github.com/raikhan/sqlh/internal/sqlsplit"
 	"github.com/raikhan/sqlh/internal/state"
@@ -244,6 +245,7 @@ func execStandalone(cfg *config.Config, ws, relTo string, conn *database.DBConfi
 			return exec.NewCSVFile(file), nil
 		}
 		out, err := exec.Run(ctx, session, st, newSink, exec.Options{Limit: limit, Values: values, Progress: progress})
+		recordStandalone(ws, p, conn, st, out, file, err, ctx.Err() != nil)
 		if err != nil {
 			if ctx.Err() != nil {
 				err = errors.New("cancelled")
@@ -275,6 +277,32 @@ func execStandalone(cfg *config.Config, ws, relTo string, conn *database.DBConfi
 		res.Summary = report.Summary(name, relTo, outcomes, files, elapsed, p.Out == "")
 	}
 	return res, nil
+}
+
+// recordStandalone adds a statement run to the workspace's history.
+func recordStandalone(ws string, p control.RunParams, conn *database.DBConfig, st sqlsplit.Statement, out exec.Outcome, file string, err error, cancelled bool) {
+	kind := "cli"
+	if p.Dump {
+		kind = "dump"
+	}
+	e := history.Entry{
+		Kind: kind, Line: st.Start.Line + 1, SQL: strings.TrimSpace(st.SQL), Conn: alias(conn), Database: conn.DBName,
+		Schema: conn.CurrentSchema(), Env: conn.Env(), ElapsedMS: out.Elapsed.Milliseconds(), Rows: out.Rows,
+		Affected: out.Affected, Truncated: out.Truncated, Status: "ok",
+	}
+	if p.SQL == "" {
+		e.File = p.File
+	}
+	if out.Kind == exec.KindResultSet {
+		e.Result = file
+	}
+	switch {
+	case cancelled:
+		e.Status, e.Result = "cancelled", ""
+	case err != nil:
+		e.Status, e.Error, e.Result = "error", strings.Join(strings.Fields(err.Error()), " "), ""
+	}
+	_, _ = history.Append(ws, e)
 }
 
 func kindName(k exec.Kind) string {

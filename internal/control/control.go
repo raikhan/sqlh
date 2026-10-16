@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/sourcegraph/jsonrpc2"
+
+	"github.com/raikhan/sqlh/internal/history"
 )
 
 const (
@@ -40,7 +42,224 @@ const (
 	MethodNotify    = "sqlh/notify"
 	MethodRelations = "sqlh/relations"
 	MethodContext   = "sqlh/context"
+	// MethodCatalog: the objects of the current connection for the panel's
+	// tree (CatalogResult).
+	MethodCatalog = "sqlh/catalog"
+	// MethodSubscribe keeps the connection as a subscriber: the server sends
+	// EventNotification messages on it (SubscribeParams; a panel registers
+	// the editor pane it belongs to).
+	MethodSubscribe = "sqlh/subscribe"
+	// MethodPanelFocus asks the panel of an editor pane to show a cursor and
+	// take the focus (PanelFocusParams → PanelFocusResult).
+	MethodPanelFocus = "sqlh/panelFocus"
+	// MethodPanelAction stores what to insert into an editor pane;
+	// MethodPanelTake hands it out once (`sqlh panel take`).
+	MethodPanelAction = "sqlh/panelAction"
+	MethodPanelTake   = "sqlh/panelTake"
+	// MethodRelease asks a headless server (`sqlh tui` without an editor) to
+	// give the socket to an editor's server starting for the workspace.
+	MethodRelease = "sqlh/release"
+	// MethodPanels lists the registered panels ([]PanelInfo).
+	MethodPanels = "sqlh/panels"
+	// MethodSample: a few rows of a table, or the most common values of a
+	// column (SampleParams → SampleResult), on a session of their own.
+	MethodSample = "sqlh/sample"
+	// MethodHistory: past runs, the versions of the statement at a cursor
+	// first (HistoryParams → HistoryResult).
+	MethodHistory = "sqlh/history"
+	// MethodReplaceStatement replaces the statement at a cursor in the
+	// editor's buffer (ReplaceParams; a workspace edit, one undo step).
+	MethodReplaceStatement = "sqlh/replaceStatement"
+
+	// EventNotification is the server → subscriber notification (Event).
+	EventNotification = "sqlh/event"
 )
+
+// Event kinds.
+const (
+	EventCache      = "cache"      // the schema cache changed (background load, refresh)
+	EventConnection = "connection" // connection, database or schema switched
+	EventCursor     = "cursor"     // the editor's cursor moved (an edit or a request)
+	EventFocus      = "focus"      // `sqlh panel` asked this panel to show a cursor and focus itself
+	EventRun        = "run"        // a query finished
+	EventHistory    = "history"    // a run was added to the history
+)
+
+// Event is a server notification to subscribers.
+type Event struct {
+	Kind       string  `json:"kind"`
+	Generation int64   `json:"generation"` // the catalog generation (changes with cache/connection)
+	Cursor     *Cursor `json:"cursor,omitempty"`
+	Message    string  `json:"message,omitempty"`
+}
+
+// Cursor is a position in a file: 1-based line and column.
+type Cursor struct {
+	File string `json:"file"`
+	Line int    `json:"line"`
+	Col  int    `json:"col"`
+}
+
+// SubscribeParams: who subscribes. Pane is the subscriber's Herdr pane,
+// EditorPane the editor pane it belongs to (panels).
+type SubscribeParams struct {
+	Pane       string `json:"pane,omitempty"`
+	EditorPane string `json:"editorPane,omitempty"`
+}
+
+// SubscribeResult: the current cursor, if known.
+type SubscribeResult struct {
+	Generation int64   `json:"generation"`
+	Cursor     *Cursor `json:"cursor,omitempty"`
+}
+
+// PanelInfo is a registered panel.
+type PanelInfo struct {
+	Pane       string `json:"pane"`
+	EditorPane string `json:"editorPane"`
+}
+
+type PanelFocusParams struct {
+	EditorPane string  `json:"editorPane"`
+	Cursor     *Cursor `json:"cursor,omitempty"`
+}
+
+type PanelFocusResult struct {
+	Found bool   `json:"found"`
+	Pane  string `json:"pane,omitempty"`
+}
+
+// JoinHop is one step of a path through relationships: Table joined to the
+// previous table (or the anchor) on Cols (previous table's column, Table's
+// column), as typed.
+type JoinHop struct {
+	Table string      `json:"table"`
+	Cols  [][2]string `json:"cols,omitempty"`
+}
+
+// Panel action kinds.
+const (
+	ActionTable   = "table"   // a table or view: name, or a join after JOIN
+	ActionColumns = "columns" // columns of a table, qualified by its reference in the statement
+	ActionText    = "text"    // literal text
+	ActionReplace = "replace" // replace the statement at the cursor with Text
+)
+
+// PanelAction is what the panel chose to insert; `sqlh panel take` turns it
+// into text at the editor's cursor.
+type PanelAction struct {
+	Kind  string `json:"kind"`
+	Table string `json:"table,omitempty"` // as typed
+	// Anchor and Path: Table was reached from Anchor through Path (its last
+	// hop is Table); after JOIN with Anchor in the statement the whole chain
+	// is inserted.
+	Anchor  string    `json:"anchor,omitempty"`
+	Path    []JoinHop `json:"path,omitempty"`
+	Columns []string  `json:"columns,omitempty"` // as typed
+	Text    string    `json:"text,omitempty"`
+	// Mode: "" (relations.insert), name or join.
+	Mode string `json:"mode,omitempty"`
+	// Copy: put the text on the clipboard instead of inserting it.
+	Copy bool `json:"copy,omitempty"`
+}
+
+type PanelActionParams struct {
+	EditorPane string      `json:"editorPane"`
+	Action     PanelAction `json:"action"`
+}
+
+type PanelTakeParams struct {
+	EditorPane string `json:"editorPane"`
+}
+
+// PanelTakeResult: the pending action, if any (Found false: none, or expired).
+type PanelTakeResult struct {
+	Found  bool        `json:"found"`
+	Action PanelAction `json:"action"`
+}
+
+// HistoryParams: with File and Line, the versions of the statement there
+// (and that file's other runs); without, the workspace's recent runs.
+type HistoryParams struct {
+	File  string `json:"file,omitempty"`
+	Line  int    `json:"line,omitempty"`
+	Col   int    `json:"col,omitempty"`
+	Limit int    `json:"limit,omitempty"` // recent runs (default 50)
+}
+
+// HistoryResult: Statement is the text at the cursor; Versions its earlier
+// runs (distinct SQL, newest first); Recent the workspace's latest runs.
+type HistoryResult struct {
+	Statement string          `json:"statement,omitempty"`
+	Versions  []history.Entry `json:"versions"`
+	Recent    []history.Entry `json:"recent"`
+}
+
+// ReplaceParams: the statement at File:Line:Col becomes Text.
+type ReplaceParams struct {
+	File string `json:"file"`
+	Line int    `json:"line"`
+	Col  int    `json:"col"`
+	Text string `json:"text"`
+}
+
+// SampleParams: rows of Table (as typed), or with Column the most common
+// values of that column.
+type SampleParams struct {
+	Table  string `json:"table"`
+	Column string `json:"column,omitempty"`
+	Limit  int    `json:"limit,omitempty"` // default 50 rows / 10 values
+}
+
+// SampleResult: the rows; nil cells are NULL. With Column the columns are
+// the value and its count.
+type SampleResult struct {
+	Table     string      `json:"table"`
+	Columns   []string    `json:"columns"`
+	Types     []string    `json:"types"`
+	Rows      [][]*string `json:"rows"`
+	Truncated bool        `json:"truncated"` // more rows than the limit
+	SQL       string      `json:"sql"`
+	ElapsedMS int64       `json:"elapsedMs"`
+}
+
+// CatalogObject is an object of a schema. Kind: table, view, materialized
+// view ("" for a table or view of another schema, where they aren't told
+// apart), sequence, type, index, constraint, trigger.
+type CatalogObject struct {
+	Kind   string `json:"kind"`
+	Name   string `json:"name"`
+	Insert string `json:"insert"`          // how to type it
+	Table  string `json:"table,omitempty"` // indexes, constraints, triggers: their table
+	Detail string `json:"detail,omitempty"`
+	// Columns: a table's or view's column count (0: not loaded yet)
+	Columns int `json:"columns,omitempty"`
+}
+
+// CatalogSchema is a schema and its objects.
+type CatalogSchema struct {
+	Name    string          `json:"name"`
+	Default bool            `json:"default"`
+	Objects []CatalogObject `json:"objects"`
+}
+
+// CatalogResult is the panel's tree: the current connection's schemas and
+// their objects.
+type CatalogResult struct {
+	Connection  string `json:"connection"`
+	Driver      string `json:"driver"`
+	Environment string `json:"environment"`
+	Database    string `json:"database,omitempty"`
+	Schema      string `json:"schema,omitempty"`
+	Generation  int64  `json:"generation"`
+	// SamplePolicy: auto, manual or off (the connection's sample setting).
+	SamplePolicy string `json:"samplePolicy"`
+	// ViewsLoaded / ObjectsLoaded: the background load is done (view
+	// kinds and lineage; indexes, sequences, …).
+	ViewsLoaded   bool            `json:"viewsLoaded"`
+	ObjectsLoaded bool            `json:"objectsLoaded"`
+	Schemas       []CatalogSchema `json:"schemas"`
+}
 
 // SchemaItem is a schema; Default marks the connection's current schema.
 type SchemaItem struct {
@@ -180,6 +399,8 @@ type Connection struct {
 	Driver  string `json:"driver"`
 	Desc    string `json:"desc"` // host/service/path, passwords masked
 	Current bool   `json:"current"`
+	// Environment: dev, test or prod.
+	Environment string `json:"environment,omitempty"`
 }
 
 // Status describes a server.
@@ -196,6 +417,18 @@ type Status struct {
 	ResultsDir string `json:"resultsDir"`
 	// Viewer: results.viewer, the command that opens result files.
 	Viewer []string `json:"viewer,omitempty"`
+	// Panel: the server's panel settings (defaults applied).
+	Panel *PanelSettings `json:"panel,omitempty"`
+}
+
+// PanelSettings are the panel's settings from the server's configuration.
+type PanelSettings struct {
+	Placement    string   `json:"placement"`
+	InsertKeys   []string `json:"insertKeys"`
+	BackToEditor string   `json:"backToEditor"`
+	Icons        string   `json:"icons"`
+	QueriesDir   string   `json:"queriesDir"` // resolved
+	Editor       []string `json:"editor"`     // tui.editor
 }
 
 type ConnectParams struct {
@@ -295,6 +528,9 @@ type Info struct {
 	Workspace string    `json:"workspace"`
 	PID       int       `json:"pid"`
 	Started   time.Time `json:"started"`
+	// Headless: started by `sqlh tui` without an editor; it gives way to an
+	// editor's server (MethodRelease).
+	Headless bool `json:"headless,omitempty"`
 }
 
 // ErrNoServer means no running server was found.
@@ -359,7 +595,13 @@ const maxSocketPath = 104
 // Listen creates the socket for a workspace. If a live server already owns
 // it, Listen returns an error (the first server wins); a stale socket left by
 // a crashed server is replaced.
-func Listen(workspace string) (net.Listener, error) {
+func Listen(workspace string) (net.Listener, error) { return listen(workspace, false) }
+
+// ListenHeadless is Listen for a headless server: it never takes the socket
+// from another server, and gives it to an editor's server on request.
+func ListenHeadless(workspace string) (net.Listener, error) { return listen(workspace, true) }
+
+func listen(workspace string, headless bool) (net.Listener, error) {
 	if err := os.MkdirAll(Dir(), 0o700); err != nil {
 		return nil, err
 	}
@@ -368,6 +610,9 @@ func Listen(workspace string) (net.Listener, error) {
 		return nil, fmt.Errorf("socket path too long (%d bytes, limit %d): set SQLH_RUNTIME_DIR to a shorter directory: %s", len(p), maxSocketPath-1, p)
 	}
 	if _, err := os.Stat(p); err == nil {
+		if alive(p) && !headless && isHeadless(workspace) {
+			release(p)
+		}
 		if alive(p) {
 			return nil, fmt.Errorf("another sqlh server already serves %s (%s)", workspace, p)
 		}
@@ -378,9 +623,29 @@ func Listen(workspace string) (net.Listener, error) {
 		return nil, err
 	}
 	_ = os.Chmod(p, 0o600)
-	info, _ := json.Marshal(Info{Workspace: workspace, PID: os.Getpid(), Started: time.Now()})
+	info, _ := json.Marshal(Info{Workspace: workspace, PID: os.Getpid(), Started: time.Now(), Headless: headless})
 	_ = os.WriteFile(InfoPath(workspace), info, 0o600)
 	return l, nil
+}
+
+func isHeadless(workspace string) bool {
+	var info Info
+	b, err := os.ReadFile(InfoPath(workspace))
+	return err == nil && json.Unmarshal(b, &info) == nil && info.Headless
+}
+
+// release asks the headless server on sock to stop serving it, and waits.
+func release(sock string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if cl, err := Dial(ctx, sock); err == nil {
+		var ok string
+		_ = cl.Call(ctx, MethodRelease, nil, &ok)
+		cl.Close()
+	}
+	for i := 0; i < 30 && alive(sock); i++ {
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // Cleanup removes a workspace's socket and sidecar.
@@ -417,6 +682,12 @@ type Client struct {
 }
 
 func Dial(ctx context.Context, sock string) (*Client, error) {
+	return DialEvents(ctx, sock, nil)
+}
+
+// DialEvents is Dial, passing the server's notifications (events after
+// MethodSubscribe) to onEvent, in order.
+func DialEvents(ctx context.Context, sock string, onEvent func(Event)) (*Client, error) {
 	var d net.Dialer
 	nc, err := d.DialContext(ctx, "unix", sock)
 	if err != nil {
@@ -424,11 +695,20 @@ func Dial(ctx context.Context, sock string) (*Client, error) {
 	}
 	conn := jsonrpc2.NewConn(context.Background(),
 		jsonrpc2.NewBufferedStream(nc, jsonrpc2.VSCodeObjectCodec{}),
-		jsonrpc2.HandlerWithError(func(context.Context, *jsonrpc2.Conn, *jsonrpc2.Request) (interface{}, error) {
+		jsonrpc2.HandlerWithError(func(_ context.Context, _ *jsonrpc2.Conn, req *jsonrpc2.Request) (interface{}, error) {
+			if onEvent != nil && req.Notif && req.Method == EventNotification && req.Params != nil {
+				var ev Event
+				if json.Unmarshal(*req.Params, &ev) == nil {
+					onEvent(ev)
+				}
+			}
 			return nil, nil
 		}))
 	return &Client{conn: conn}, nil
 }
+
+// Done is closed when the connection to the server is gone.
+func (c *Client) Done() <-chan struct{} { return c.conn.DisconnectNotify() }
 
 func (c *Client) Call(ctx context.Context, method string, params, result interface{}) error {
 	err := c.conn.Call(ctx, method, params, result)

@@ -121,7 +121,7 @@ func dumpFile(c *cli.Context, file, outDir, wd string, cfg **config.Config) (*co
 	if out == abs {
 		return nil, fmt.Errorf("the CSV would overwrite the query file")
 	}
-	p := control.RunParams{File: abs, Line: c.Int("line"), Col: c.Int("col"), All: true, Out: out}
+	p := control.RunParams{File: abs, Line: c.Int("line"), Col: c.Int("col"), All: true, Out: out, Dump: true}
 
 	if c.Bool("editor") {
 		if !c.IsSet("dir") {

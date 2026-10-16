@@ -16,6 +16,11 @@ func ReorderArgs(app *cli.App, args []string) []string {
 		return args
 	}
 	cmd := app.Command(args[i])
+	// a subcommand (sqlh panel run …) is reordered by its own flags
+	for i+1 < len(args) && cmd.Command(args[i+1]) != nil {
+		i++
+		cmd = cmd.Command(args[i])
+	}
 	var flags, pos []string
 	rest := args[i+1:]
 	for j := 0; j < len(rest); j++ {

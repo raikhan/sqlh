@@ -258,7 +258,7 @@ func (s *Server) openURI(path string) (string, bool) {
 		return "", false
 	}
 	for u := range s.files {
-		if uriToPath(u) == abs {
+		if samePath(uriToPath(u), abs) {
 			return u, true
 		}
 	}

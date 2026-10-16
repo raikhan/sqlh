@@ -39,6 +39,97 @@ type Config struct {
 	RefreshAfterDDL *bool `json:"refreshAfterDDL" yaml:"refreshAfterDDL"`
 	// Relations: the table picker and join completion.
 	Relations RelationsConfig `json:"relations" yaml:"relations"`
+	// Panel: the side panel next to the editor (`sqlh panel`, `sqlh tui`).
+	Panel PanelConfig `json:"panel" yaml:"panel"`
+	// TUI: the standalone app (`sqlh tui`).
+	TUI TUIConfig `json:"tui" yaml:"tui"`
+}
+
+// PanelConfig controls the side panel.
+type PanelConfig struct {
+	// Placement: where the panel goes next to the editor's pane: right (the
+	// default), left, up or down. It takes half of the pane.
+	Placement string `json:"placement" yaml:"placement"`
+	// InsertKeys: the keys sent to Helix to insert the chosen object: they
+	// must run `:insert-output sqlh panel take …` (see doc/cli.md).
+	// Herdr key names. Default: esc, space, i, P.
+	InsertKeys []string `json:"insertKeys" yaml:"insertKeys"`
+	// Keys: the panel's configurable keys.
+	Keys PanelKeys `json:"keys" yaml:"keys"`
+	// Icons: unicode (the default), nerd (Nerd Font) or ascii.
+	Icons string `json:"icons" yaml:"icons"`
+}
+
+// PanelKeys are configurable panel keys (Bubble Tea key names: backspace,
+// ctrl+o, …).
+type PanelKeys struct {
+	// BackToEditor focuses the panel's editor pane. Default: backspace.
+	BackToEditor string `json:"backToEditor" yaml:"backToEditor"`
+}
+
+// Placements of the panel.
+var placements = map[string]bool{"right": true, "left": true, "up": true, "down": true}
+
+// PlacementOrDefault is panel.placement, default right.
+func (p PanelConfig) PlacementOrDefault() string {
+	if v := strings.ToLower(strings.TrimSpace(p.Placement)); placements[v] {
+		return v
+	}
+	return "right"
+}
+
+// DefaultInsertKeys run the hidden Helix binding `space i P`.
+var DefaultInsertKeys = []string{"esc", "space", "i", "P"}
+
+// InsertKeysOrDefault is panel.insertKeys or the default.
+func (p PanelConfig) InsertKeysOrDefault() []string {
+	if len(p.InsertKeys) > 0 {
+		return p.InsertKeys
+	}
+	return DefaultInsertKeys
+}
+
+// BackToEditorKey is panel.keys.backToEditor, default backspace.
+func (p PanelConfig) BackToEditorKey() string {
+	if k := strings.TrimSpace(p.Keys.BackToEditor); k != "" {
+		return k
+	}
+	return "backspace"
+}
+
+// TUIConfig controls `sqlh tui`.
+type TUIConfig struct {
+	// QueriesDir: where new query files go: relative to the workspace root or
+	// absolute ("~" expanded). Default: queries.
+	QueriesDir string `json:"queriesDir" yaml:"queriesDir"`
+	// Editor: the editor `sqlh tui` opens query files in (the file is
+	// appended). Default: hx.
+	Editor []string `json:"editor" yaml:"editor"`
+}
+
+// EditorOrDefault is tui.editor, default hx.
+func (t TUIConfig) EditorOrDefault() []string {
+	if len(t.Editor) > 0 {
+		return t.Editor
+	}
+	return []string{"hx"}
+}
+
+// QueriesDirIn resolves tui.queriesDir for a workspace root.
+func (t TUIConfig) QueriesDirIn(workspace string) string {
+	d := strings.TrimSpace(t.QueriesDir)
+	if d == "" {
+		d = "queries"
+	}
+	if d == "~" || strings.HasPrefix(d, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			d = filepath.Join(home, d[1:])
+		}
+	}
+	if !filepath.IsAbs(d) {
+		d = filepath.Join(workspace, d)
+	}
+	return filepath.Clean(d)
 }
 
 // RelationsConfig controls how relationships between tables are used.
@@ -126,6 +217,14 @@ func (r ResultsConfig) Limit() int {
 }
 
 func (c *Config) Validate() error {
+	if p := strings.TrimSpace(c.Panel.Placement); p != "" && !placements[strings.ToLower(p)] {
+		return fmt.Errorf("panel.placement: %q is not right, left, up or down", p)
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Panel.Icons)) {
+	case "", "unicode", "nerd", "ascii":
+	default:
+		return fmt.Errorf("panel.icons: %q is not unicode, nerd or ascii", c.Panel.Icons)
+	}
 	if r := strings.TrimSpace(c.Results.ReuseFor); r != "" {
 		if d, err := parseDuration(r); err != nil || d < 0 {
 			return fmt.Errorf("results.reuseFor: %q is not a duration (e.g. 10m, 90s, 0)", r)

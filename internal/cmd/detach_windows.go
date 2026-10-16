@@ -15,3 +15,6 @@ const (
 func setDetached(cmd *exec.Cmd) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNewProcessGroup | detachedProcess}
 }
+
+// processAlive: unknown on Windows (Herdr doesn't run there).
+func processAlive(pid int) bool { return true }

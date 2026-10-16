@@ -21,6 +21,7 @@ import (
 	"github.com/urfave/cli/v2"
 
 	"github.com/raikhan/sqlh/internal/control"
+	"github.com/raikhan/sqlh/internal/tui"
 )
 
 // headerFileFlag: the editor buffer a switch comes from; the server updates
@@ -52,7 +53,7 @@ func Commands() []*cli.Command {
 			Usage:     "run SQL → CSV (first N rows); prints the CSV path(s)",
 			ArgsUsage: " ",
 			Flags: append([]cli.Flag{
-				&cli.StringFlag{Name: "limit", Aliases: []string{"n"}, Usage: "rows to fetch: a number (default: results.previewLimit, 100), `all` or ask (pick with fzf)"},
+				&cli.StringFlag{Name: "limit", Aliases: []string{"n"}, Usage: "rows to fetch: a number (default: results.previewLimit, 100), `all` or ask (pick)"},
 			}, runFlags...),
 			Action: editorAction(func(c *cli.Context) error { return runCmd(c, false) }),
 		},
@@ -66,7 +67,7 @@ func Commands() []*cli.Command {
 		dumpCommand(dirFlag),
 		{
 			Name:      "connect",
-			Usage:     "switch the editor's connection (no alias: pick with fzf)",
+			Usage:     "switch the editor's connection (no alias: pick)",
 			ArgsUsage: "[alias]",
 			Flags:     []cli.Flag{dirFlag, headerFileFlag, editorFlag("")},
 			Action:    editorAction(connectCmd),
@@ -120,6 +121,8 @@ func Commands() []*cli.Command {
 				&cli.StringFlag{Name: "conn", Usage: "standalone: connection `ALIAS` (for a results dir using {conn})"}},
 			Action: editorAction(openCmd),
 		},
+		panelCommand(),
+		tuiCommand(),
 	}, append(catalogCommands(), relationCommands()...)...)
 }
 
@@ -415,17 +418,22 @@ func connectCmd(c *cli.Context) error {
 	return nil
 }
 
-// pickConnection lets the user choose a connection with fzf.
+// pickConnection lets the user choose a connection.
 func pickConnection(conns []control.Connection) (string, error) {
-	lines := make([]string, len(conns))
+	its := make([]tui.PickItem, len(conns))
 	for i, cn := range conns {
 		mark := " "
 		if cn.Current {
 			mark = "*"
 		}
-		lines[i] = fmt.Sprintf("%s\t%s %-16s %-10s %s", cn.Alias, mark, cn.Alias, cn.Driver, cn.Desc)
+		env := ""
+		if cn.Environment != "" && cn.Environment != "dev" {
+			env = " [" + cn.Environment + "]"
+		}
+		its[i] = tui.PickItem{Value: cn.Alias, Match: cn.Alias,
+			Display: fmt.Sprintf("%s %-16s %-10s %s", mark, cn.Alias+env, cn.Driver, ansiDim+cn.Desc+ansiReset)}
 	}
-	vals, err := pick(lines, pickOpts{prompt: "connection"})
+	vals, err := pick(its, tui.PickOptions{Prompt: "connection"})
 	if err != nil || len(vals) == 0 {
 		return "", err
 	}
@@ -458,6 +466,9 @@ func statusCmd(c *cli.Context) error {
 	conn := "(none)"
 	if st.Connection != nil {
 		conn = fmt.Sprintf("%s (%s %s)", st.Connection.Alias, st.Connection.Driver, st.Connection.Desc)
+		if st.Connection.Environment != "" {
+			conn += " [" + st.Connection.Environment + "]"
+		}
 		if !st.Connected {
 			conn += " [not connected]"
 		}

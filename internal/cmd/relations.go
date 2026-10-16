@@ -13,17 +13,15 @@ package cmd
 //     an alias and its ON condition (relations.insert: name → the name only;
 //     Ctrl-T does the other). Ctrl-R lists the relationships of the highlighted
 //     table (drill down; accepting then inserts the whole join chain), Ctrl-O
-//     goes back. The drill-down state lives in a temp file that fzf's bindings
-//     update through the hidden `_nav` command.
+//     goes back. It runs in sqlh's inline picker (internal/tui).
 
 import (
 	"context"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -34,6 +32,7 @@ import (
 
 	"github.com/raikhan/sqlh/internal/catalog"
 	"github.com/raikhan/sqlh/internal/control"
+	"github.com/raikhan/sqlh/internal/tui"
 )
 
 func relationCommands() []*cli.Command {
@@ -65,15 +64,6 @@ func relationCommands() []*cli.Command {
 				&cli.BoolFlag{Name: "standalone", Usage: "do not use a running server"},
 			},
 			Action: ddlCmd,
-		},
-		{
-			// fzf bindings of the table picker (drill-down state)
-			Name:      "_nav",
-			Hidden:    true,
-			ArgsUsage: "lines|preview KEY|push KEY|pop",
-			Flags: append(catalogFlags(),
-				&cli.StringFlag{Name: "state", Required: true}),
-			Action: navCmd,
 		},
 	}
 }
@@ -266,8 +256,8 @@ func relationsCmd(c *cli.Context) error {
 
 // ---- the table picker ---------------------------------------------------------
 
-// navItem is a picker line's value (base64 JSON in fzf's first field): a table,
-// and how it joins the table it was listed for.
+// navItem is a picker entry: a table, and how it joins the table it was
+// listed for.
 type navItem struct {
 	Table  string      `json:"t"`           // as typed
 	Cols   [][2]string `json:"c,omitempty"` // (anchor's column, table's column)
@@ -280,24 +270,6 @@ type navItem struct {
 	Note   string `json:"n,omitempty"`
 }
 
-func (n navItem) key() string {
-	b, err := json.Marshal(n)
-	if err != nil {
-		return ""
-	}
-	return base64.RawURLEncoding.EncodeToString(b)
-}
-
-func parseNavItem(key string) (navItem, error) {
-	var n navItem
-	b, err := base64.RawURLEncoding.DecodeString(key)
-	if err != nil {
-		return n, err
-	}
-	err = json.Unmarshal(b, &n)
-	return n, err
-}
-
 // navState is the picker's state: the statement's context and the tables
 // drilled into.
 type navState struct {
@@ -308,23 +280,6 @@ type navState struct {
 	// (opened on a table name: inserting would split it)
 	Copy   bool   `json:"copy,omitempty"`
 	Schema string `json:"schema,omitempty"` // other tables: only this schema
-}
-
-func loadNavState(path string) (*navState, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var st navState
-	return &st, json.Unmarshal(b, &st)
-}
-
-func (st *navState) save(path string) error {
-	b, err := json.Marshal(st)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, b, 0o600)
 }
 
 // inJoin: accepting inserts a join (the cursor is after JOIN, with tables to
@@ -398,37 +353,36 @@ const (
 	ansiReset = "\x1b[0m"
 )
 
-// renderEntries makes fzf lines "key<TAB>table<TAB>display": the display is
-// the table's name, with the anchor's columns when the table is listed more
-// than once; the other tables are dimmed when related ones are listed.
-func renderEntries(entries []navEntry) []string {
+// pickItems makes picker lines: the table's name (what typing matches), with
+// the anchor's columns when the table is listed more than once; the other
+// tables are dimmed when related ones are listed. Values are indexes into
+// entries.
+func pickItems(entries []navEntry) []tui.PickItem {
 	count := map[string]int{}
 	anyRelated := false
 	for _, e := range entries {
 		count[e.item.Table]++
 		anyRelated = anyRelated || e.related
 	}
-	lines := make([]string, 0, len(entries))
-	for _, e := range entries {
+	items := make([]tui.PickItem, 0, len(entries))
+	for i, e := range entries {
 		display := e.item.Table
 		if count[e.item.Table] > 1 && e.related {
 			display += " " + ansiDim + "(" + e.detail + ")" + ansiReset
 		}
-		if anyRelated && !e.related {
-			display = ansiDim + display + ansiReset
-		}
-		lines = append(lines, e.item.key()+"\t"+e.item.Table+"\t"+display)
+		items = append(items, tui.PickItem{Value: strconv.Itoa(i), Display: display, Match: e.item.Table,
+			Dim: anyRelated && !e.related})
 	}
-	return lines
+	return items
 }
 
 // navLines lists the picker's lines for the state.
-func navLines(api catalogAPI, st *navState) ([]string, error) {
+func navLines(api catalogAPI, st *navState) ([]navEntry, []tui.PickItem, error) {
 	entries, err := navEntries(api, st)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return renderEntries(entries), nil
+	return entries, pickItems(entries), nil
 }
 
 func navEntries(api catalogAPI, st *navState) ([]navEntry, error) {
@@ -557,73 +511,7 @@ func previewText(api catalogAPI, item navItem) (string, error) {
 	return b.String(), nil
 }
 
-// navActions are fzf actions showing the state's level.
-func navActions(st *navState, self string) string {
-	clean := strings.NewReplacer("(", "", ")", "")
-	return "change-prompt(" + clean.Replace(st.prompt()) + "> )+clear-query+first+reload:" + self
-}
-
-func navCmd(c *cli.Context) error {
-	if c.Args().First() == "preview" { // stateless
-		item, err := parseNavItem(c.Args().Get(1))
-		if err != nil {
-			return nil
-		}
-		api, err := openCatalog(c)
-		if err != nil {
-			return err
-		}
-		defer api.close()
-		text, err := previewText(api, item)
-		if err != nil {
-			return err
-		}
-		fmt.Print(text)
-		return nil
-	}
-	path := c.String("state")
-	st, err := loadNavState(path)
-	if err != nil {
-		return err
-	}
-	selfLines := self() + " _nav lines --state " + shellQuote(path) + passThrough(c)
-	switch c.Args().First() {
-	case "lines":
-		api, err := openCatalog(c)
-		if err != nil {
-			return err
-		}
-		defer api.close()
-		lines, err := navLines(api, st)
-		if err != nil {
-			return err
-		}
-		for _, l := range lines {
-			fmt.Println(l)
-		}
-		return nil
-	case "push":
-		item, err := parseNavItem(c.Args().Get(1))
-		if err != nil {
-			return nil // e.g. an empty list
-		}
-		st.Path = append(st.Path, item)
-	case "pop":
-		if len(st.Path) == 0 {
-			return nil
-		}
-		st.Path = st.Path[:len(st.Path)-1]
-	default:
-		return fmt.Errorf("unknown _nav action %q", c.Args().First())
-	}
-	if err := st.save(path); err != nil {
-		return err
-	}
-	fmt.Print(navActions(st, selfLines))
-	return nil
-}
-
-// runTablePicker runs fzf for a state and prints the choice.
+// runTablePicker runs the picker for a state and prints the choice.
 func runTablePicker(c *cli.Context, api catalogAPI, st *navState) error {
 	if st.Ctx.Insert == "" {
 		st.Ctx.Insert = "join"
@@ -634,37 +522,67 @@ func runTablePicker(c *cli.Context, api catalogAPI, st *navState) error {
 		}
 		st.Ctx.Insert = v
 	}
-	lines, err := navLines(api, st)
+	entries, items, err := navLines(api, st)
 	if err != nil {
 		return err
 	}
-	dir, err := os.MkdirTemp("", "sqlh-pick-")
-	if err != nil {
-		return err
+	entryOf := func(it *tui.PickItem) (navItem, bool) {
+		if it == nil {
+			return navItem{}, false
+		}
+		i, err := strconv.Atoi(it.Value)
+		if err != nil || i < 0 || i >= len(entries) {
+			return navItem{}, false
+		}
+		return entries[i].item, true
 	}
-	defer os.RemoveAll(dir)
-	path := dir + "/state.json"
-	if err := st.save(path); err != nil {
-		return err
+	reload := func() (*tui.PickReload, error) {
+		es, its, err := navLines(api, st)
+		if err != nil {
+			return nil, err
+		}
+		entries = es
+		return &tui.PickReload{Items: its, Prompt: st.prompt(), Header: st.header()}, nil
 	}
-	nav := self() + " _nav --state " + shellQuote(path) + passThrough(c)
-	key, vals, err := pickKey(lines, pickOpts{
-		prompt:  st.prompt(),
-		header:  st.header(),
-		display: "3",
-		preview: nav + " preview {1}",
-		expect:  []string{"ctrl-t"},
-		binds: []string{
-			"ctrl-r:transform:" + nav + " push {1}",
-			"ctrl-o:transform:" + nav + " pop",
+	res, ok, err := tui.Pick(items, tui.PickOptions{
+		Prompt: st.prompt(),
+		Header: st.header(),
+		Preview: func(it tui.PickItem) string {
+			item, ok := entryOf(&it)
+			if !ok {
+				return ""
+			}
+			text, err := previewText(api, item)
+			if err != nil {
+				return err.Error()
+			}
+			return text
+		},
+		Expect: []string{"ctrl+t"},
+		Bind: map[string]func(*tui.PickItem) (*tui.PickReload, error){
+			"ctrl+r": func(it *tui.PickItem) (*tui.PickReload, error) {
+				item, ok := entryOf(it)
+				if !ok {
+					return nil, nil
+				}
+				st.Path = append(st.Path, item)
+				return reload()
+			},
+			"ctrl+o": func(*tui.PickItem) (*tui.PickReload, error) {
+				if len(st.Path) == 0 {
+					return nil, nil
+				}
+				st.Path = st.Path[:len(st.Path)-1]
+				return reload()
+			},
 		},
 	})
-	if err != nil || len(vals) == 0 {
+	if err != nil || !ok || len(res.Values) == 0 {
 		return err
 	}
-	item, err := parseNavItem(vals[0])
-	if err != nil {
-		return err
+	item, found := entryOf(&tui.PickItem{Value: res.Values[0]})
+	if !found {
+		return nil
 	}
 	if st.Copy {
 		if err := copyToClipboard(item.Table); err != nil {
@@ -673,11 +591,7 @@ func runTablePicker(c *cli.Context, api catalogAPI, st *navState) error {
 		api.notify("copied " + item.Table + " to the clipboard")
 		return nil
 	}
-	// the drill-down path as it was when accepting
-	if final, err := loadNavState(path); err == nil {
-		st.Path = final.Path
-	}
-	emit([]string{chooseInsert(st, item, key == "ctrl-t")}, "")
+	emit([]string{chooseInsert(st, item, res.Key == "ctrl+t")}, "")
 	return nil
 }
 

@@ -19,6 +19,8 @@ func TestReorderArgs(t *testing.T) {
 		{[]string{"sqlh", "run", "--sql=select 1", "--limit", "5"}, []string{"sqlh", "run", "--sql=select 1", "--limit", "5"}},
 		{[]string{"sqlh", "columns", "--", "-weird-name"}, []string{"sqlh", "columns", "--", "-weird-name"}},
 		{[]string{"sqlh"}, []string{"sqlh"}},
+		{[]string{"sqlh", "panel", "run", "-C", "/w", "--editor-pane", "w1:p1"}, []string{"sqlh", "panel", "run", "-C", "/w", "--editor-pane", "w1:p1"}},
+		{[]string{"sqlh", "panel", "take", "--editor", "-f", "q.sql"}, []string{"sqlh", "panel", "take", "--editor", "-f", "q.sql"}},
 	}
 	for _, c := range cases {
 		if got := ReorderArgs(app, c.in); !reflect.DeepEqual(got, c.want) {

@@ -47,6 +47,58 @@ type DBConfig struct {
 	// PostgreSQL first in search_path); default: the first of Schemas, else
 	// the login's own.
 	Schema string `json:"schema" yaml:"schema"`
+	// Environment labels the connection: dev, test or prod (default dev).
+	// The panel shows it; sample rows are automatic on dev/test and only on
+	// request on prod.
+	Environment string `json:"environment" yaml:"environment"`
+	// Sample: the panel's sample rows: auto, manual (on request) or off.
+	// Default: auto on dev/test, manual on prod.
+	Sample string `json:"sample" yaml:"sample"`
+}
+
+// Sample policies.
+const (
+	SampleAuto   = "auto"
+	SampleManual = "manual"
+	SampleOff    = "off"
+)
+
+// SamplePolicy is the connection's effective sample policy.
+func (c *DBConfig) SamplePolicy() string {
+	switch strings.ToLower(strings.TrimSpace(c.Sample)) {
+	case SampleAuto:
+		return SampleAuto
+	case SampleManual:
+		return SampleManual
+	case SampleOff:
+		return SampleOff
+	}
+	if c.Env() == EnvProd {
+		return SampleManual
+	}
+	return SampleAuto
+}
+
+// Environments are the values of connections[].environment.
+const (
+	EnvDev  = "dev"
+	EnvTest = "test"
+	EnvProd = "prod"
+)
+
+// envAliases maps accepted spellings to an environment.
+var envAliases = map[string]string{
+	"": EnvDev, "dev": EnvDev, "development": EnvDev,
+	"test": EnvTest, "staging": EnvTest, "stage": EnvTest,
+	"prod": EnvProd, "production": EnvProd,
+}
+
+// Env is the connection's environment: dev, test or prod.
+func (c *DBConfig) Env() string {
+	if e, ok := envAliases[strings.ToLower(strings.TrimSpace(c.Environment))]; ok {
+		return e
+	}
+	return EnvProd // unknown spellings are rejected by Validate; be careful anyway
 }
 
 // SupportsSchema reports whether the driver can switch the current schema.
@@ -156,6 +208,14 @@ func (c *DBConfig) ResolveSecrets() (*DBConfig, error) {
 func (c *DBConfig) Validate() error {
 	if c.Driver == "" {
 		return errors.New("required: connections[].driver")
+	}
+	if _, ok := envAliases[strings.ToLower(strings.TrimSpace(c.Environment))]; !ok {
+		return fmt.Errorf("connections[].environment: %q is not dev, test or prod", c.Environment)
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Sample)) {
+	case "", SampleAuto, SampleManual, SampleOff:
+	default:
+		return fmt.Errorf("connections[].sample: %q is not auto, manual or off", c.Sample)
 	}
 	if s := strings.TrimSpace(c.Schema); s != "" {
 		if !c.SupportsSchema() {

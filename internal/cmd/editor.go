@@ -46,7 +46,7 @@ func editorAction(fn cli.ActionFunc) cli.ActionFunc {
 			return fn(c)
 		}
 		// Summaries and confirmations go to stderr; the server shows its own
-		// in the editor. fzf draws on /dev/tty, not stderr.
+		// in the editor. The picker draws on /dev/tty, not stderr.
 		stderr := os.Stderr
 		if null, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0); err == nil {
 			os.Stderr = null

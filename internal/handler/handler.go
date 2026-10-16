@@ -15,6 +15,7 @@ import (
 	"github.com/sourcegraph/jsonrpc2"
 
 	"github.com/raikhan/sqlh/internal/config"
+	"github.com/raikhan/sqlh/internal/control"
 	"github.com/raikhan/sqlh/internal/database"
 	"github.com/raikhan/sqlh/internal/jsoncomplete"
 	"github.com/raikhan/sqlh/internal/lsp"
@@ -71,10 +72,17 @@ type Server struct {
 	editor *jsonrpc2.Conn
 	// control is the CLI socket listener (nil if not listening).
 	control net.Listener
+	// controlConns: the open control connections (closed with the listener)
+	controlConns sync.Map
 	// jsonKeys caches sampled JSON keys (cleared on switch/refresh).
 	jsonKeys jsoncomplete.Cache
 	// lint schedules diagnostics.
 	lint lintState
+	// panel: subscribers, panels and their pending actions (panel.go).
+	panel panelState
+	// headless: started by `sqlh tui` without an editor (RunHeadless); it
+	// gives the control socket to an editor's server.
+	headless bool
 }
 
 type File struct {
@@ -94,7 +102,10 @@ func NewServer() *Server {
 		worker:   worker,
 		jsonKeys: jsoncomplete.Cache{TTL: 10 * time.Minute},
 	}
-	worker.OnChange = s.relintAll
+	worker.OnChange = func() {
+		s.relintAll()
+		s.catalogChanged(control.EventCache)
+	}
 	return s
 }
 
@@ -141,6 +152,7 @@ func (s *Server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.
 			err = perr
 		}
 	}()
+	s.trackCursor(req)
 	if req.Method == "textDocument/definition" || req.Method == "textDocument/typeDefinition" {
 		// takes s.mu itself: may wait for the database without holding it
 		return s.handleDefinition(ctx, conn, req)
@@ -330,6 +342,11 @@ func (s *Server) handleTextDocumentDidChange(ctx context.Context, conn *jsonrpc2
 	if len(params.ContentChanges) == 0 {
 		return nil, nil
 	}
+	if f, ok := s.files[params.TextDocument.URI]; ok {
+		if line, char, ok := editPosition(f.Text, params.ContentChanges[0].Text); ok {
+			s.noteCursor(params.TextDocument.URI, line, char)
+		}
+	}
 	if err := s.updateFile(params.TextDocument.URI, params.ContentChanges[0].Text); err != nil {
 		return nil, err
 	}
@@ -475,6 +492,7 @@ func (s *Server) reconnectionDB(ctx context.Context) error {
 			log.Println("close previous connection:", err)
 		}
 	}
+	s.catalogChanged(control.EventConnection)
 	return nil
 }
 

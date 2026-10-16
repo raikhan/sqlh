@@ -18,6 +18,7 @@ import (
 	"github.com/raikhan/sqlh/internal/control"
 	"github.com/raikhan/sqlh/internal/database"
 	"github.com/raikhan/sqlh/internal/exec"
+	"github.com/raikhan/sqlh/internal/history"
 	"github.com/raikhan/sqlh/internal/lsp"
 	"github.com/raikhan/sqlh/internal/report"
 	"github.com/raikhan/sqlh/internal/sqlsplit"
@@ -295,7 +296,7 @@ func (s *Server) documentText(path string) (uri, text string, err error) {
 		return "", "", err
 	}
 	for u, f := range s.files {
-		if uriToPath(u) == abs {
+		if samePath(uriToPath(u), abs) {
 			return u, f.Text, nil
 		}
 	}
@@ -377,6 +378,8 @@ type runEnv struct {
 	executedPrefix string
 	// refresh reloads the schema cache (nil: refreshAfterDDL off)
 	refresh func(context.Context) error
+	// for the history: the file run from, the database/schema, environment
+	file, database, schema, env string
 }
 
 // startRun validates a request and starts it as a background job. Call with
@@ -419,6 +422,10 @@ func (s *Server) startRun(ctx context.Context, req runRequest) (*job, error) {
 		}
 	}
 	env.resultsDir = exec.ExpandDir(cfg.Dir, env.workspace, env.alias)
+	if req.sql == "" {
+		env.file = uriToPath(uri)
+	}
+	env.database, env.schema, env.env = s.curDBCfg.DBName, s.currentSchema(), s.curDBCfg.Env()
 	env.executedPrefix = env.alias + "\t" + env.db + "\t"
 	if s.getConfig().RefreshAfterDDLEnabled() {
 		if repo, err := s.newDBRepository(ctx); err == nil {
@@ -485,6 +492,7 @@ func (s *Server) runJob(ctx context.Context, j *job, session *sql.Conn, stmts []
 		s.jobs.mu.Unlock()
 		j.cancel()
 		close(j.done)
+		s.emit(control.Event{Kind: control.EventRun, Message: j.title})
 	}()
 	m := lsp.NewMessenger(env.conn)
 	notify := func(info bool, msg string) {
@@ -577,6 +585,7 @@ func (s *Server) runJob(ctx context.Context, j *job, session *sql.Conn, stmts []
 			s.jobs.forgetResults() // it may change what queries return
 		}
 		out, err := exec.Run(ctx, session, st, newSink, opts)
+		s.record(env, req, st, out, file, err, ctx.Err() != nil)
 		if err != nil {
 			prog.End("failed")
 			// drivers report cancellation their own way (pgx: context
@@ -663,6 +672,42 @@ func (s *Server) runJob(ctx context.Context, j *job, session *sql.Conn, stmts []
 	notify(true, res.Summary)
 }
 
+// record adds a statement run to the workspace's history and tells the
+// subscribers.
+func (s *Server) record(env runEnv, req runRequest, st sqlsplit.Statement, out exec.Outcome, file string, err error, cancelled bool) {
+	e := history.Entry{
+		Kind: runKind(req), File: env.file, Line: st.Start.Line + 1, SQL: strings.TrimSpace(st.SQL),
+		Conn: env.alias, Database: env.database, Schema: env.schema, Env: env.env,
+		ElapsedMS: out.Elapsed.Milliseconds(), Rows: out.Rows, Affected: out.Affected, Truncated: out.Truncated, Status: "ok",
+	}
+	if out.Kind == exec.KindResultSet {
+		e.Result = file
+	}
+	switch {
+	case cancelled:
+		e.Status, e.Result = "cancelled", ""
+	case err != nil:
+		e.Status, e.Error, e.Result = "error", strings.Join(strings.Fields(err.Error()), " "), ""
+	}
+	if _, err := history.Append(env.workspace, e); err != nil {
+		log.Println("history:", err)
+		return
+	}
+	s.emit(control.Event{Kind: control.EventHistory})
+}
+
+func runKind(req runRequest) string {
+	switch {
+	case req.dump:
+		return "dump"
+	case req.kind == jobExport:
+		return "export"
+	case req.kind == jobText:
+		return "text"
+	}
+	return "preview"
+}
+
 // reuseResult copies a remembered result to out instead of running st.
 func reuseResult(env runEnv, out string, st sqlsplit.Statement) (*control.RunResult, error) {
 	started := time.Now()
@@ -692,6 +737,20 @@ func connAlias(cfg *database.DBConfig) string {
 		return cfg.Alias
 	}
 	return string(cfg.Driver)
+}
+
+// samePath: two absolute paths name the same file, also through symlinks
+// (macOS /tmp → /private/tmp: the editor and the CLI may spell it apart).
+func samePath(a, b string) bool {
+	if a == b {
+		return true
+	}
+	if a == "" || b == "" || filepath.Base(a) != filepath.Base(b) {
+		return false
+	}
+	ra, err1 := filepath.EvalSymlinks(a)
+	rb, err2 := filepath.EvalSymlinks(b)
+	return err1 == nil && err2 == nil && ra == rb
 }
 
 // uriToPath converts a file:// URI to a local path ("" for other schemes).

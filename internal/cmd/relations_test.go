@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/raikhan/sqlh/internal/control"
+	"github.com/raikhan/sqlh/internal/tui"
 )
 
 // fakeAPI serves canned relationships.
@@ -50,15 +51,14 @@ var api = fakeAPI{
 	},
 }
 
-// display returns the visible part of picker lines (dim: "~name").
-func display(lines []string) []string {
+// display returns what picker items show (dim: "~name").
+func display(items []tui.PickItem) []string {
 	var out []string
-	for _, l := range lines {
-		d := strings.SplitN(l, "\t", 3)[2]
-		if strings.HasPrefix(d, ansiDim) {
+	for _, it := range items {
+		d := strings.NewReplacer(ansiDim, "", ansiReset, "").Replace(it.Display)
+		if it.Dim {
 			d = "~" + d
 		}
-		d = strings.NewReplacer(ansiDim, "", ansiReset, "").Replace(d)
 		out = append(out, d)
 	}
 	return out
@@ -67,7 +67,7 @@ func display(lines []string) []string {
 func TestNavLines(t *testing.T) {
 	st := &navState{Ctx: control.ContextResult{InJoin: true, Insert: "join",
 		Tables: []control.ScopeTable{{Name: "orders", Alias: "o", Ref: "o"}}}}
-	lines, err := navLines(api, st)
+	_, lines, err := navLines(api, st)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,9 +76,9 @@ func TestNavLines(t *testing.T) {
 	if got := display(lines); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("root:\n%s", strings.Join(got, "\n"))
 	}
-	// the second field (preview, Ctrl-R) is the plain name
-	if f := strings.Split(lines[4], "\t")[1]; f != "orders" {
-		t.Errorf("name field %q", f)
+	// typing matches the plain name
+	if f := lines[4].Match; f != "orders" {
+		t.Errorf("match field %q", f)
 	}
 
 	// two tables: the focused one's relationships first; a table related to
@@ -90,12 +90,12 @@ func TestNavLines(t *testing.T) {
 	both.rels = map[string]*control.RelationsResult{"orders": api.rels["orders"], "customer": {Insert: "customer",
 		Relations: append([]control.RelationItem{{Table: "order_line", Insert: "order_line", Kind: "table", Edge: "fk", Marker: "←",
 			Cols: [][2]string{{"id", "customer_id"}}}}, api.rels["customer"].Relations...)}}
-	lines, _ = navLines(both, st)
+	entries, lines, _ := navLines(both, st)
 	want = []string{"order_line (c.id)", "region", "order_line (o.id)", "v_orders", "v_union"}
 	if got := display(lines); strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Errorf("focus customer:\n%s", strings.Join(got, "\n"))
 	}
-	item, _ := parseNavItem(strings.SplitN(lines[1], "\t", 2)[0])
+	item := entries[1].item
 	if item.Table != "region" || item.Ref != "c" || item.Anchor != "customer" {
 		t.Errorf("item %+v", item)
 	}
@@ -111,7 +111,7 @@ func TestNavLines(t *testing.T) {
 	if p := st.prompt(); p != "o › customer" {
 		t.Errorf("prompt %q", p)
 	}
-	lines, _ = navLines(api, st)
+	_, lines, _ = navLines(api, st)
 	if got := display(lines); strings.Join(got, ",") != "orders,region,v_union" {
 		t.Errorf("drilled:\n%s", strings.Join(got, "\n"))
 	}
@@ -215,7 +215,7 @@ func (s sysAPI) tables(_ string, all bool) ([]control.TableItem, error) {
 }
 
 func TestNavLinesSystemOnly(t *testing.T) {
-	lines, err := navLines(sysAPI{}, &navState{})
+	_, lines, err := navLines(sysAPI{}, &navState{})
 	if err != nil {
 		t.Fatal(err)
 	}

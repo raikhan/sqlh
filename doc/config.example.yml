@@ -28,6 +28,19 @@ results:
   # opens results (`sqlh open`, `run --open`); "{}" = the file(s). Default: open / xdg-open
   # viewer: ["~/.config/helix/open-in-herdr-pane.nu", "0.8", "vd", "{}"]
 
+# The side panel next to Helix (`sqlh panel`, space i t) and `sqlh tui`
+panel:
+  placement: right            # right (default), left, up or down: half of the editor's pane
+  # keys sent to Helix to insert what the panel chose: they must run
+  # `:insert-output sqlh panel take …` (the hidden binding space i P, see doc/cli.md)
+  # insertKeys: [esc, space, i, P]
+  keys:
+    backToEditor: backspace   # focus the panel's Helix pane (Bubble Tea key names)
+  # icons: unicode            # unicode (default), nerd (Nerd Font) or ascii
+tui:
+  queriesDir: queries         # new query files: relative to the workspace, or absolute
+  # editor: [hx]              # the editor `sqlh tui` opens query files in (file appended)
+
 connections:
   - alias: pg_local
     driver: postgresql
@@ -37,6 +50,9 @@ connections:
     # `sqlh schema` switches between, the first being the current one on connect
     # (SET search_path after connecting: works behind PgBouncer, which refuses it in the DSN)
     # schemas: [cadetst, public]
+    environment: dev          # dev (default), test or prod: shown in the panel and
+                              # `sqlh status`; sample rows are automatic on dev/test only
+    # sample: auto            # the panel's sample rows: auto, manual (on request) or off
 
   - alias: oracle_dev
     driver: oracle            # pure Go (go-ora): no Oracle Instant Client needed

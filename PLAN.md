@@ -23,6 +23,7 @@ status lives in §4–§5.
 | Config format              | YAML (sqls-compatible), final. TOML dropped: cosmetic gain, nested config fits YAML, sqls users know it.                                                                                                    |
 | Execution splitting        | Own dialect-aware splitter (`internal/sqlsplit`); the completion parser is not used for execution.                                                                                                          |
 | Git                        | User pushes; agent commits only when asked. Commit email for this repo: GitHub no-reply.                                                                                                                    |
+| Pickers / UI               | (2026-10-16, Phase 10) Own Bubble Tea TUI replaces fzf everywhere: a side panel tied to a Helix pane (Herdr), an inline popup for one-shot picks, and `sqlh tui` as a standalone app.                       |
 
 ## 2. Key findings (why things are the way they are)
 
@@ -316,8 +317,8 @@ Known limitations (not blocking):
 - [x] `internal/lint`: per statement (sqlsplit + sqls lexer), against a catalog snapshot of the
       schema cache. Reports (as errors, source `sqlh`):
       - unknown qualifier: `fm.*` / `fm.col` with no `fm` among the statement's tables/aliases
-        (`in scope: fd`); Oracle only when the member is `*` or a column in scope (else it may be
-        `pkg.function`)
+      (`in scope: fd`); Oracle only when the member is `*` or a column in scope (else it may be
+      `pkg.function`)
       - unknown table in FROM/JOIN/INTO/UPDATE/USING/DELETE, with "did you mean"
       - unknown column on a resolved table: `alias.col`, INSERT column list, UPDATE SET
 - Quiet when unsure: scope = all tables of the statement (subqueries included, so correlated
@@ -338,15 +339,15 @@ Known limitations (not blocking):
 ### Phase 6 — completion depth (after a lazydb comparison)
 
 Probe of 16 positions against lazydb's LSP (same `pg_local`): sqlh ahead everywhere except
-function completion (`DataBaseFunctions` returned `[]` for PG/SQLite and Oracle's *reserved
-words*), and both failed on CTE columns. A wider probe found more subquery bugs.
+function completion (`DataBaseFunctions` returned `[]` for PG/SQLite and Oracle's _reserved
+words_), and both failed on CTE columns. A wider probe found more subquery bugs.
 
 - [x] Scope resolution rewrite (`parser/parseutil/scope.go`): query levels = statement +
       enclosing subqueries; each level sees its own `FROM`/`JOIN` (not those of nested
       subqueries, CTE bodies, function arguments like `extract(year from …)`), the branch of a
       `UNION`/`INTERSECT`/`EXCEPT`/`MINUS` containing the cursor, and the enclosing levels'
       tables as `Outer` (qualified use only). Replaces the sqls heuristics (first `FROM` of the
-      whole statement; subqueries *after* the cursor), which leaked a CTE body's tables into the
+      whole statement; subqueries _after_ the cursor), which leaked a CTE body's tables into the
       main query and returned nothing for CTE references.
 - [x] Select-list columns never fail: functions/expressions/casts/`CASE` with an alias,
       `DISTINCT [ON]`, `TOP n`, `*` and `t.*` (expanded through derived tables/CTEs), origins
@@ -383,7 +384,7 @@ words*), and both failed on CTE columns. A wider probe found more subquery bugs.
 
 ### Phase 7 — relationships between tables (DBeaver-like explorer, in fzf) ✅ done
 
-Decided: no separate TUI; the table picker and `describe` cover it. Schemas are boundaries
+Decided: no separate TUI (superseded 2026-10-16 by Phase 10); the table picker and `describe` cover it. Schemas are boundaries
 (no cross-schema relationships). A wrong connection is worse than none: guesses are labelled
 "maybe" and strict.
 
@@ -442,9 +443,9 @@ Decided: no separate TUI; the table picker and `describe` cover it. Schemas are 
       view column's origins (`RelGraph.ColumnOrigins`, capped at 5). CADE: +1573 edges, 135
       UNION views, e.g. `CACLIENTMODULEUSAGE → CABUSINESSUNIT via 12 tables`.
       - Fix first (f02b100): a UNION in a derived table/CTE took the first branch as the
-        origin (9 wrong CADE edges); columns matched by position, unnamed expressions keep
-        theirs (CTE column lists were shifted); Oracle `MINUS` (an identifier for the lexer)
-        was swallowed as a table alias.
+      origin (9 wrong CADE edges); columns matched by position, unnamed expressions keep
+      theirs (CTE column lists were shifted); Oracle `MINUS` (an identifier for the lexer)
+      was swallowed as a table alias.
 - [x] Views in the LSP: go to definition of a view or a view's column opens a read-only file
       with its `CREATE` statement (`<runtime dir>/views/<workspace key>/<conn>/<schema>.<view>.sql`; `control.Find` maps
       that directory back to the workspace's server, so the Helix glue works there; the
@@ -476,7 +477,7 @@ Decided:
   other keys kept). `db=` only when the database was switched (`space i D`). No schema: it
   comes from the connection (DSN `search_path`, Oracle login schema); session state
   (`SET search_path`, `ALTER SESSION`) is not carried — put it in the file.
-  *Superseded 2026-10-16*: `schema=` when the schema was switched (see "Current schema").
+  _Superseded 2026-10-16_: `schema=` when the schema was switched (see "Current schema").
 - **The header follows the editor**: the server rewrites (or inserts) it, in open buffers only
   (`workspace/applyEdit`, versioned; the buffer is modified, the CLI sees it after `:w`):
   on every run of a document (code actions, `space i r/e/d`, `sqlh run --file` via the server),
@@ -557,62 +558,62 @@ for the default list, ~450 for PostgreSQL), unfiltered by context.
 
 **Completion — by statement** (✗ broken, ≈ accidental/partly right, ✓ works)
 
-| Position | Today | Expected |
-| --- | --- | --- |
-| `CREATE TABLE \|`, `… IF NOT EXISTS \|` | kw | nothing / `IF NOT EXISTS`, schema names for `schema.` |
-| `CREATE TABLE t (\|` and `(id int, \|` | ✗ empty | column name: nothing; table-constraint keywords (`CONSTRAINT`, `PRIMARY KEY`, `FOREIGN KEY`, `UNIQUE`, `CHECK`, PG `LIKE`, `EXCLUDE`) |
-| `CREATE TABLE t (id \|`, `(id va\|` | ✗ empty | data types of the dialect |
-| `CREATE TABLE t (id int \|` | ✗ empty | column-constraint keywords (`NOT NULL`, `NULL`, `DEFAULT`, `PRIMARY KEY`, `UNIQUE`, `REFERENCES`, `CHECK`, `GENERATED … AS IDENTITY`, `COLLATE`, Oracle `ENABLE`…) |
-| `… DEFAULT \|` | ✗ empty | functions/literals (`now()`, `CURRENT_TIMESTAMP`, `SYSDATE`, `gen_random_uuid()`, `nextval(`) |
-| `… REFERENCES \|` (column or table constraint) | ✗ empty | tables |
-| `… REFERENCES country (\|`, `country(\|` | ✗ empty | columns of `country` (PK/unique first) |
-| `PRIMARY KEY (\|`, `UNIQUE (\|`, `FOREIGN KEY (\|` in CREATE TABLE | ✗ empty | columns defined earlier in the statement |
-| `CHECK (\|` in CREATE TABLE | ✗ empty | columns defined in the statement, functions |
-| `CREATE TABLE t (LIKE \|` (PG) | ✗ empty | tables |
-| `CREATE TABLE t AS SELECT …` | ✓ | — |
-| `ALTER TABLE \|`, `ALTER TABLE ci\|` | kw / empty | tables (views for `ALTER VIEW`, matviews for `ALTER MATERIALIZED VIEW`) |
-| `ALTER TABLE world.\|` | ✗ empty | tables of `world` |
-| `ALTER TABLE city \|` | kw | `ADD`, `DROP`, `ALTER`, `RENAME`, PG `OWNER TO`/`SET`/`ENABLE`…, Oracle `MODIFY` |
-| `… DROP COLUMN \|`, `DROP \|` (MySQL/Oracle style), `RENAME COLUMN \|`, `ALTER COLUMN \|` | kw | columns of `city` (+ `COLUMN`/`CONSTRAINT` after a bare `DROP`) |
-| `… ALTER COLUMN Name \|` | kw | `TYPE`, `SET`, `DROP` (`DEFAULT`, `NOT NULL`) |
-| `… ALTER COLUMN Name TYPE \|`, `ADD COLUMN x \|`, `ADD x \|` | kw | data types |
-| `ALTER TABLE city ADD (x \|` (Oracle) | ≈ columns of city (wrong) | data types |
-| `ALTER TABLE city MODIFY (\|` (Oracle) | ≈ columns of city | ✓ columns (then types after the name) |
-| `ADD CONSTRAINT fk FOREIGN KEY (\|`, `ADD PRIMARY KEY (\|` | ≈ columns of city | ✓ (keep) |
-| `… FOREIGN KEY (CountryCode) REFERENCES \|` | kw | tables, the likely target first (FK guess from the column name) |
-| `… REFERENCES country (\|` | ✗ columns of **city** | columns of `country` |
-| `ADD CONSTRAINT ck CHECK (\|` | ≈ columns (no functions/keywords) | columns + functions |
-| `ALTER TABLE city DROP CONSTRAINT \|` | kw | constraint names of `city` (needs metadata) |
-| `ALTER TABLE city RENAME \|` / `RENAME TO \|` | kw | `COLUMN`, `TO`, `CONSTRAINT` / nothing |
-| `DROP TABLE \|`, `DROP TABLE IF EXISTS \|`, `DROP TABLE city, \|` | kw | tables only |
-| `DROP VIEW \|`, `DROP MATERIALIZED VIEW \|` | kw | views / materialized views only |
-| `DROP TABLE world.\|` | ✗ empty | tables of `world` |
-| `DROP INDEX \|`, `DROP SEQUENCE \|`, `DROP FUNCTION \|`, `DROP TRIGGER \|` | kw | index/sequence/function/trigger names (functions are cached; others need metadata) |
-| `… CASCADE`/`RESTRICT`/`PURGE` after the names | kw | those keywords |
-| `TRUNCATE \|` | ✓ tables + schemas | — |
-| `TRUNCATE TABLE \|` | kw | tables |
-| `CREATE VIEW v AS SELECT …`, `CREATE MATERIALIZED VIEW …` | ✓ | — |
-| `CREATE VIEW v (\|) AS …` | ≈ columns of the body's tables | nothing (new names) |
-| `CREATE INDEX i ON \|` | ✗ empty | tables (and matviews) |
-| `CREATE INDEX i ON city (\|`, `USING btree (\|` | ✗ empty | columns of `city` |
-| `CREATE INDEX i ON city(\|` | ✗ tables | columns of `city` |
-| `CREATE UNIQUE INDEX … WHERE \|` | ≈ tables only | columns of `city` + functions |
-| `CREATE TRIGGER trg AFTER INSERT ON \|` | ✗ empty | tables/views |
-| `COMMENT ON TABLE \|` / `COLUMN \|` | kw | tables / tables then `t.` |
-| `COMMENT ON COLUMN city.\|` | ✗ empty | columns of `city` |
-| `GRANT SELECT ON \|` | ✗ empty | tables/views (roles after `TO`: out of scope) |
+| Position                                                                                  | Today                             | Expected                                                                                                                                                           |
+| ----------------------------------------------------------------------------------------- | --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `CREATE TABLE \|`, `… IF NOT EXISTS \|`                                                   | kw                                | nothing / `IF NOT EXISTS`, schema names for `schema.`                                                                                                              |
+| `CREATE TABLE t (\|` and `(id int, \|`                                                    | ✗ empty                           | column name: nothing; table-constraint keywords (`CONSTRAINT`, `PRIMARY KEY`, `FOREIGN KEY`, `UNIQUE`, `CHECK`, PG `LIKE`, `EXCLUDE`)                              |
+| `CREATE TABLE t (id \|`, `(id va\|`                                                       | ✗ empty                           | data types of the dialect                                                                                                                                          |
+| `CREATE TABLE t (id int \|`                                                               | ✗ empty                           | column-constraint keywords (`NOT NULL`, `NULL`, `DEFAULT`, `PRIMARY KEY`, `UNIQUE`, `REFERENCES`, `CHECK`, `GENERATED … AS IDENTITY`, `COLLATE`, Oracle `ENABLE`…) |
+| `… DEFAULT \|`                                                                            | ✗ empty                           | functions/literals (`now()`, `CURRENT_TIMESTAMP`, `SYSDATE`, `gen_random_uuid()`, `nextval(`)                                                                      |
+| `… REFERENCES \|` (column or table constraint)                                            | ✗ empty                           | tables                                                                                                                                                             |
+| `… REFERENCES country (\|`, `country(\|`                                                  | ✗ empty                           | columns of `country` (PK/unique first)                                                                                                                             |
+| `PRIMARY KEY (\|`, `UNIQUE (\|`, `FOREIGN KEY (\|` in CREATE TABLE                        | ✗ empty                           | columns defined earlier in the statement                                                                                                                           |
+| `CHECK (\|` in CREATE TABLE                                                               | ✗ empty                           | columns defined in the statement, functions                                                                                                                        |
+| `CREATE TABLE t (LIKE \|` (PG)                                                            | ✗ empty                           | tables                                                                                                                                                             |
+| `CREATE TABLE t AS SELECT …`                                                              | ✓                                 | —                                                                                                                                                                  |
+| `ALTER TABLE \|`, `ALTER TABLE ci\|`                                                      | kw / empty                        | tables (views for `ALTER VIEW`, matviews for `ALTER MATERIALIZED VIEW`)                                                                                            |
+| `ALTER TABLE world.\|`                                                                    | ✗ empty                           | tables of `world`                                                                                                                                                  |
+| `ALTER TABLE city \|`                                                                     | kw                                | `ADD`, `DROP`, `ALTER`, `RENAME`, PG `OWNER TO`/`SET`/`ENABLE`…, Oracle `MODIFY`                                                                                   |
+| `… DROP COLUMN \|`, `DROP \|` (MySQL/Oracle style), `RENAME COLUMN \|`, `ALTER COLUMN \|` | kw                                | columns of `city` (+ `COLUMN`/`CONSTRAINT` after a bare `DROP`)                                                                                                    |
+| `… ALTER COLUMN Name \|`                                                                  | kw                                | `TYPE`, `SET`, `DROP` (`DEFAULT`, `NOT NULL`)                                                                                                                      |
+| `… ALTER COLUMN Name TYPE \|`, `ADD COLUMN x \|`, `ADD x \|`                              | kw                                | data types                                                                                                                                                         |
+| `ALTER TABLE city ADD (x \|` (Oracle)                                                     | ≈ columns of city (wrong)         | data types                                                                                                                                                         |
+| `ALTER TABLE city MODIFY (\|` (Oracle)                                                    | ≈ columns of city                 | ✓ columns (then types after the name)                                                                                                                              |
+| `ADD CONSTRAINT fk FOREIGN KEY (\|`, `ADD PRIMARY KEY (\|`                                | ≈ columns of city                 | ✓ (keep)                                                                                                                                                           |
+| `… FOREIGN KEY (CountryCode) REFERENCES \|`                                               | kw                                | tables, the likely target first (FK guess from the column name)                                                                                                    |
+| `… REFERENCES country (\|`                                                                | ✗ columns of **city**             | columns of `country`                                                                                                                                               |
+| `ADD CONSTRAINT ck CHECK (\|`                                                             | ≈ columns (no functions/keywords) | columns + functions                                                                                                                                                |
+| `ALTER TABLE city DROP CONSTRAINT \|`                                                     | kw                                | constraint names of `city` (needs metadata)                                                                                                                        |
+| `ALTER TABLE city RENAME \|` / `RENAME TO \|`                                             | kw                                | `COLUMN`, `TO`, `CONSTRAINT` / nothing                                                                                                                             |
+| `DROP TABLE \|`, `DROP TABLE IF EXISTS \|`, `DROP TABLE city, \|`                         | kw                                | tables only                                                                                                                                                        |
+| `DROP VIEW \|`, `DROP MATERIALIZED VIEW \|`                                               | kw                                | views / materialized views only                                                                                                                                    |
+| `DROP TABLE world.\|`                                                                     | ✗ empty                           | tables of `world`                                                                                                                                                  |
+| `DROP INDEX \|`, `DROP SEQUENCE \|`, `DROP FUNCTION \|`, `DROP TRIGGER \|`                | kw                                | index/sequence/function/trigger names (functions are cached; others need metadata)                                                                                 |
+| `… CASCADE`/`RESTRICT`/`PURGE` after the names                                            | kw                                | those keywords                                                                                                                                                     |
+| `TRUNCATE \|`                                                                             | ✓ tables + schemas                | —                                                                                                                                                                  |
+| `TRUNCATE TABLE \|`                                                                       | kw                                | tables                                                                                                                                                             |
+| `CREATE VIEW v AS SELECT …`, `CREATE MATERIALIZED VIEW …`                                 | ✓                                 | —                                                                                                                                                                  |
+| `CREATE VIEW v (\|) AS …`                                                                 | ≈ columns of the body's tables    | nothing (new names)                                                                                                                                                |
+| `CREATE INDEX i ON \|`                                                                    | ✗ empty                           | tables (and matviews)                                                                                                                                              |
+| `CREATE INDEX i ON city (\|`, `USING btree (\|`                                           | ✗ empty                           | columns of `city`                                                                                                                                                  |
+| `CREATE INDEX i ON city(\|`                                                               | ✗ tables                          | columns of `city`                                                                                                                                                  |
+| `CREATE UNIQUE INDEX … WHERE \|`                                                          | ≈ tables only                     | columns of `city` + functions                                                                                                                                      |
+| `CREATE TRIGGER trg AFTER INSERT ON \|`                                                   | ✗ empty                           | tables/views                                                                                                                                                       |
+| `COMMENT ON TABLE \|` / `COLUMN \|`                                                       | kw                                | tables / tables then `t.`                                                                                                                                          |
+| `COMMENT ON COLUMN city.\|`                                                               | ✗ empty                           | columns of `city`                                                                                                                                                  |
+| `GRANT SELECT ON \|`                                                                      | ✗ empty                           | tables/views (roles after `TO`: out of scope)                                                                                                                      |
 
 **Completion — DML tails** (INSERT/UPDATE/DELETE/MERGE work otherwise)
 
-| Position | Today | Expected |
-| --- | --- | --- |
-| `INSERT … VALUES (…) \|` | kw | `RETURNING`, `ON CONFLICT` (PG/SQLite), `,` rows |
-| `INSERT/UPDATE/DELETE … RETURNING \|`, `RETURNING ID, \|` | kw | columns of the target table (+ `*`); Oracle: then `INTO` |
-| `ON CONFLICT (\|` | ≈ columns (via "any paren") | ✓ columns of the target |
-| `ON CONFLICT (Name) DO \|` | kw | `UPDATE SET`, `NOTHING` |
-| `ON CONFLICT … DO UPDATE SET \|` | ≈ columns + all tables | columns of the target, `EXCLUDED.` columns |
-| `MERGE INTO \|`, `MERGE INTO city c USING \|` | kw | tables/views |
-| `MERGE … WHEN MATCHED THEN UPDATE SET \|` | ≈ columns + aliases + tables | target's columns |
+| Position                                                  | Today                        | Expected                                                 |
+| --------------------------------------------------------- | ---------------------------- | -------------------------------------------------------- |
+| `INSERT … VALUES (…) \|`                                  | kw                           | `RETURNING`, `ON CONFLICT` (PG/SQLite), `,` rows         |
+| `INSERT/UPDATE/DELETE … RETURNING \|`, `RETURNING ID, \|` | kw                           | columns of the target table (+ `*`); Oracle: then `INTO` |
+| `ON CONFLICT (\|`                                         | ≈ columns (via "any paren")  | ✓ columns of the target                                  |
+| `ON CONFLICT (Name) DO \|`                                | kw                           | `UPDATE SET`, `NOTHING`                                  |
+| `ON CONFLICT … DO UPDATE SET \|`                          | ≈ columns + all tables       | columns of the target, `EXCLUDED.` columns               |
+| `MERGE INTO \|`, `MERGE INTO city c USING \|`             | kw                           | tables/views                                             |
+| `MERGE … WHEN MATCHED THEN UPDATE SET \|`                 | ≈ columns + aliases + tables | target's columns                                         |
 
 **Other features in DDL**
 
@@ -676,13 +677,13 @@ for the default list, ~450 for PostgreSQL), unfiltered by context.
   UNIQUE|FOREIGN KEY (…)` naming a column the statement doesn't define. The `AS SELECT` body
   of `CREATE VIEW/MATERIALIZED VIEW/TABLE` is linted like a SELECT. Schemas outside the cache
   stay unchecked.
-  - *Document exemptions, refined for DDL*: today any table created or altered **anywhere**
+  - _Document exemptions, refined for DDL_: today any table created or altered **anywhere**
     in the document is exempt and an altered table's columns go unchecked — that would hide
     `ALTER TABLE city DROP COLUMN nocol` (city is altered by that very statement). For the DDL
     rules: only objects created **earlier** in the document are exempt, and only the columns
     added/renamed by earlier statements. A second `DROP` of an object dropped earlier in the
     document stays quiet.
-  - *Statements already run*: with refresh after DDL, a statement turns red once it has run
+  - _Statements already run_: with refresh after DDL, a statement turns red once it has run
     (`DROP TABLE x` → unknown table, `ADD COLUMN y` → already exists, `CREATE TABLE`
     unaffected). The server remembers the DDL statements it executed successfully this session
     (normalised text, per connection + database, like result reuse) and skips DDL rules for
@@ -754,9 +755,9 @@ for the default list, ~450 for PostgreSQL), unfiltered by context.
   in 75 ms; live completion on pg_local and Oracle (CADE via `cade.`); end to end over stdio
   (`/tmp/sqlh-e2e/e2e.py`: complete, hover, diagnostics, run DDL → refreshed cache, executed
   statements not flagged); formatter battery: 18 formatted, 0 corrupted.
-- [x] Follow-up (testing in Helix): no list right after `DROP VIEW ` while `select * from `
+- [x] Follow-up (testing in Helix): no list right after `DROP VIEW` while `select * from`
       had one. Helix only auto-requests after 2 typed word characters (debounced, sent with
-      the cursor position when it fires); after `drop ` the new keyword menu stayed open while
+      the cursor position when it fires); after `drop` the new keyword menu stayed open while
       typing `view`, so nothing was requested after the space (`select * from` got lucky: `*`
       closed the menu). Fix: `" "` is a completion trigger character; space-triggered requests
       are answered only at name positions (DDL slots with names/types, FROM/JOIN/INTO/UPDATE
@@ -800,9 +801,244 @@ the session `SET` is safe and `DISCARD ALL` resets it on release; transaction mo
 remembered (the header's `schema=` carries it). `run/export/dump --schema` standalone.
 Config: every connection validated; PostgreSQL/MySQL/Vertica `host` without `proto` → tcp.
 
+### Phase 10 — sqlh panel: own TUI replacing fzf (2026-10-16) ✅ done (branch `tui-experiment`)
+
+Trigger: comparison with [lazydb](https://github.com/yelog/lazydb) (Rust/ratatui DB workspace).
+Taken from it: the object tree (lazy, kinds grouped, sticky ancestors), an action menu on the
+selection + contextual key hints, search prefixes, bounded read-only data previews, a record
+view, SQL history, per-connection environment (dev/test/prod). Not taken: data grid / WHERE bar
+(VisiData), data and catalog editing, dashboards, users & roles, Redis, credential store,
+update center, MCP. Model for the Herdr/Helix side: `~/.config/swiper` (Go + Bubble Tea in a
+Herdr pane driving the originating Helix with `herdr pane send-keys`) and
+`~/.config/helix/herdr.nu` (`send-helix-command`, `helix-pane`, `helix_origin` token).
+
+#### 10.1 Decisions
+
+1. **One TUI, three hosts**, same components (`internal/tui`):
+   - **panel**: persistent side pane, tied to the Helix pane that opened it — exits when that
+     pane closes or its `hx` process ends (Herdr check, like Swiper's `-helix-pid` validation).
+     Placement `panel.placement: right | left | up | down` (default `right`): the Helix pane
+     is split in half; Herdr only splits right/down, so left/up are a split + `pane.swap`;
+   - **inline popup**: one-shot picks under `:insert-output`/`:pipe-to` (height mode on
+     `/dev/tty`, no alternate screen, kitty keyboard protocol off around it, stdout without a
+     trailing newline, Esc prints nothing — the current fzf contract); also the fallback
+     outside Herdr;
+   - **`sqlh tui`**: standalone app (tree + previews + history) in the current terminal. In
+     Herdr it can spin out a Helix pane for a new or existing query file and then acts as that
+     editor's panel; closing that Helix detaches the app (it keeps running), it doesn't exit.
+     The new Helix pane goes on the opposite side, so the app ends up where `placement` says.
+     Outside Herdr: browse only, Enter copies to the clipboard.
+   - **back to the editor**: `panel.keys.backToEditor` (default `backspace`, not while typing
+     a search) focuses the panel's Helix pane — useful when arriving from another pane (Herdr's
+     `prefix space o` covers the previous-pane case).
+2. **fzf goes away completely**: `tables -p`, `columns -p`, `connect`/`db`/`schema` without
+   an argument, `run --limit ask`. The `-p` contract stays. `SQLH_FZF_ARGS --filter` (scripted
+   use, tests) is replaced by a non-interactive selection mode (`SQLH_PICK=<query>`: pick the
+   first match, print it, exit).
+3. **Inserting into Helix** (Helix has no API and doesn't report the cursor): Enter in the
+   panel stores a _pending action_ in the server (per panel, consumed once, expires after a
+   few seconds), then sends the originating Helix `esc` + a key chord bound in Helix's config
+   (default `space i P`, configurable `panel.insertKeys`) that runs
+   `:insert-output sqlh panel take --editor -f r##'%{buffer_name}'## -l %{cursor_line} --col %{cursor_column}`.
+   `take` computes the text _then_, from Helix's real cursor and live buffer (after `JOIN`:
+   `customer c ON …`; a column: `alias.col` when its table is in the statement; else the name),
+   so all of Phase 7's context logic is reused and shell quoting stays in Helix's config like
+   the other `space i` bindings. One undo step, multiple selections work (Helix runs the
+   command once). Bracketed-pasting text rejected: auto-pairs and mode-dependent behaviour.
+   Afterwards the panel focuses Helix again. Pending actions are keyed by the Helix pane
+   (`take` inherits Helix's `HERDR_PANE_ID`), so two editors in one workspace don't mix.
+4. **Following the cursor**: the server records the last edit position per document (sync is
+   full-text, so from the common prefix/suffix of old and new text) and positions from
+   position-bearing requests (completion, hover, signature help, definition, code actions);
+   the panel's "In this statement" section follows it. `space i t` syncs explicitly (passes
+   file/line/col) and opens or focuses the panel; a plain Helix binding, remappable.
+4a. **Herdr**: the CLI has no exact-pane focus and `pane split` takes no command, so sqlh
+   talks to Herdr's socket API (`$HERDR_SOCKET_PATH`, newline-delimited JSON: `pane.split`,
+   `pane.focus`, `pane.send_keys`, `pane.swap`, `pane.get`, `pane.process_info`). The panel is
+   started through the shell startup hook convention of `~/.config/helix` (`HELIX_HELPER_ARGV`
+   + `HELIX_ORIGIN_PANE_ID` in the new pane's environment: no echoed command, ownership
+   token); if it hasn't registered with the server within 3 s, `exec <argv>` is typed into the
+   new pane instead. The server keeps the registry of panels (their control connections).
+5. **Previews from memory**: the panel loads the catalog snapshot and relationship graph once
+   (and again on push notifications), so moving the cursor costs no process or round-trip.
+6. **History = runs only**: every execution, versions grouped by similarity (10.6).
+7. **Environment per connection**: `environment: dev | test | prod` (default `dev`, as
+   lazydb; decided). Drives the sample policy (`dev`/`test`: automatic, `prod`: on demand only), a
+   coloured label in the panel header and `sqlh status`; later the destructive-run
+   confirmation (Phase 5).
+8. **Stack**: Bubble Tea v1 + Lip Gloss + Bubbles (same versions as Swiper), a small fuzzy
+   matcher (`sahilm/fuzzy` or own). Herdr calls adapted from Swiper's `herdr.go` into
+   `internal/herdr` (checked calls, editor validation, serialized sends). Tests drive models
+   directly and use a fake `herdr` CLI — never a live pane.
+
+#### 10.2 Panel layout and keys (target)
+
+```
+ pg_local › sales  [dev]        following scratch/test.sql:42
+▾ In this statement             tables at the cursor + their relations (→ ←), live
+▾ pg_local › sales              Enter on a connection/database/schema switches
+  ▾ Tables
+    ▾ orders
+      ▸ Columns   id · customer_id · status …   Space marks, Enter inserts "o.a, o.b"
+      ▸ Relations → customer.id = customer_id    Enter: join clause; chain via nesting
+      ▸ Keys / Indexes / Triggers
+      ▸ Used by views
+  ▸ Views  ▸ Materialized views  ▸ Functions / Packages  ▸ Sequences  ▸ Types
+─ Describe │ DDL │ Sample │ History ─────────────────────────────
+```
+
+- `/` filters the loaded tree in memory (matches + their ancestors); `f` fuzzy search over
+  every object, results shown under their path; prefixes `@` (connection/schema scope),
+  `t:` `v:` `f:` `s:` … (kind).
+- Action menu on the selection (Shift-Tab / `.`): insert name, join clause, join chain,
+  columns, `SELECT … FROM` skeleton, copy, open DDL / go to definition (read-only file, as
+  `gd`), refresh this object. Footer: the keys valid here.
+- Sticky ancestors when scrolled; type icons (Nerd Font / Unicode / ASCII).
+
+#### 10.3 Steps — foundations + panel core ✅ done (2026-10-16)
+
+- [x] Dependencies (Bubble Tea v1.3.10, Lip Gloss v1.1.0, Bubbles v0.21.0, as Swiper);
+      `internal/herdr`: socket API client (`pane.get/process_info/split/swap/focus/send_keys/
+      send_text/close`, `NotFound`), `SQLH_NO_FOCUS=1` keeps the focus (scripted tests; passed
+      on to the panel's pane).
+- [x] Config: `environment` per connection (dev/test/prod; development/staging/production
+      accepted; validated; unknown → prod by `Env()` for safety), `panel:` (`placement`,
+      `insertKeys`, `keys.backToEditor`, `icons`), `tui.queriesDir` (`QueriesDirIn`). Status
+      and connection lists carry the environment; `sqlh status` shows it. `sample:` → 10.5.
+- [x] Control: `sqlh/catalog` (`catalog.Tree`: schemas → tables/views/matviews (kinds in the
+      default schema once views are loaded), sequences, types, indexes/constraints/triggers
+      with their table; SQLite's unnamed schema too), `sqlh/subscribe` + `sqlh/event`
+      notifications (`cache`, `connection` with a generation counter, `cursor`, `focus`),
+      `sqlh/panels`, `sqlh/panelFocus`, `sqlh/panelAction`/`sqlh/panelTake` (per editor pane,
+      once, 15 s), panel settings in `Status.Panel`. Columns and relations stay per-table calls
+      (cached in the panel; ~ms over the socket) rather than one big snapshot. Functions are
+      not in the tree yet (PostgreSQL lists ~1000 built-ins without a schema to filter on).
+- [x] Server: cursor from `didChange` (`editPosition`: common suffix first, then prefix) and
+      from position-bearing requests (`trackCursor`), debounced 150 ms, only with subscribers.
+- [x] `sqlh panel take` (`panelText`): text actions; columns qualified by the statement's
+      alias (or name, with several tables); tables: copy when the cursor is on a table name,
+      the chain from a statement table, a single join to a related statement table, else the
+      name; `relations.insert`/`Mode`; `NeedSpace`.
+- [x] `sqlh panel`: focus the registered panel of `$HERDR_PANE_ID` (cursor synced), else split
+      (placement, half, left/up via swap) with `HELIX_HELPER_ARGV`/`HELIX_ORIGIN_PANE_ID`,
+      wait 3 s for registration, else type `exec …`. `helixAncestor` pins the hx PID.
+- [x] `internal/tui` panel: lazy tree with stable ids (expansion and column marks survive
+      rebuilds), "In this statement" (statement tables + related ones), connection tree,
+      Connections; relation nodes carry anchor + path (nested relations → chains); `/` fuzzy
+      search over all objects (Enter inserts, Tab reveals); action menu (`.`/`a`/Shift-Tab);
+      Describe/DDL preview tabs; contextual footer, `?` help; side-by-side layout ≥ 110
+      columns; mouse wheel; keys arriving together ("jj") split. Not done: sticky ancestors.
+- [x] Lifetime: a 1 s check (pane gone or hx PID gone → exit); reconnects to a restarted
+      server (`:lsp-restart`), showing "server gone" meanwhile.
+- [x] Docs: `doc/cli.md` (Panel section, pickers, Helix bindings: `t` → panel, `P` take, `T`
+      the inline table picker), README, `doc/config.example.yml`. `~/.config/helix` is the
+      user's to change (bindings below).
+- [x] Verified live (Herdr + Helix 25.07 in a scratch tab, test build, SQLite with FKs, own
+      config.toml/languages.toml): `space i t` opens the panel through the startup hook
+      (ownership token set), again only syncs the cursor; typing updates "In this statement";
+      Enter on a related table after `JOIN` → `join customer c ON c.id = o.customer_id`, also
+      from insert mode; DDL tab; search via pasted text; quitting Helix closes the panel.
+      Fixed on the way: `ReorderArgs` broke subcommands (`panel run`), "jj" arrived as one key.
+      Not exercised live: multiple selections, two editors with a panel each (unit-tested
+      registry), an `applyEdit` arriving while `take` runs.
+
+#### 10.4 Steps — replace fzf ✅ done (2026-10-16)
+
+- [x] `tui.Pick`: inline Bubble Tea on `/dev/tty` (no alternate screen, 80 % of the rows,
+      kitty keyboard protocol pushed off/popped), fuzzy filter (DP scoring: word starts,
+      runs, gaps), preview pane (async, cached per list generation), multi-select (Tab,
+      Ctrl-A), `Expect` keys, `Bind` keys that reload the list (drill-down), `AcceptQuery`
+      (typed numbers), `NoSort`; leaves nothing behind on exit.
+- [x] Ported: `tables -p` (Ctrl-R/Ctrl-O/Ctrl-T, preview, copy mode), `relations -p`,
+      `columns -p` (table first), `schemas -p`, `databases -p`, `connect`/`db`/`schema` without
+      a name, `run --limit ask`. The panel's Connections and schema nodes switch too.
+- [x] `SQLH_PICK=<query>` scripted mode; `relations_test.go`/`args_test.go` updated, picker
+      unit tests; the fzf code, `_nav`, `SQLH_FZF_ARGS` and preview subprocesses are gone.
+      Verified live: `:insert-output … tables -p` in Helix, Ctrl-R into customer, Enter on
+      region → the two-line join chain.
+
+#### 10.5 Steps — sample rows ✅ done (2026-10-16)
+
+- [x] `sqlh/sample` (`handler/sample.go`): a pooled `*sql.Conn` of its own (not the pinned
+      session; Oracle CURRENT_SCHEMA / PostgreSQL search_path come with every pooled
+      session), 10 s timeout, `SELECT *` + dialect limit (`LIMIT`, Oracle `FETCH FIRST`, MSSQL
+      `TOP`; limit+1 to tell truncation), default 50 rows (max 500), cells cut at 200
+      characters; `Column`: `GROUP BY … ORDER BY 2 DESC`, 10 values. SQL built from names
+      resolved in the cache (`catalog.Resolve`, `QuoteIdent`), never from the request's text.
+      No read-only transaction: the statement is sqlh's own `SELECT`.
+- [x] Panel cache per table / table+column; cleared on generation changes and on `run`
+      events (emitted when a job ends).
+- [x] Policy: connection `sample: auto | manual | off` (validated), default by environment
+      (`dev`/`test` auto, `prod` manual); `CatalogResult.SamplePolicy`; the server refuses
+      `off`. Auto samples tables once the selection rests 300 ms; views only on request.
+- [x] Sample tab: per column the distinct values (`NULL×n`), `v` record view (`n`/`p`), `s`
+      loads/refreshes (a column: most common values). Verified live (test environment).
+      Not done: `o` (sample → CSV → viewer).
+
+#### 10.6 Steps — history with versions ✅ done (2026-10-16)
+
+- [x] `internal/history`: `Entry` (id, time, kind preview/export/dump/text/cli, file
+      (symlinks resolved), line, SQL, conn/db/schema/env, ms, rows, affected, truncated,
+      status ok/error/cancelled, error, result, lineage), `Append` (one JSON line, O_APPEND;
+      creates `.sqlh/.gitignore`), `Load` (cached by size+mtime: the panel asks on every
+      cursor move), `Find` (file, lineage, like-SQL, limit), `Versions` (distinct SQL per
+      lineage). Lineage: the most similar latest version among the same file's queries in the
+      last 2000 runs, token LCS ratio ≥ 0.6, else a new one. No pruning.
+- [x] Recording: server `runJob` (every statement, also failures/cancels; `history` event),
+      standalone runs and `sqlh dump` (`recordStandalone`).
+- [x] `sqlh/history` (versions of the statement at a cursor, the workspace's recent runs),
+      `sqlh/replaceStatement` (statement at the cursor → `workspace/applyEdit` with an
+      unversioned `changes` edit, from a goroutine; the terminator kept), panel action
+      `replace` handled by `panel take`.
+- [x] Panel: History root (open when there are earlier versions): This statement (versions,
+      `= current`), Recent runs; preview with the run's facts and a line diff; Enter replaces
+      / inserts; `o` opens the result (viewer without the panel's terminal), `y` copies.
+- [x] Verified live: two runs with an edit between → two versions, Enter on the older one
+      replaced the statement in Helix. Fixed on the way: buffers were looked up by exact path,
+      so `/tmp/…` (CLI) missed Helix's `/private/tmp/…` and read the file on disk
+      (`samePath`).
+
+#### 10.7 Steps — `sqlh tui` ✅ done (2026-10-16)
+
+- [x] `sqlh tui [-C DIR]`: the panel model with `Standalone` (Query files root, `n`, `e`,
+      header "editor: … / no editor"); `tui.Workspace` (QueryFiles, NewQuery, OpenFile,
+      Editor) implemented by `tuiBackend` around the panel backend.
+- [x] Headless server: without an editor's server the app runs `handler.RunHeadless`
+      (control socket only; sidecar `headless: true`); an editor's server starting for the
+      workspace asks it to `sqlh/release` (it stops entirely, closing its control
+      connections so panels notice) and takes the socket; the app reconnects, and starts a
+      headless one again when the editor's goes (after 1.5 s, so a starting editor wins).
+- [x] `n`: `query_<N>.sql` in `tui.queriesDir` (`nextQueryNumber`: highest + 1, from 1,
+      gaps not filled; `O_EXCL`), header `-- sqlh: conn=…`, `SELECT * FROM t` of the
+      highlighted table; opened in `tui.editor` (default `hx`) in a split of the app's pane
+      (opposite `placement`, via swap), through the startup hook or typed `exec`; the app
+      re-subscribes as that pane's panel. Enter on a query file / `e` on a run: `:open` in
+      the attached Helix, else a new pane. The attached Helix exiting detaches it.
+- [x] Verified live: headless start, `n` with orders highlighted → `queries/query_1.sql`
+      in a Helix pane, socket handed over (sidecar no longer headless), "In this statement"
+      follows that Helix, a column inserted as `o.total`; Helix quit → "no editor", headless
+      again; Enter on the file → new Helix, `space i t` there focuses the app (no second
+      panel); quitting the app removes the socket. Fixed on the way: a stopped server kept
+      its accepted control connections open.
+      Not done: database/schema in the new file's header (only `conn=`), outside Herdr the
+      app can't open files (it says so).
+- [x] Fix after first use: the first frame was drawn at a guessed 60×30 before the terminal
+      reported its size; in a shorter pane it scrolled the screen and left stale rows (tables
+      over the header). Panel and picker now draw nothing until the size is known. `⟲`
+      (drawn wide by the font, over the label) → `↺`.
+
+#### 10.8 Decided (2026-10-16)
+
+- Default `environment`: `dev`.
+- `tui.queriesDir` (relative or absolute, default `queries`) and `query_<N>.sql` naming (10.7).
+- The panel takes half of the split pane; `panel.placement` (default `right`).
+- No toggle on `space i t` (a Helix binding); `panel.keys.backToEditor` (default `backspace`).
+
 ### Phase 5 — later / optional
 
 - [ ] `EXPLAIN` to buffer
+- [ ] Confirmation before destructive runs on `prod` connections (`DELETE`/`UPDATE` without
+      `WHERE`, DDL), through the inline TUI (after Phase 10)
 - [ ] Snippets/templates (after Phase 9, if wanted): FK-guessed `REFERENCES customer (id)` for
       a column named `customer_id`; type parameters with tab stops (`varchar(|)`); clause
       skeletons (`ADD CONSTRAINT name FOREIGN KEY (…) REFERENCES t (…)`, `ON CONFLICT (…) DO
@@ -871,6 +1107,16 @@ Config: every connection validated; PostgreSQL/MySQL/Vertica `host` without `pro
 - **2026-10-16** Phase 7 done: fix for UNION lineage in derived tables/CTEs (+ Oracle
   `MINUS`); current schema per connection (`sqlh schema`, header `schema=`, CADE works from
   read-only logins); lineage for UNION views; go to definition of tables and `sqlh ddl`.
+
+- **2026-10-16** Phase 10 built on `tui-experiment`: `internal/tui` (panel, inline picker),
+  `internal/herdr` (socket API), `internal/history`; panel with object tree, statement
+  context, Describe/DDL/Sample previews, history versions (replace the statement), `sqlh tui`
+  with a headless server handing over to Helix's; fzf removed. Verified live in Herdr + Helix.
+
+- **2026-10-16** Phase 10 planned after a lazydb comparison: own Bubble Tea TUI replacing
+  fzf — side panel tied to the Helix pane (object tree, inserts at Helix's cursor through a
+  pending action + `:insert-output sqlh panel take`), inline popup, `sqlh tui`; sample rows
+  on a separate read-only session with a dev/test/prod policy; run history with versions.
 
 ## 6. Environment notes
 

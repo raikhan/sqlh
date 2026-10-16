@@ -12,6 +12,7 @@ import (
 	"github.com/sourcegraph/jsonrpc2"
 
 	"github.com/raikhan/sqlh/internal/catalog"
+	"github.com/raikhan/sqlh/internal/config"
 	"github.com/raikhan/sqlh/internal/control"
 	"github.com/raikhan/sqlh/internal/database"
 	"github.com/raikhan/sqlh/internal/exec"
@@ -43,7 +44,11 @@ func (s *Server) startControl() {
 	if s.workspace == "" || s.control != nil {
 		return
 	}
-	l, err := control.Listen(s.workspace)
+	listen := control.Listen
+	if s.headless {
+		listen = control.ListenHeadless
+	}
+	l, err := listen(s.workspace)
 	if err != nil {
 		log.Println("control socket:", err)
 		return
@@ -62,9 +67,10 @@ func (s *Server) startControl() {
 			// Async: a run waits for its job inside the handler; the read
 			// loop must keep going to notice the CLI disconnecting (Ctrl-C,
 			// kill). Every control method takes s.mu itself.
-			jsonrpc2.NewConn(context.Background(),
+			conn := jsonrpc2.NewConn(context.Background(),
 				jsonrpc2.NewBufferedStream(nc, jsonrpc2.VSCodeObjectCodec{}),
 				jsonrpc2.AsyncHandler(jsonrpc2.HandlerWithError(s.handleControl)))
+			s.trackControlConn(conn)
 		}
 	}()
 }
@@ -74,7 +80,21 @@ func (s *Server) stopControl() {
 		_ = s.control.Close()
 		control.Cleanup(s.workspace)
 		s.control = nil
+		// subscribers (panels) must notice and reconnect to the next server
+		s.controlConns.Range(func(k, _ any) bool {
+			_ = k.(*jsonrpc2.Conn).Close()
+			return true
+		})
 	}
+}
+
+// trackControlConn remembers an open control connection until it closes.
+func (s *Server) trackControlConn(conn *jsonrpc2.Conn) {
+	s.controlConns.Store(conn, true)
+	go func() {
+		<-conn.DisconnectNotify()
+		s.controlConns.Delete(conn)
+	}()
 }
 
 // handleControl serves CLI requests. Like editor requests they run under
@@ -94,6 +114,52 @@ func (s *Server) handleControl(ctx context.Context, conn *jsonrpc2.Conn, req *js
 			return nil, err
 		}
 		return s.controlDDL(ctx, p.Table)
+	case control.MethodSubscribe:
+		var p control.SubscribeParams
+		if err := unmarshal(req, &p); err != nil {
+			return nil, err
+		}
+		return s.subscribe(conn, p), nil
+	case control.MethodPanelFocus:
+		var p control.PanelFocusParams
+		if err := unmarshal(req, &p); err != nil {
+			return nil, err
+		}
+		return s.panelFocus(p), nil
+	case control.MethodPanelAction:
+		var p control.PanelActionParams
+		if err := unmarshal(req, &p); err != nil {
+			return nil, err
+		}
+		s.setPanelAction(p)
+		return "ok", nil
+	case control.MethodPanelTake:
+		var p control.PanelTakeParams
+		if err := unmarshal(req, &p); err != nil {
+			return nil, err
+		}
+		return s.takePanelAction(p), nil
+	case control.MethodPanels:
+		return s.panels(), nil
+	case control.MethodRelease:
+		if !s.headless {
+			return nil, errors.New("this server belongs to an editor")
+		}
+		// an editor's server starts for the workspace: stop serving (also
+		// the database: the subscribers reconnect to the new server)
+		s.mu.Lock()
+		err := s.stopLocked()
+		s.mu.Unlock()
+		if err != nil {
+			log.Println("release:", err)
+		}
+		return "released", nil
+	case control.MethodSample: // queries the database: takes s.mu itself
+		var p control.SampleParams
+		if err := unmarshal(req, &p); err != nil {
+			return nil, err
+		}
+		return s.controlSample(ctx, p)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -102,6 +168,20 @@ func (s *Server) handleControl(ctx context.Context, conn *jsonrpc2.Conn, req *js
 		return s.controlStatus(), nil
 	case control.MethodConnections:
 		return s.controlConnections(), nil
+	case control.MethodCatalog:
+		return s.controlCatalog()
+	case control.MethodHistory:
+		var p control.HistoryParams
+		if err := unmarshal(req, &p); err != nil {
+			return nil, err
+		}
+		return s.controlHistory(p)
+	case control.MethodReplaceStatement:
+		var p control.ReplaceParams
+		if err := unmarshal(req, &p); err != nil {
+			return nil, err
+		}
+		return s.replaceStatement(p)
 	case control.MethodConnect:
 		var p control.ConnectParams
 		if err := unmarshal(req, &p); err != nil {
@@ -224,6 +304,35 @@ func (s *Server) handleControl(ctx context.Context, conn *jsonrpc2.Conn, req *js
 	return nil, &jsonrpc2.Error{Code: jsonrpc2.CodeMethodNotFound, Message: "unknown method " + req.Method}
 }
 
+// RunHeadless starts a server without an editor for a workspace (`sqlh tui`):
+// connected, serving the control socket until an editor's server takes it
+// (MethodRelease) or Stop.
+func RunHeadless(cfg *config.Config, workspace string) (*Server, error) {
+	s := NewServer()
+	s.SpecificFileCfg = cfg
+	s.workspace = workspace
+	s.headless = true
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.restoreConnection()
+	s.startControl()
+	if s.control == nil {
+		_ = s.stopLocked()
+		return nil, errors.New("could not serve the workspace (another server?)")
+	}
+	if err := s.reconnectionDB(context.Background()); err != nil {
+		log.Println("headless server:", err) // the catalog says "not connected"
+	}
+	return s, nil
+}
+
+// Released reports whether the server has given its socket away.
+func (s *Server) Released() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.headless && s.control == nil
+}
+
 // stampFile updates the connection header of a file the CLI acted from
 // (`connect/db/schema --file`), if the editor has it open.
 func (s *Server) stampFile(path string) {
@@ -312,7 +421,7 @@ func (s *Server) controlStatus() control.Status {
 	if s.curDBCfg != nil {
 		st.Connection = &control.Connection{
 			Index: s.curConnectionIndex + 1, Alias: s.curDBCfg.Alias, Driver: string(s.curDBCfg.Driver),
-			Desc: database.DescribeConnection(s.curDBCfg), Current: true,
+			Desc: database.DescribeConnection(s.curDBCfg), Current: true, Environment: s.curDBCfg.Env(),
 		}
 		st.ResultsDir = exec.ExpandDir(s.getConfig().Results.Dir, s.workspace, connAlias(s.curDBCfg))
 		st.Schema = s.currentSchema()
@@ -323,6 +432,14 @@ func (s *Server) controlStatus() control.Status {
 	}
 	if cfg := s.getConfig(); cfg != nil {
 		st.Viewer = cfg.Results.Viewer
+		st.Panel = &control.PanelSettings{
+			Placement:    cfg.Panel.PlacementOrDefault(),
+			InsertKeys:   cfg.Panel.InsertKeysOrDefault(),
+			BackToEditor: cfg.Panel.BackToEditorKey(),
+			Icons:        cfg.Panel.Icons,
+			QueriesDir:   cfg.TUI.QueriesDirIn(s.workspace),
+			Editor:       cfg.TUI.EditorOrDefault(),
+		}
 	}
 	return st
 }
@@ -336,7 +453,7 @@ func (s *Server) controlConnections() []control.Connection {
 	for i, c := range cfg.Connections {
 		out = append(out, control.Connection{
 			Index: i + 1, Alias: c.Alias, Driver: string(c.Driver), Desc: database.DescribeConnection(c),
-			Current: i == s.curConnectionIndex && s.dbConn != nil,
+			Current: i == s.curConnectionIndex && s.dbConn != nil, Environment: c.Env(),
 		})
 	}
 	return out

@@ -14,6 +14,7 @@ import (
 	"github.com/raikhan/sqlh/internal/config"
 	"github.com/raikhan/sqlh/internal/control"
 	"github.com/raikhan/sqlh/internal/database"
+	"github.com/raikhan/sqlh/internal/tui"
 )
 
 // catalogAPI is implemented by the server (schema cache) and standalone
@@ -215,27 +216,22 @@ func openCatalog(c *cli.Context) (catalogAPI, error) {
 	return openStandaloneCatalog(c)
 }
 
-// passThrough are the flags a preview subprocess must inherit.
-func passThrough(c *cli.Context) string {
-	var b strings.Builder
-	if d := startDir(c); d != "" {
-		b.WriteString(" -C " + shellQuote(d))
+// describePreview describes a table for a picker's preview.
+func describePreview(api catalogAPI, table string) string {
+	cols, err := api.columns(table)
+	if err != nil {
+		return err.Error()
 	}
-	if v := c.String("conn"); v != "" {
-		b.WriteString(" --conn " + shellQuote(v))
+	rel, err := api.relations(table)
+	if err != nil {
+		return err.Error()
 	}
-	if c.Bool("standalone") {
-		b.WriteString(" --standalone")
-	}
-	if v := c.String("config"); v != "" {
-		return " --config " + shellQuote(v) + b.String()
-	}
-	return b.String()
+	return textStyle{color: true}.describe(rel, cols)
 }
 
 func catalogFlags(extra ...cli.Flag) []cli.Flag {
 	return append([]cli.Flag{
-		&cli.BoolFlag{Name: "pick", Aliases: []string{"p"}, Usage: "choose with fzf and print the choice (for Helix :insert-output)"},
+		&cli.BoolFlag{Name: "pick", Aliases: []string{"p"}, Usage: "choose in the picker and print the choice (for Helix :insert-output)"},
 		&cli.BoolFlag{Name: "long", Usage: "tab-separated details"},
 		&cli.BoolFlag{Name: "json", Usage: "machine-readable output"},
 		&cli.StringFlag{Name: "dir", Aliases: []string{"C"}, Usage: "find the workspace from `DIR`"},
@@ -360,12 +356,12 @@ func columnsCmd(c *cli.Context) error {
 		if err != nil {
 			return err
 		}
-		lines := make([]string, len(tables))
+		its := make([]tui.PickItem, len(tables))
 		for i, t := range tables {
-			lines[i] = fmt.Sprintf("%s\t%-40s %d cols", t.Insert, t.Insert, t.Columns)
+			its[i] = tui.PickItem{Value: t.Insert, Display: fmt.Sprintf("%-40s %s", t.Insert, ansiDim+fmt.Sprintf("%d cols", t.Columns)+ansiReset)}
 		}
-		vals, err := pick(lines, pickOpts{prompt: "table", header: "pick a table, then its columns",
-			preview: self() + " describe" + passThrough(c) + " {1}"})
+		vals, err := pick(its, tui.PickOptions{Prompt: "table", Header: "pick a table, then its columns",
+			Preview: func(it tui.PickItem) string { return describePreview(api, it.Value) }})
 		if err != nil || len(vals) == 0 {
 			return err
 		}
@@ -379,15 +375,16 @@ func columnsCmd(c *cli.Context) error {
 	case c.Bool("json"):
 		return printJSON(cols)
 	case c.Bool("pick"):
-		lines := make([]string, len(cols))
+		its := make([]tui.PickItem, len(cols))
 		for i, col := range cols {
 			pk := ""
 			if isPK(col.Key) {
 				pk = "  PK"
 			}
-			lines[i] = fmt.Sprintf("%s\t%-32s %s%s", c.String("prefix")+col.Insert, col.Insert, col.Type, pk)
+			its[i] = tui.PickItem{Value: c.String("prefix") + col.Insert, Match: col.Insert,
+				Display: fmt.Sprintf("%-32s %s", col.Insert, ansiDim+col.Type+pk+ansiReset)}
 		}
-		vals, err := pick(lines, pickOpts{prompt: table, header: "Tab: select · Ctrl-A: all · Enter: insert", multi: true})
+		vals, err := pick(its, tui.PickOptions{Prompt: table, Header: "Tab: select · Ctrl-A: all · Enter: insert", Multi: true})
 		if err != nil {
 			return err
 		}
@@ -429,15 +426,24 @@ func schemasCmd(c *cli.Context) error {
 	case c.Bool("json"):
 		return printJSON(schemas)
 	case c.Bool("pick"):
-		lines := make([]string, len(schemas))
+		its := make([]tui.PickItem, len(schemas))
 		for i, s := range schemas {
-			def := ""
+			its[i] = tui.PickItem{Value: s.Name}
 			if s.Default {
-				def = "  (default)"
+				its[i].Display = s.Name + ansiDim + "  (default)" + ansiReset
 			}
-			lines[i] = s.Name + "\t" + s.Name + def
 		}
-		vals, err := pick(lines, pickOpts{prompt: "schema", preview: self() + " tables --long" + passThrough(c) + " --schema {1}"})
+		vals, err := pick(its, tui.PickOptions{Prompt: "schema", Preview: func(it tui.PickItem) string {
+			tables, err := api.tables(it.Value, true)
+			if err != nil {
+				return err.Error()
+			}
+			var b strings.Builder
+			for _, t := range tables {
+				fmt.Fprintf(&b, "%s  %s\n", t.Name, ansiDim+fmt.Sprintf("%d cols", t.Columns)+ansiReset)
+			}
+			return b.String()
+		}})
 		if err != nil {
 			return err
 		}
@@ -468,11 +474,7 @@ func databasesCmd(c *cli.Context) error {
 	case c.Bool("json"):
 		return printJSON(dbs)
 	case c.Bool("pick"):
-		lines := make([]string, len(dbs))
-		for i, d := range dbs {
-			lines[i] = d + "\t" + d
-		}
-		vals, err := pick(lines, pickOpts{prompt: "database"})
+		vals, err := pick(items(dbs...), tui.PickOptions{Prompt: "database"})
 		if err != nil {
 			return err
 		}
@@ -500,11 +502,7 @@ func dbCmd(c *cli.Context) error {
 		if err := call(cl, control.MethodDatabases, nil, &dbs); err != nil {
 			return err
 		}
-		lines := make([]string, len(dbs))
-		for i, d := range dbs {
-			lines[i] = d + "\t" + d
-		}
-		vals, err := pick(lines, pickOpts{prompt: "database"})
+		vals, err := pick(items(dbs...), tui.PickOptions{Prompt: "database"})
 		if err != nil || len(vals) == 0 {
 			return err
 		}
@@ -537,15 +535,14 @@ func schemaCmd(c *cli.Context) error {
 		if err := call(cl, control.MethodSchemaChoices, nil, &choices); err != nil {
 			return err
 		}
-		lines := make([]string, len(choices))
+		its := make([]tui.PickItem, len(choices))
 		for i, sc := range choices {
-			mark := " "
+			its[i] = tui.PickItem{Value: sc.Name, Display: "  " + sc.Name}
 			if sc.Default {
-				mark = "*"
+				its[i].Display = "* " + sc.Name
 			}
-			lines[i] = sc.Name + "\t" + mark + " " + sc.Name
 		}
-		vals, err := pick(lines, pickOpts{prompt: "schema"})
+		vals, err := pick(its, tui.PickOptions{Prompt: "schema"})
 		if err != nil || len(vals) == 0 {
 			return err
 		}

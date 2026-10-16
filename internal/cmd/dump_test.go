@@ -100,9 +100,12 @@ func TestDumpHeaderConnection(t *testing.T) {
 	if got := e.read("report.csv"); got != "name\nb.db\nx\n" {
 		t.Errorf("report.csv = %q", got)
 	}
-	// never the results directory / latest.csv
-	if _, err := os.Stat(filepath.Join(e.ws, ".sqlh")); !os.IsNotExist(err) {
-		t.Error(".sqlh created by dump")
+	// never the results directory / latest.csv (only the history)
+	if _, err := os.Stat(filepath.Join(e.ws, ".sqlh", "results")); !os.IsNotExist(err) {
+		t.Error(".sqlh/results created by dump")
+	}
+	if b, err := os.ReadFile(filepath.Join(e.ws, ".sqlh", "history.jsonl")); err != nil || !strings.Contains(string(b), `"kind":"dump"`) {
+		t.Errorf("history: %s %v", b, err)
 	}
 
 	// overwritten; -d DIR

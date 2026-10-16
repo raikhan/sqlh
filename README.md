@@ -128,6 +128,16 @@ From the CLI, `sqlh describe TABLE` / `sqlh relations TABLE`, and the table pick
 cursor first and, after `JOIN`, inserts the whole join clause; Ctrl-R drills into a table's
 relationships and inserts the join chain. See [doc/cli.md](doc/cli.md#relationships).
 
+#### Side panel
+
+`sqlh panel` (Helix `space i t`, in [Herdr](https://herdr.dev)) opens a panel next to the
+editor: the tables of the statement you are editing and those related to them, then the
+connection's objects as a tree (schemas, tables, views, their relations, indexes, columns),
+with a Describe/DDL preview. Set the cursor in Helix, pick an object in the panel, press
+Enter: it is inserted at the cursor — after `JOIN` with its alias and `ON` condition, or as
+a whole join chain. `/` searches everything. The panel closes with its Helix. See
+[doc/cli.md](doc/cli.md#panel).
+
 #### Query files
 
 A `-- sqlh: conn=ALIAS [db=NAME] [schema=NAME]` header at the top of a file records the

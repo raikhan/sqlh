@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/urfave/cli/v2"
+
+	"github.com/raikhan/sqlh/internal/tui"
 )
 
 // --bg: the command starts itself again in a detached process (own session,
@@ -110,26 +112,29 @@ func (l limitChoice) String() string {
 	return strconv.Itoa(l.n)
 }
 
-// typedNumber: Enter on a typed number takes the number itself ("10" would
-// otherwise pick "100").
-const typedNumber = `case {q} in "" | *[!0-9_]*) echo accept ;; *) echo print-query ;; esac`
-
-// askLimit picks a row limit with fzf: a preset, a typed number or all.
-// ok is false when cancelled.
+// askLimit picks a row limit: a preset, a typed number (Enter takes "10"
+// as typed rather than the "100" it matches) or all. ok is false when
+// cancelled.
 func askLimit() (limitChoice, bool, error) {
-	presets := []string{"100", "1000", "10000", "100000", "all"}
-	lines := make([]string, len(presets))
-	for i, p := range presets {
-		lines[i] = p + "\t" + p
-	}
-	vals, err := pick(lines, pickOpts{
-		prompt: "rows", header: "Rows to fetch (type a number, or pick)",
-		binds: []string{"enter:transform:" + typedNumber}, args: []string{"--no-sort"},
+	res, ok, err := tui.Pick(items("100", "1000", "10000", "100000", "all"), tui.PickOptions{
+		Prompt: "rows", Header: "Rows to fetch (type a number, or pick)", NoSort: true,
+		AcceptQuery: func(q string) bool {
+			q = strings.ReplaceAll(strings.TrimSpace(q), "_", "")
+			if q == "" {
+				return false
+			}
+			_, err := strconv.Atoi(q)
+			return err == nil
+		},
 	})
-	if err != nil || len(vals) == 0 {
+	if err != nil || !ok {
 		return limitChoice{}, false, err
 	}
-	l, err := parseLimit(vals[0])
+	v := res.Query
+	if v == "" && len(res.Values) > 0 {
+		v = res.Values[0]
+	}
+	l, err := parseLimit(v)
 	if err != nil || l.ask || (!l.all && l.n == 0) {
 		return limitChoice{}, false, nil // not a number: cancelled
 	}

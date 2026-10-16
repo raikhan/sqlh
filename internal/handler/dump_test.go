@@ -45,6 +45,28 @@ func (e *fakeEditor) handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonr
 		}
 		e.mu.Lock()
 		defer e.mu.Unlock()
+		for uri, edits := range p.Edit.Changes { // unversioned (ASCII test texts)
+			for _, te := range edits {
+				text := e.text[uri]
+				off := func(pos lsp.Position) int {
+					o := 0
+					for l := 0; l < pos.Line; l++ {
+						o += strings.IndexByte(text[o:], '\n') + 1
+					}
+					return o + pos.Character
+				}
+				e.text[uri] = text[:off(te.Range.Start)] + te.NewText + text[off(te.Range.End):]
+			}
+			e.version[uri]++
+			e.edits++
+			text, version := e.text[uri], e.version[uri]
+			go func() {
+				_ = e.conn.Notify(context.Background(), "textDocument/didChange", lsp.DidChangeTextDocumentParams{
+					TextDocument:   lsp.VersionedTextDocumentIdentifier{URI: uri, Version: version},
+					ContentChanges: []lsp.TextDocumentContentChangeEvent{{Text: text}},
+				})
+			}()
+		}
 		for _, dc := range p.Edit.DocumentChanges {
 			uri := dc.TextDocument.URI
 			if int(dc.TextDocument.Version) != e.version[uri] {
