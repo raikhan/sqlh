@@ -1741,7 +1741,7 @@ in 15.5.
    `10+ chains` past the limit), not the steps (seen in the tree once chosen).
 5. Before the v2 port (Phase 16).
 
-### Phase 16 — Bubble Tea v2 (planned 2026-10-16)
+### Phase 16 — Bubble Tea v2 (2026-10-16) ✅ done (branch `tui-experiment`)
 
 Why: v2 reads the kitty keyboard protocol, so keys like `ctrl+:` and `ctrl+R` (= ctrl+shift+r)
 reach the panel; v1 reads only the classic encoding. Probed in Herdr (`/tmp/keyprobe`, v2.0.10):
@@ -1772,6 +1772,30 @@ Herdr grants the app's keyboard-enhancement request (`Flags:1`, disambiguate) an
 - [ ] Tests: the key helper builds `tea.KeyPressMsg`; everything else unchanged; `-race`.
 - [ ] Live: panel, `sqlh tui`, pickers from Helix (`space i T`, `space i C`), the form,
       mouse clicks on the tab bar, `ctrl+e`/`ctrl+:` editing the config.
+
+#### 16.3 Status ✅
+
+- [x] `charm.land/bubbletea/v2` v2.1.0, `lipgloss/v2` v2.0.6, `bubbles/v2` v2.2.1; v1 and
+      termenv gone (`go mod tidy` raised the `go` directive to 1.26.0, required by them).
+- [x] `View() tea.View` (panel: `AltScreen`, `MouseModeCellMotion`; picker: inline); tests
+      use `render()`. `tea.KeyPressMsg` everywhere; `keyNames` (String, Keystroke, shift
+      folded in: `ctrl+R`, `ctrl+:` via the US shifted map, `ShiftedCode` when the terminal
+      reports it) + `keymap.actionOf`; `typed` for text input; `tea.PasteMsg` to the search,
+      palette, prompt, form; mouse `MouseClickMsg`/`MouseWheelMsg`; the v1 "jj in one message"
+      split dropped (v2 parses keys one by one).
+- [x] Styles: `setStyles(dark)` with `lipgloss.LightDark`; the panel and the picker ask
+      `tea.RequestBackgroundColor` and rebuild on `BackgroundColorMsg`. Colour profile from
+      the program's output (the picker's /dev/tty): the v1 `SetColorProfile` workaround and
+      the manual kitty push/pop around the picker removed (v2 pushes its flags and pops them
+      on exit: Helix's come back).
+- [x] bubbles textinput: `staticCursor` (styles' `Cursor.Blink = false`), `SetWidth`. Boxes
+      with a set width: `Width(bw+2)` (v2 counts the border).
+- [x] Keys: `mark` default `space` (v2's name; `" "` in a config still works), `editConfig`
+      `ctrl+:`, `reloadConfig` `ctrl+R`; `receivable` removed.
+- [x] Tests: `press(name)` builds kitty-style key presses (`ctrl+R` = ctrl+shift+r, `ctrl+:` =
+      ctrl+shift+;, `G` = shift+g with text); all pass with `-race`. Live in Herdr: `space i
+      C` picker (Esc back to Helix intact), panel `:` chains + `n`, `ctrl+R` reloads,
+      palette, `sqlh tui` tree and connection form.
 
 #### 16.2 Decided (2026-10-16)
 
@@ -1854,6 +1878,9 @@ Herdr grants the app's keyboard-enhancement request (`Flags:1`, disambiguate) an
 - **2026-10-16** Phase 7 done: fix for UNION lineage in derived tables/CTEs (+ Oracle
   `MINUS`); current schema per connection (`sqlh schema`, header `schema=`, CADE works from
   read-only logins); lineage for UNION views; go to definition of tables and `sqlh ddl`.
+
+- **2026-10-16** Phase 16: Bubble Tea v2 (kitty keyboard protocol): `ctrl+:` edits and
+  `ctrl+R` reloads the config; shift spellings matched either way.
 
 - **2026-10-16** Phase 15: every join chain to a table (up to `chainDepth`, at most
   `chainLimit`), opened one at a time (or all), `n`/`N` between them; new query on `c`.

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/raikhan/sqlh/internal/config"
 	"github.com/raikhan/sqlh/internal/connedit"
@@ -245,38 +245,7 @@ func newPanelWith(t *testing.T, be *fakeBackend, opt Options) *Panel {
 
 func key(p *Panel, keys ...string) {
 	for _, k := range keys {
-		var msg tea.KeyMsg
-		switch k {
-		case "enter":
-			msg = tea.KeyMsg{Type: tea.KeyEnter}
-		case "esc":
-			msg = tea.KeyMsg{Type: tea.KeyEsc}
-		case "tab":
-			msg = tea.KeyMsg{Type: tea.KeyTab}
-		case "space":
-			msg = tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}}
-		case "backspace":
-			msg = tea.KeyMsg{Type: tea.KeyBackspace}
-		case "shift+tab":
-			msg = tea.KeyMsg{Type: tea.KeyShiftTab}
-		case "ctrl+y":
-			msg = tea.KeyMsg{Type: tea.KeyCtrlY}
-		case "ctrl+s":
-			msg = tea.KeyMsg{Type: tea.KeyCtrlS}
-		case "ctrl+t":
-			msg = tea.KeyMsg{Type: tea.KeyCtrlT}
-		case "ctrl+r":
-			msg = tea.KeyMsg{Type: tea.KeyCtrlR}
-		case "ctrl+u":
-			msg = tea.KeyMsg{Type: tea.KeyCtrlU}
-		case "down":
-			msg = tea.KeyMsg{Type: tea.KeyDown}
-		case "right":
-			msg = tea.KeyMsg{Type: tea.KeyRight}
-		default:
-			msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
-		}
-		_, cmd := p.Update(msg)
+		_, cmd := p.Update(press(k))
 		drain(p, cmd)
 	}
 }
@@ -284,7 +253,7 @@ func key(p *Panel, keys ...string) {
 // typeText types into a search or form, rune by rune.
 func typeText(p *Panel, s string) {
 	for _, r := range s {
-		_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		_, cmd := p.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
 		drain(p, cmd)
 	}
 }
@@ -317,14 +286,14 @@ func TestPanelTabs(t *testing.T) {
 	if p.cur != tabStmt {
 		t.Errorf("the panel starts on %d, want Statement", p.cur)
 	}
-	view := plain(p.View())
+	view := plain(p.render())
 	for _, want := range []string{"pg_local › shop › sales", "dev", "1 Connections", "2 Objects", "3 Statement", "4 Queries", "5 History"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("view lacks %q:\n%s", want, view)
 		}
 	}
 	key(p, "2")
-	view = plain(p.View())
+	view = plain(p.render())
 	for _, want := range []string{"Tables", "customer", "orders", "Views", "audit"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("objects lack %q:\n%s", want, view)
@@ -351,7 +320,7 @@ func TestPanelEnterNavigatesCtrlYInserts(t *testing.T) {
 	if len(be.acts) != 0 {
 		t.Fatalf("enter inserted: %+v", be.acts)
 	}
-	view := plain(p.View())
+	view := plain(p.render())
 	for _, want := range []string{"Relations", "Indexes", "customer_id", "integer", "-> customer"} {
 		if !strings.Contains(strings.ReplaceAll(view, "→", "->"), strings.ReplaceAll(want, "->", "->")) && !strings.Contains(view, strings.TrimPrefix(want, "-> ")) {
 			t.Errorf("expanded orders lacks %q:\n%s", want, view)
@@ -378,7 +347,7 @@ func TestPanelEnterNavigatesCtrlYInserts(t *testing.T) {
 		}
 	}
 	if regionRow == nil {
-		t.Fatalf("no region under customer:\n%s", plain(p.View()))
+		t.Fatalf("no region under customer:\n%s", plain(p.render()))
 	}
 	if regionRow.detail != "customer.region_id  nullable" {
 		t.Errorf("nested detail %q", regionRow.detail)
@@ -427,7 +396,7 @@ func TestPanelStatement(t *testing.T) {
 	be := &fakeBackend{ctx: &control.ContextResult{InJoin: true, Insert: "join",
 		Tables: []control.ScopeTable{{Name: "orders", Alias: "o", Ref: "o"}}}}
 	p := newTestPanel(t, be, &control.Cursor{File: "/w/q.sql", Line: 3, Col: 10})
-	view := plain(p.View())
+	view := plain(p.render())
 	for _, want := range []string{"q.sql:3 · after JOIN", "orders o", "Relations", "→ customer  o.customer_id", "← order_line  o.id"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("view lacks %q:\n%s", want, view)
@@ -531,12 +500,12 @@ func TestPanelPreviewAndDDL(t *testing.T) {
 	selectRow(t, p, "Views")
 	key(p, "l")
 	selectRow(t, p, "v_orders")
-	view := plain(p.View())
+	view := plain(p.render())
 	if !strings.Contains(view, "Definition") || !strings.Contains(view, "select id, customer_id from orders") {
 		t.Errorf("view preview:\n%s", view)
 	}
 	key(p, "tab")
-	if view = plain(p.View()); !strings.Contains(view, "CREATE TABLE v_orders") {
+	if view = plain(p.render()); !strings.Contains(view, "CREATE TABLE v_orders") {
 		t.Errorf("DDL tab:\n%s", view)
 	}
 }
@@ -547,8 +516,8 @@ func TestPanelMenu(t *testing.T) {
 	key(p, "2")
 	selectRow(t, p, "orders")
 	key(p, ".")
-	if !strings.Contains(plain(p.View()), "insert SELECT * FROM orders") {
-		t.Errorf("menu:\n%s", plain(p.View()))
+	if !strings.Contains(plain(p.render()), "insert SELECT * FROM orders") {
+		t.Errorf("menu:\n%s", plain(p.render()))
 	}
 	key(p, "n")
 	if len(be.acts) != 1 || be.acts[0].Mode != "name" {
@@ -563,7 +532,7 @@ func TestPanelConnections(t *testing.T) {
 	}}
 	p := newTestPanel(t, be, nil)
 	key(p, "1")
-	view := plain(p.View())
+	view := plain(p.render())
 	if !regexp.MustCompile(`pg_local +● shop +sales +dev`).MatchString(view) || !strings.Contains(view, "CADE  2") {
 		t.Errorf("connections:\n%s", view)
 	}
@@ -586,7 +555,7 @@ func TestPanelConnections(t *testing.T) {
 		t.Errorf("the group is open:\n%s", view)
 	}
 	selectRow(t, p, "pg_local")
-	view = plain(p.View())
+	view = plain(p.render())
 	for _, want := range []string{"Host", "localhost", "Port", "5432", "Password", "••••••", "● current"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("describe lacks %q:\n%s", want, view)
@@ -607,7 +576,7 @@ func TestPanelConnections(t *testing.T) {
 	if p.form == nil || p.form.value("host") != "localhost" {
 		t.Fatalf("form %+v", p.form)
 	}
-	if view := plain(p.View()); !strings.Contains(view, "Edit pg_local") || strings.Contains(view, "passwd: x") {
+	if view := plain(p.render()); !strings.Contains(view, "Edit pg_local") || strings.Contains(view, "passwd: x") {
 		t.Errorf("form:\n%s", view)
 	}
 	for p.form.focused().key != "host" {
@@ -616,8 +585,8 @@ func TestPanelConnections(t *testing.T) {
 	key(p, "ctrl+u")
 	typeText(p, "db.example")
 	key(p, "ctrl+t")
-	if len(be.tested) != 1 || be.tested[0]["host"] != "db.example" || !strings.Contains(plain(p.View()), "connected") {
-		t.Errorf("test: %v\n%s", be.tested, plain(p.View()))
+	if len(be.tested) != 1 || be.tested[0]["host"] != "db.example" || !strings.Contains(plain(p.render()), "connected") {
+		t.Errorf("test: %v\n%s", be.tested, plain(p.render()))
 	}
 	key(p, "ctrl+s")
 	if p.form != nil || len(be.saved) != 1 || be.saved[0].old != "pg_local" || be.saved[0].f["host"] != "db.example" || be.saved[0].f["passwd"] != "x" {
@@ -653,8 +622,8 @@ func TestPanelConnections(t *testing.T) {
 	// delete: asks first; not the current connection
 	selectRow(t, p, "oracle_prod")
 	key(p, "X")
-	if !strings.Contains(plain(p.View()), "Delete connection oracle_prod") {
-		t.Errorf("no question:\n%s", plain(p.View()))
+	if !strings.Contains(plain(p.render()), "Delete connection oracle_prod") {
+		t.Errorf("no question:\n%s", plain(p.render()))
 	}
 	key(p, "y")
 	if strings.Join(be.deleted, ",") != "oracle_prod" {
@@ -679,12 +648,12 @@ func TestPanelSampleOneRow(t *testing.T) {
 	key(p, "2")
 	selectRow(t, p, "customer")
 	key(p, "tab", "tab") // Sample (auto on dev: loads once the selection rests)
-	view := plain(p.View())
+	view := plain(p.render())
 	if !strings.Contains(view, "row 1 of 2") || !strings.Contains(view, "acme") || strings.Contains(view, "globex") {
 		t.Errorf("sample:\n%s", view)
 	}
 	key(p, "]")
-	view = plain(p.View())
+	view = plain(p.render())
 	if !strings.Contains(view, "row 2 of 2") || !strings.Contains(view, "globex") || !strings.Contains(view, "NULL") {
 		t.Errorf("next row:\n%s", view)
 	}
@@ -692,7 +661,7 @@ func TestPanelSampleOneRow(t *testing.T) {
 	key(p, "l")
 	selectRow(t, p, "region_id")
 	key(p, "s")
-	if view := plain(p.View()); !strings.Contains(view, "most common values") || !strings.Contains(view, "north") {
+	if view := plain(p.render()); !strings.Contains(view, "most common values") || !strings.Contains(view, "north") {
 		t.Errorf("top values:\n%s", view)
 	}
 	// views are not sampled automatically
@@ -700,8 +669,8 @@ func TestPanelSampleOneRow(t *testing.T) {
 	selectRow(t, p, "Views")
 	key(p, "l")
 	selectRow(t, p, "v_orders")
-	if len(be.sampled) != 0 || !strings.Contains(plain(p.View()), "views on request") {
-		t.Errorf("view sampled %v:\n%s", be.sampled, plain(p.View()))
+	if len(be.sampled) != 0 || !strings.Contains(plain(p.render()), "views on request") {
+		t.Errorf("view sampled %v:\n%s", be.sampled, plain(p.render()))
 	}
 }
 
@@ -719,7 +688,7 @@ func TestPanelHistory(t *testing.T) {
 	}, versions: map[string][]history.Entry{"1": {v3, v1}, "9": {{ID: "9", SQL: "select 1", Time: now, Lineage: "9"}}}}
 	p := newTestPanel(t, be, &control.Cursor{File: "/w/q.sql", Line: 3, Col: 1})
 	key(p, "5")
-	view := plain(p.View())
+	view := plain(p.render())
 	if !strings.Contains(view, "This statement") || !strings.Contains(view, "= current") || strings.Count(view, "where o.total > 100") != 2 {
 		t.Fatalf("history:\n%s", view)
 	}
@@ -741,11 +710,11 @@ func TestPanelHistory(t *testing.T) {
 		}
 	}
 	p.tab().sel = indexOf(p.rows(), older)
-	if view = plain(p.View()); !strings.Contains(view, "─ Query │ Diff") || strings.Contains(view, "- where o.total") {
+	if view = plain(p.render()); !strings.Contains(view, "─ Query │ Diff") || strings.Contains(view, "- where o.total") {
 		t.Errorf("query tab:\n%s", view)
 	}
 	key(p, "tab")
-	view = plain(p.View())
+	view = plain(p.render())
 	if !strings.Contains(view, "- where o.total > 100") || !strings.Contains(view, "against the statement at the cursor") {
 		t.Errorf("diff:\n%s", view)
 	}
@@ -766,17 +735,17 @@ func TestPanelHistory(t *testing.T) {
 func TestTUIStandalone(t *testing.T) {
 	be := &fakeBackend{files: []string{"/w/queries/query_1.sql"}}
 	p := newPanelWith(t, be, Options{Icons: "ascii", Standalone: true})
-	if view := plain(p.View()); !strings.Contains(view, "no editor") {
+	if view := plain(p.render()); !strings.Contains(view, "no editor") {
 		t.Fatalf("tui:\n%s", view)
 	}
 	// no editor: ctrl+y copies and says so
 	selectRow(t, p, "orders")
 	key(p, "ctrl+y")
-	if strings.Join(be.copied, ",") != "orders" || len(be.acts) != 0 || !strings.Contains(plain(p.View()), "copied orders") {
-		t.Errorf("copied %v acts %v\n%s", be.copied, be.acts, plain(p.View()))
+	if strings.Join(be.copied, ",") != "orders" || len(be.acts) != 0 || !strings.Contains(plain(p.render()), "copied orders") {
+		t.Errorf("copied %v acts %v\n%s", be.copied, be.acts, plain(p.render()))
 	}
 	key(p, "4")
-	if view := plain(p.View()); !strings.Contains(view, "query_1.sql") {
+	if view := plain(p.render()); !strings.Contains(view, "query_1.sql") {
 		t.Fatalf("queries:\n%s", view)
 	}
 	selectRow(t, p, "query_1.sql")
@@ -809,8 +778,8 @@ func TestPanelKeysConfigurable(t *testing.T) {
 		t.Error("ctrl+y still inserts")
 	}
 	p.msg = ""
-	if !strings.Contains(plain(p.View()), "i insert") {
-		t.Errorf("footer:\n%s", plain(p.View()))
+	if !strings.Contains(plain(p.render()), "i insert") {
+		t.Errorf("footer:\n%s", plain(p.render()))
 	}
 }
 

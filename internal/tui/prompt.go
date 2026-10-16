@@ -5,10 +5,9 @@ package tui
 import (
 	"strings"
 
-	"github.com/charmbracelet/bubbles/cursor"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 type prompt struct {
@@ -21,14 +20,14 @@ func newPrompt(title, hint, value string, run func(string) tea.Cmd) *prompt {
 	in := textinput.New()
 	in.Prompt = ""
 	in.CharLimit = 512
-	in.Cursor.SetMode(cursor.CursorStatic)
+	staticCursor(&in)
 	in.SetValue(value)
 	in.Focus()
 	in.CursorEnd()
 	return &prompt{title: title, hint: hint, input: in, run: run}
 }
 
-func (p *Panel) promptKey(k tea.KeyMsg) tea.Cmd {
+func (p *Panel) promptKey(k tea.KeyPressMsg) tea.Cmd {
 	pr := p.prompt
 	switch k.String() {
 	case "esc":
@@ -50,7 +49,7 @@ func (p *Panel) promptKey(k tea.KeyMsg) tea.Cmd {
 func (p *Panel) viewPrompt(w int) []string {
 	pr := p.prompt
 	bw := min(max(w-8, 30), 70)
-	pr.input.Width = bw - 4
+	pr.input.SetWidth(bw - 4)
 	body := []string{stTitle.Render(pr.title), "", pr.input.View(), "", stDim.Render(pr.hint)}
-	return strings.Split(stMenuBox.Width(bw).Render(lipgloss.JoinVertical(lipgloss.Left, body...)), "\n")
+	return strings.Split(stMenuBox.Width(bw+2).Render(lipgloss.JoinVertical(lipgloss.Left, body...)), "\n")
 }

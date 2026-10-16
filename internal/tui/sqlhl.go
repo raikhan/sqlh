@@ -4,10 +4,11 @@ package tui
 // query files), in the colours of Helix's modus_vivendi_tinted by default.
 
 import (
+	"image/color"
 	"strings"
 	"unicode"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 	"github.com/mattn/go-runewidth"
 
 	"github.com/raikhan/sqlh/dialect"
@@ -316,7 +317,7 @@ func (sx syntax) sqlLines(sql string, w int) []string {
 }
 
 // sqlLinesBg is sqlLines on a background (diffs).
-func (sx syntax) sqlLinesBg(sql string, w int, bg lipgloss.TerminalColor) []string {
+func (sx syntax) sqlLinesBg(sql string, w int, bg color.Color) []string {
 	sql = strings.TrimRight(strings.ReplaceAll(sql, "\t", "    "), "\n")
 	var lines [][]cell
 	cur := []cell{}
@@ -374,7 +375,7 @@ func wrapCells(l []cell, w int) [][]cell {
 	}
 }
 
-func (sx syntax) render(cs []cell, bg lipgloss.TerminalColor) string {
+func (sx syntax) render(cs []cell, bg color.Color) string {
 	var b strings.Builder
 	for i := 0; i < len(cs); {
 		j := i

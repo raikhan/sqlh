@@ -42,12 +42,12 @@ func TestPanelCollapseAll(t *testing.T) {
 		t.Fatalf("new table: %s", got)
 	}
 	key(p, "L")
-	view := plain(p.View())
+	view := plain(p.render())
 	if !strings.Contains(view, "→ customer  o.customer_id") || strings.Count(view, "Relations  2") != 2 {
 		t.Fatalf("expand all:\n%s", view)
 	}
 	key(p, "L") // the next level: the tables' groups
-	if view := plain(p.View()); !strings.Contains(view, "orders_customer_idx") || strings.Contains(view, "→ region") {
+	if view := plain(p.render()); !strings.Contains(view, "orders_customer_idx") || strings.Contains(view, "→ region") {
 		t.Errorf("second L:\n%s", view)
 	}
 	// Objects: down to the groups; no expand all there
@@ -65,7 +65,7 @@ func TestPanelCollapseAll(t *testing.T) {
 	// z: the selected row to the top
 	key(p, "l") // open Tables
 	key(p, "j", "j", "z")
-	p.View()
+	p.render()
 	if tb := p.tab(); tb.top != tb.sel || tb.sel != 2 {
 		t.Errorf("z: top %d sel %d", tb.top, tb.sel)
 	}
@@ -86,7 +86,7 @@ func TestPanelPalette(t *testing.T) {
 	if p.pal == nil {
 		t.Fatal("no palette")
 	}
-	view := plain(p.View())
+	view := plain(p.render())
 	for _, want := range []string{"Connections · keys", "── Connections ──", "New connection", "Duplicate the connection", "── Navigation ──"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("palette lacks %q:\n%s", want, view)
@@ -120,7 +120,7 @@ func TestPanelPalette(t *testing.T) {
 	}
 	// another tab, other actions
 	key(p, "2", "?")
-	view = plain(p.View())
+	view = plain(p.render())
 	if !strings.Contains(view, "Sample a row") || strings.Contains(view, "New connection") {
 		t.Errorf("objects palette:\n%s", view)
 	}
@@ -183,24 +183,24 @@ func TestPanelPreviewTabs(t *testing.T) {
 	// a table: three tabs; the chosen one stays for tables
 	key(p, "2")
 	selectRow(t, p, "orders")
-	if view := plain(p.View()); !strings.Contains(view, "Describe │ DDL │ Sample") {
+	if view := plain(p.render()); !strings.Contains(view, "Describe │ DDL │ Sample") {
 		t.Fatalf("table tabs:\n%s", view)
 	}
 	key(p, "tab")
 	selectRow(t, p, "customer")
-	if view := plain(p.View()); !strings.Contains(view, "CREATE TABLE customer") {
+	if view := plain(p.render()); !strings.Contains(view, "CREATE TABLE customer") {
 		t.Errorf("DDL not kept:\n%s", view)
 	}
 	// a column: no DDL
 	key(p, "l")
 	selectRow(t, p, "name")
-	if view := plain(p.View()); !strings.Contains(view, "─ Describe │ Sample ─") {
+	if view := plain(p.render()); !strings.Contains(view, "─ Describe │ Sample ─") {
 		t.Errorf("column tabs:\n%s", view)
 	}
 	// a query file: its text and last run
 	key(p, "4")
 	selectRow(t, p, "query_1.sql")
-	view := plain(p.View())
+	view := plain(p.render())
 	for _, want := range []string{"─ Query ─", "queries/query_1.sql", "last run:", "3 rows", "-- sqlh: conn=pg_local", "from orders o"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("file preview lacks %q:\n%s", want, view)
@@ -217,11 +217,11 @@ func TestPanelPreviewTabs(t *testing.T) {
 		}
 	}
 	drain(p, p.previewCmd())
-	if view := plain(p.View()); !strings.Contains(view, "─ Query │ Diff") || !strings.Contains(view, "from orders") {
+	if view := plain(p.render()); !strings.Contains(view, "─ Query │ Diff") || !strings.Contains(view, "from orders") {
 		t.Errorf("run:\n%s", view)
 	}
 	key(p, "tab")
-	view = plain(p.View())
+	view = plain(p.render())
 	for _, want := range []string{"query_1.sql:3 now", "- from orders o", "+ from orders"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("diff lacks %q:\n%s", want, view)

@@ -4,7 +4,7 @@ import (
 	"sort"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/raikhan/sqlh/internal/control"
 	"github.com/raikhan/sqlh/internal/history"
@@ -277,9 +277,9 @@ func (p *Panel) searchSelected() *searchItem {
 	return &p.items[p.results[p.rsel].index]
 }
 
-func (p *Panel) searchKey(k tea.KeyMsg) tea.Cmd {
+func (p *Panel) searchKey(k tea.KeyPressMsg) tea.Cmd {
 	key := k.String()
-	switch p.km.action(scopeSearch, key) {
+	switch p.km.actionOf(scopeSearch, k) {
 	case "searchCancel":
 		p.search = false
 		return p.previewCmd()
@@ -326,8 +326,8 @@ func (p *Panel) searchKey(k tea.KeyMsg) tea.Cmd {
 		}
 		return p.runSearch()
 	}
-	if k.Type == tea.KeyRunes || k.Type == tea.KeySpace {
-		p.query += string(k.Runes)
+	if text, ok := typed(k); ok {
+		p.query += text
 		p.rsel, p.rtop = 0, 0
 		return tea.Batch(p.runSearch(), p.previewCmd())
 	}

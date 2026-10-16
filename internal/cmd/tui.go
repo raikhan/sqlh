@@ -20,7 +20,7 @@ import (
 	"sync"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/urfave/cli/v2"
 
 	"github.com/raikhan/sqlh/internal/config"
@@ -72,7 +72,7 @@ func tuiCmd(c *cli.Context) error {
 	p := tui.NewPanel(be, be.events, tui.Options{
 		Icons: st.Panel.Icons, Keys: st.Panel.Keys, Syntax: st.Panel.Syntax, StatementCollapsed: st.Panel.StatementCollapsed, ChainsAll: st.Panel.ChainsAll, Workspace: ws, Standalone: true,
 	})
-	_, err = tea.NewProgram(p, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
+	_, err = tea.NewProgram(p).Run()
 	return err
 }
 

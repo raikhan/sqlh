@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/raikhan/sqlh/internal/control"
 )
@@ -12,28 +12,7 @@ import (
 func pkey(p *picker, keys ...string) tea.Cmd {
 	var last tea.Cmd
 	for _, k := range keys {
-		var msg tea.KeyMsg
-		switch k {
-		case "enter":
-			msg = tea.KeyMsg{Type: tea.KeyEnter}
-		case "esc":
-			msg = tea.KeyMsg{Type: tea.KeyEsc}
-		case "tab":
-			msg = tea.KeyMsg{Type: tea.KeyTab}
-		case "down":
-			msg = tea.KeyMsg{Type: tea.KeyDown}
-		case "backspace":
-			msg = tea.KeyMsg{Type: tea.KeyBackspace}
-		case "ctrl+r":
-			msg = tea.KeyMsg{Type: tea.KeyCtrlR}
-		case "ctrl+t":
-			msg = tea.KeyMsg{Type: tea.KeyCtrlT}
-		case "ctrl+a":
-			msg = tea.KeyMsg{Type: tea.KeyCtrlA}
-		default:
-			msg = tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
-		}
-		_, last = p.Update(msg)
+		_, last = p.Update(press(k))
 	}
 	return last
 }
@@ -42,11 +21,11 @@ func TestPickerFilterAndAccept(t *testing.T) {
 	p := newPicker(items("customer", "orders", "order_line", "region"), PickOptions{Prompt: "table"})
 	p.Update(tea.WindowSizeMsg{Width: 60, Height: 20})
 	pkey(p, "o", "l")
-	if v := plain(p.View()); !strings.Contains(v, "table> ol") || !strings.Contains(v, "order_line") || strings.Contains(v, "customer") {
+	if v := plain(p.render()); !strings.Contains(v, "table> ol") || !strings.Contains(v, "order_line") || strings.Contains(v, "customer") {
 		t.Errorf("view:\n%s", v)
 	}
 	pkey(p, "enter")
-	if !p.accepted || strings.Join(p.result.Values, ",") != "order_line" || p.View() != "" {
+	if !p.accepted || strings.Join(p.result.Values, ",") != "order_line" || p.render() != "" {
 		t.Errorf("result %+v accepted %v", p.result, p.accepted)
 	}
 }
@@ -158,7 +137,7 @@ func TestConnectionPickItems(t *testing.T) {
 	// highlighted one too, the chip kept on it
 	pk := newPicker(its, PickOptions{Header: header})
 	pk.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
-	view := strings.Split(pk.View(), "\n")
+	view := strings.Split(pk.render(), "\n")
 	h = plain(view[1])
 	col := func(s, sub string) int { return len([]rune(s[:strings.Index(s, sub)])) }
 	for i, it := range its {
@@ -176,7 +155,7 @@ func TestConnectionPickItems(t *testing.T) {
 			t.Errorf("%s env not aligned:\n%s\n%s", it.Value, h, row)
 		}
 	}
-	if !strings.Contains(view[2], "\x1b[30;42m") && !strings.Contains(pk.View(), "dev ") {
+	if !strings.Contains(view[2], "\x1b[30;42m") && !strings.Contains(pk.render(), "dev ") {
 		t.Errorf("chip lost on the highlighted row: %q", view[2])
 	}
 	if !strings.Contains(its[2].Match, "CADE") || !strings.HasPrefix(plain(its[0].Display), "⛁ pg_local") || !strings.Contains(its[0].Display, "●") {

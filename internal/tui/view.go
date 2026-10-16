@@ -1,12 +1,14 @@
 package tui
 
 import (
+	tea "charm.land/bubbletea/v2"
 	"fmt"
+	"image/color"
 	"path/filepath"
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/raikhan/sqlh/internal/control"
@@ -61,8 +63,16 @@ func (p *Panel) treeHeight() int {
 	return max(h, 1)
 }
 
-// View renders the panel.
-func (p *Panel) View() string {
+// View is the panel's frame: full screen, the mouse on.
+func (p *Panel) View() tea.View {
+	v := tea.NewView(p.render())
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeCellMotion
+	return v
+}
+
+// render draws the panel.
+func (p *Panel) render() string {
 	if p.width <= 0 || p.height <= 0 {
 		// before the terminal's size is known: a frame of a guessed size
 		// taller than the pane scrolls it and leaves stale rows behind
@@ -937,7 +947,7 @@ func (p *Panel) diffLines(n *node, w int) []string {
 	for _, d := range lineDiff(against, e.SQL) {
 		code := d[2:]
 		var gutter string
-		var bg lipgloss.TerminalColor
+		var bg color.Color
 		switch d[0] {
 		case '-':
 			gutter, bg = stDel.Render("- "), colDelBg

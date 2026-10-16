@@ -94,7 +94,7 @@ var DefaultPanelKeys = Keymap{
 	"expand":    {"l", "right"}, "collapse": {"h", "left"},
 	"collapseAll": {"H"}, "expandAll": {"L"},
 	"open":   {"enter"}, // navigate: open/close, connect, open the file
-	"mark":   {" "},     // mark columns for one insert
+	"mark":   {"space"}, // mark columns for one insert
 	"insert": {"ctrl+y"}, "copy": {"y"}, "actions": {".", "a"},
 	"search":      {"/"},
 	"previewNext": {"tab"}, "previewPrev": {"shift+tab"},
@@ -105,9 +105,9 @@ var DefaultPanelKeys = Keymap{
 	"renameQuery": {"R"}, "deleteQuery": {"X"}, "historyAllConns": {"c"},
 	"newConnection": {"C"}, "editConnection": {"E"}, "duplicateConnection": {"D"}, "deleteConnection": {"X"},
 	"refresh": {"r"}, "help": {"?"}, "quit": {"q"},
-	// out of the way: the terminal (Bubble Tea v1) can't tell ctrl+R or
-	// ctrl+: apart, see receivable
-	"editConfig": {"ctrl+e"}, "reloadConfig": {"ctrl+r"},
+	// out of the way (ctrl+R is ctrl+shift+r, ctrl+: is ctrl+shift+; on a US
+	// layout: the panel matches either name)
+	"editConfig": {"ctrl+:"}, "reloadConfig": {"ctrl+R"},
 	"backToEditor": {"backspace"},
 	"tab1":         {"1"}, "tab2": {"2"}, "tab3": {"3"}, "tab4": {"4"}, "tab5": {"5"},
 	// while searching (other keys type into the query)
@@ -171,8 +171,8 @@ func normalizeKeys(ks []string) []string {
 	var out []string
 	for _, k := range ks {
 		switch strings.ToLower(k) {
-		case "space":
-			k = " "
+		case " ":
+			k = "space"
 		case "escape":
 			k = "esc"
 		case "return":
@@ -200,24 +200,6 @@ func unknownActions(what string, set map[string]KeyList, known func(string) bool
 	list = append([]string(nil), list...)
 	sort.Strings(list)
 	return fmt.Errorf("%s: unknown action %s (actions: %s)", what, strings.Join(unknown, ", "), strings.Join(list, ", "))
-}
-
-// receivable: the terminal can send the key so that Bubble Tea (v1, no
-// kitty keyboard protocol) tells it apart: ctrl with a lower-case letter or
-// @ [ \ ] ^ _ (ctrl+R is ctrl+r, ctrl+: doesn't arrive).
-func receivable(k string) error {
-	rest, ok := strings.CutPrefix(k, "ctrl+")
-	if !ok || len([]rune(rest)) != 1 {
-		return nil
-	}
-	r := []rune(rest)[0]
-	if (r >= 'a' && r <= 'z') || strings.ContainsRune(`@[\]^_`, r) {
-		return nil
-	}
-	if r >= 'A' && r <= 'Z' {
-		return fmt.Errorf("%q: the terminal sends it as ctrl+%c (use that, or another key)", k, r-'A'+'a')
-	}
-	return fmt.Errorf("%q: the terminal can't send it distinctly (use ctrl with a letter, or another key)", k)
 }
 
 // clashes: a key on two actions of one keymap.
@@ -260,13 +242,6 @@ func checkPanelKeys(k PanelKeys) error {
 	}
 	maps := k.Keymaps()
 	for _, scope := range PanelScopes {
-		for a, keys := range maps[scope] {
-			for _, key := range keys {
-				if err := receivable(key); err != nil {
-					return fmt.Errorf("panel.keys.%s: %w", a, err)
-				}
-			}
-		}
 		if err := clashes("panel.keys ("+scope+")", maps[scope], PanelScopeActions(scope)); err != nil {
 			return err
 		}

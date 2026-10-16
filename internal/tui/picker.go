@@ -12,10 +12,9 @@ import (
 	"strconv"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/muesli/termenv"
 )
 
 // PickItem is a line of the picker.
@@ -101,13 +100,9 @@ func Pick(items []PickItem, opt PickOptions) (PickResult, bool, error) {
 		return PickResult{}, false, ErrNoTTY
 	}
 	defer tty.Close()
-	// the colours the terminal has: stdout may be a pipe (Helix's :pipe-to),
-	// lipgloss would decide on none from it
-	lipgloss.SetColorProfile(termenv.NewOutput(tty).EnvColorProfile())
-	// Helix enables the kitty keyboard protocol: push "no flags" so Esc and
-	// Ctrl keys arrive plainly, pop afterwards.
-	_, _ = tty.WriteString("\x1b[>0u")
-	defer func() { _, _ = tty.WriteString("\x1b[<1u") }()
+	// Bubble Tea reads the terminal's colours from the tty (stdout may be a
+	// pipe: Helix's :pipe-to) and negotiates the keyboard protocol itself
+	// (Helix's own flags come back when it exits)
 	m := newPicker(items, opt)
 	prog := tea.NewProgram(m, tea.WithInput(tty), tea.WithOutput(tty))
 	final, err := prog.Run()
@@ -193,7 +188,10 @@ type previewMsg struct {
 	key, text string
 }
 
-func (p *picker) Init() tea.Cmd { return p.previewCmd() }
+func (p *picker) Init() tea.Cmd {
+	// the terminal's background: light or dark styles
+	return tea.Batch(p.previewCmd(), tea.RequestBackgroundColor)
+}
 
 func (p *picker) filter() {
 	texts := make([]string, len(p.items))
@@ -236,8 +234,17 @@ func (p *picker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.width, p.height = msg.Width, msg.Height
 	case previewMsg:
 		p.preview[msg.key] = msg.text
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return p, p.key(msg)
+	case tea.PasteMsg:
+		p.query += strings.ReplaceAll(msg.Content, "\n", " ")
+		p.sel, p.top = 0, 0
+		p.filter()
+		return p, p.previewCmd()
+	case tea.BackgroundColorMsg:
+		if msg.IsDark() != darkStyles {
+			setStyles(msg.IsDark())
+		}
 	}
 	return p, nil
 }
@@ -270,10 +277,17 @@ func (p *picker) move(d int) tea.Cmd {
 	return p.previewCmd()
 }
 
-func (p *picker) key(k tea.KeyMsg) tea.Cmd {
+func (p *picker) key(k tea.KeyPressMsg) tea.Cmd {
 	key := k.String()
+	names := keyNames(k)
 	p.msg = ""
-	if fn, ok := p.opt.Bind[key]; ok {
+	var fn func(cur *PickItem) (*PickReload, error)
+	for _, n := range names {
+		if f, ok := p.opt.Bind[n]; ok && fn == nil {
+			fn = f
+		}
+	}
+	if fn != nil {
 		reload, err := fn(p.current())
 		if err != nil {
 			p.msg = err.Error()
@@ -295,14 +309,16 @@ func (p *picker) key(k tea.KeyMsg) tea.Cmd {
 		return nil
 	}
 	for _, e := range p.opt.Expect {
-		if key == e {
-			return p.finish(true, key)
+		for _, n := range names {
+			if n == e {
+				return p.finish(true, e)
+			}
 		}
 	}
 	if key == "ctrl+c" {
 		return p.finish(false, "")
 	}
-	switch p.km.action(0, key) {
+	switch p.km.actionOf(0, k) {
 	case "cancel":
 		return p.finish(false, "")
 	case "accept":
@@ -367,8 +383,8 @@ func (p *picker) key(k tea.KeyMsg) tea.Cmd {
 			return p.previewCmd()
 		}
 	default:
-		if k.Type == tea.KeyRunes || k.Type == tea.KeySpace {
-			p.query += string(k.Runes)
+		if text, ok := typed(k); ok {
+			p.query += text
 			p.sel, p.top = 0, 0
 			p.filter()
 			return p.previewCmd()
@@ -389,7 +405,10 @@ func (p *picker) headerLines() int {
 
 func (p *picker) listHeight() int { return max(p.totalHeight()-p.headerLines()-1, 1) }
 
-func (p *picker) View() string {
+// View: drawn inline below the cursor (no alternate screen).
+func (p *picker) View() tea.View { return tea.NewView(p.render()) }
+
+func (p *picker) render() string {
 	if p.done || p.width <= 0 || p.height <= 0 {
 		return "" // leave nothing behind; nothing before the size is known
 	}

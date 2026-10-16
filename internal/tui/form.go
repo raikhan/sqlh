@@ -3,9 +3,8 @@ package tui
 import (
 	"strings"
 
-	"github.com/charmbracelet/bubbles/cursor"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/raikhan/sqlh/internal/connedit"
 )
@@ -60,7 +59,7 @@ func newConnForm(title, old, after string, f connedit.Fields) *connForm {
 		in := textinput.New()
 		in.Prompt = ""
 		in.CharLimit = 1024
-		in.Cursor.SetMode(cursor.CursorStatic) // no blink ticks
+		staticCursor(&in) // no blink ticks
 		in.SetValue(f[sp.key])
 		if sp.key == "passwd" {
 			in.EchoMode = textinput.EchoPassword
@@ -160,10 +159,10 @@ type formSavedMsg struct {
 type formTestedMsg struct{ err error }
 
 // formKey handles a key in the form.
-func (p *Panel) formKey(k tea.KeyMsg) tea.Cmd {
+func (p *Panel) formKey(k tea.KeyPressMsg) tea.Cmd {
 	cf := p.form
 	key := k.String()
-	switch p.km.action(scopeForm, key) {
+	switch p.km.actionOf(scopeForm, k) {
 	case "formCancel":
 		p.form = nil
 		return nil
@@ -197,7 +196,7 @@ func (p *Panel) formKey(k tea.KeyMsg) tea.Cmd {
 	if f.choices != nil {
 		i := choiceIndex(f.choices, f.input.Value())
 		switch key {
-		case "right", "l", " ":
+		case "right", "l", "space":
 			f.input.SetValue(f.choices[(i+1)%len(f.choices)])
 		case "left", "h":
 			f.input.SetValue(f.choices[(i-1+len(f.choices))%len(f.choices)])
@@ -246,7 +245,7 @@ func (p *Panel) viewForm(w, h int) []string {
 				val = v
 			}
 		case i == cf.focus:
-			f.input.Width = valueW
+			f.input.SetWidth(valueW)
 			val = f.input.View()
 		default:
 			val = f.input.Value()
@@ -284,4 +283,11 @@ func (p *Panel) viewForm(w, h int) []string {
 		rows = append(rows[:2], rows[2+cut:]...)
 	}
 	return strings.Split(stMenuBox.Render(strings.Join(rows, "\n")), "\n")
+}
+
+// staticCursor: a text input whose cursor doesn't blink (no tick messages).
+func staticCursor(in *textinput.Model) {
+	st := in.Styles()
+	st.Cursor.Blink = false
+	in.SetStyles(st)
 }

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	tea "charm.land/bubbletea/v2"
 	"errors"
 	"strings"
 	"testing"
@@ -15,7 +16,7 @@ func TestPanelSearchKinds(t *testing.T) {
 	p := newTestPanel(t, &fakeBackend{}, nil)
 	key(p, "2", "/")
 	// the legend while the query is empty, not on the last line
-	view := plain(p.View())
+	view := plain(p.render())
 	for _, want := range []string{"─ Search ─", "#  indexes", "!  constraints", "^  triggers", "~  sequences", "other kinds"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("legend lacks %q:\n%s", want, view)
@@ -226,12 +227,12 @@ func TestPanelHistoryByConnection(t *testing.T) {
 		{ID: "2", SQL: "select 2", Time: now, Conn: "oracle_dev", Status: "ok"}}}}
 	p := newTestPanel(t, be, nil)
 	key(p, "5")
-	view := plain(p.View())
+	view := plain(p.render())
 	if !strings.Contains(view, "select 1") || strings.Contains(view, "select 2") || !strings.Contains(view, "recent runs on pg_local") {
 		t.Errorf("filtered:\n%s", view)
 	}
 	key(p, "c")
-	if view = plain(p.View()); !strings.Contains(view, "select 2") || !strings.Contains(view, "all connections") {
+	if view = plain(p.render()); !strings.Contains(view, "select 2") || !strings.Contains(view, "all connections") {
 		t.Errorf("all:\n%s", view)
 	}
 }
@@ -250,7 +251,7 @@ func TestPanelReloadConfig(t *testing.T) {
 	p := newTestPanel(t, be, nil)
 	key(p, "2")
 	selectRow(t, p, "orders")
-	key(p, "ctrl+r")
+	key(p, "ctrl+R")
 	if !strings.Contains(p.msg, "config reloaded") {
 		t.Fatalf("msg %q", p.msg)
 	}
@@ -261,13 +262,13 @@ func TestPanelReloadConfig(t *testing.T) {
 	// both in the palette
 	key(p, "?")
 	typeText(p, "config")
-	view := plain(p.View())
+	view := plain(p.render())
 	if !strings.Contains(view, "Edit the config file") || !strings.Contains(view, "Reload the config file") {
 		t.Errorf("palette:\n%s", view)
 	}
 	key(p, "esc", "esc")
 	be.reloadErr = errors.New("panel.keys: unknown action nope")
-	key(p, "ctrl+r")
+	key(p, "ctrl+R")
 	if !strings.Contains(p.popup, "unknown action nope") {
 		t.Errorf("popup %q", p.popup)
 	}
@@ -276,11 +277,10 @@ func TestPanelReloadConfig(t *testing.T) {
 	if len(be.acts) != 2 {
 		t.Errorf("keys after a failed reload: %+v", be.acts)
 	}
-	for _, bad := range []string{"ctrl+R", "ctrl+:"} {
-		_, err := config.Parse([]byte("panel:\n  keys:\n    reloadConfig: \"" + bad + "\"\n"))
-		if err == nil {
-			t.Errorf("%s accepted", bad)
-		}
+	// the defaults arrive as ctrl+shift+r and ctrl+shift+; (kitty protocol)
+	_, cmd := p.Update(tea.KeyPressMsg{Code: ';', Mod: tea.ModCtrl | tea.ModShift})
+	if cmd == nil {
+		t.Error("ctrl+: (ctrl+shift+;) didn't open the editor")
 	}
 }
 
@@ -314,14 +314,14 @@ func TestPanelChainSearch(t *testing.T) {
 	if p.skind != skChain || strings.Join(searchTexts(p), ",") != "customer,order_line,region" {
 		t.Fatalf("chains: %d %v", p.skind, searchTexts(p))
 	}
-	if view := plain(p.View()); !strings.Contains(view, "10+ chains · 2 joins") || !strings.Contains(view, "2 chains · 1 join") {
+	if view := plain(p.render()); !strings.Contains(view, "10+ chains · 2 joins") || !strings.Contains(view, "2 chains · 1 join") {
 		t.Errorf("detail:\n%s", view)
 	}
 	typeText(p, "reg")
 	key(p, "enter")
 	n := p.selected()
 	if p.cur != tabStmt || n == nil || n.kind != nRelation || n.table != "region" || len(n.path) != 2 || n.anchor != "orders" {
-		t.Fatalf("walked to %+v (tab %d)\n%s", n, p.cur, plain(p.View()))
+		t.Fatalf("walked to %+v (tab %d)\n%s", n, p.cur, plain(p.render()))
 	}
 	// ctrl+y inserts the chain as a join
 	key(p, "/")
@@ -353,10 +353,10 @@ func TestPanelChainSteps(t *testing.T) {
 			return append([]string{n.anchor}, hopTablesOf(n.path)...)
 		}
 		if got := strings.Join(at(), ">"); got != "orders>customer" {
-			t.Fatalf("all=%v first: %s\n%s", all, got, plain(p.View()))
+			t.Fatalf("all=%v first: %s\n%s", all, got, plain(p.render()))
 		}
-		if !strings.Contains(plain(p.View()), "chain 1/2") {
-			t.Errorf("footer:\n%s", plain(p.View()))
+		if !strings.Contains(plain(p.render()), "chain 1/2") {
+			t.Errorf("footer:\n%s", plain(p.render()))
 		}
 		viaOpen := func() bool { // the view's branch open
 			for _, n := range p.rows() {
@@ -371,7 +371,7 @@ func TestPanelChainSteps(t *testing.T) {
 		}
 		key(p, "n")
 		if got := strings.Join(at(), ">"); got != "orders>order_line>customer" {
-			t.Fatalf("all=%v n: %s\n%s", all, got, plain(p.View()))
+			t.Fatalf("all=%v n: %s\n%s", all, got, plain(p.render()))
 		}
 		// ctrl+y inserts this chain
 		key(p, "ctrl+y")

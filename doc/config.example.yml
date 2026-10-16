@@ -43,7 +43,7 @@ panel:
   #   insert: ctrl+y          # insert at Helix's cursor (Enter navigates)
   #   backToEditor: backspace # focus the panel's Helix pane
   #   collapseAll: H          # H collapse all, L expand all (Statement), z row to the top
-  #   editConfig: ctrl+e      # edit this file in $EDITOR (reloads after); reloadConfig: ctrl+r
+  #   editConfig: "ctrl+:"    # edit this file in $EDITOR (reloads after); reloadConfig: ctrl+R
   #   connections:
   #     duplicateConnection: d
   #   objects:

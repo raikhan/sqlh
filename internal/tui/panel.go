@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/raikhan/sqlh/internal/control"
 	"github.com/raikhan/sqlh/internal/history"
@@ -575,9 +575,19 @@ func (p *Panel) poll() tea.Cmd {
 	}
 }
 
+// requestBackground asks the terminal for its background (light or dark
+// styles); not in tests.
+func (p *Panel) requestBackground() tea.Cmd {
+	if p.noTick {
+		return nil
+	}
+	return tea.RequestBackgroundColor
+}
+
 // Init starts loading.
 func (p *Panel) Init() tea.Cmd {
-	return tea.Batch(p.loadCatalog(), p.loadContext(), p.loadHistory(), p.waitEvent(), p.tick(), p.poll())
+	return tea.Batch(p.loadCatalog(), p.loadContext(), p.loadHistory(), p.waitEvent(), p.tick(), p.poll(),
+		p.requestBackground())
 }
 
 // ---- tree maintenance -------------------------------------------------------
@@ -1031,18 +1041,19 @@ func (p *Panel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return p, tea.Batch(p.rebuild()...)
 		}
 		return p, nil
-	case tea.MouseMsg:
-		return p, p.onMouse(msg)
-	case tea.KeyMsg:
-		if msg.Type == tea.KeyRunes && len(msg.Runes) > 1 && !msg.Paste && !p.search && p.form == nil {
-			// keys arriving together come as one message ("jj"): one at a time
-			var cmds []tea.Cmd
-			for _, r := range msg.Runes {
-				cmds = append(cmds, p.onKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}, Alt: msg.Alt}))
-			}
-			return p, tea.Batch(cmds...)
-		}
+	case tea.MouseClickMsg:
+		return p, p.onClick(msg.Mouse())
+	case tea.MouseWheelMsg:
+		return p, p.onWheel(msg.Mouse())
+	case tea.KeyPressMsg:
 		return p, p.onKey(msg)
+	case tea.PasteMsg:
+		return p, p.onPaste(msg.Content)
+	case tea.BackgroundColorMsg:
+		if msg.IsDark() != darkStyles {
+			setStyles(msg.IsDark())
+		}
+		return p, nil
 	}
 	if p.form != nil { // the text inputs' cursor blink
 		if f := p.form.focused(); f != nil && f.choices == nil {
@@ -1170,7 +1181,31 @@ func previewTable(n *node) string {
 
 // ---- keys -------------------------------------------------------------------
 
-func (p *Panel) onKey(k tea.KeyMsg) tea.Cmd {
+// onPaste: pasted text goes to whatever takes text.
+func (p *Panel) onPaste(text string) tea.Cmd {
+	switch {
+	case p.form != nil:
+		if f := p.form.focused(); f != nil && f.choices == nil {
+			var cmd tea.Cmd
+			f.input, cmd = f.input.Update(tea.PasteMsg{Content: text})
+			return cmd
+		}
+	case p.prompt != nil:
+		var cmd tea.Cmd
+		p.prompt.input, cmd = p.prompt.input.Update(tea.PasteMsg{Content: text})
+		return cmd
+	case p.pal != nil:
+		p.pal.query += strings.ReplaceAll(text, "\n", " ")
+		p.pal.refilter()
+	case p.search:
+		p.query += strings.ReplaceAll(text, "\n", " ")
+		p.rsel, p.rtop = 0, 0
+		return tea.Batch(p.runSearch(), p.previewCmd())
+	}
+	return nil
+}
+
+func (p *Panel) onKey(k tea.KeyPressMsg) tea.Cmd {
 	key := k.String()
 	if key == "ctrl+c" {
 		return tea.Quit
@@ -1203,11 +1238,11 @@ func (p *Panel) onKey(k tea.KeyMsg) tea.Cmd {
 	if p.search {
 		return p.searchKey(k)
 	}
-	action := p.km.action(p.cur, key)
+	action := p.km.actionOf(p.cur, k)
 	if action == "" {
 		// a key of another tab: say where it works
 		for i := 0; i < numMainTabs; i++ {
-			if a := p.km.action(i, key); a != "" {
+			if a := p.km.actionOf(i, k); a != "" {
 				p.flash(fmt.Sprintf("%s (%s) is not in this tab", keyLabel(key), actionTitle(a)), false)
 				break
 			}
@@ -1935,25 +1970,25 @@ func (p *Panel) joinable(a control.PanelAction) error {
 
 // ---- mouse ------------------------------------------------------------------
 
-func (p *Panel) onMouse(m tea.MouseMsg) tea.Cmd {
-	if m.Action != tea.MouseActionPress {
-		return nil
-	}
+func (p *Panel) onWheel(m tea.Mouse) tea.Cmd {
 	t := p.tab()
 	switch m.Button {
-	case tea.MouseButtonWheelUp:
+	case tea.MouseWheelUp:
 		t.sel = clamp(t.sel-3, 0, len(p.rows())-1)
 		return p.previewCmd()
-	case tea.MouseButtonWheelDown:
+	case tea.MouseWheelDown:
 		t.sel = clamp(t.sel+3, 0, len(p.rows())-1)
 		return p.previewCmd()
-	case tea.MouseButtonLeft:
-		if m.Y == 1 { // the tab bar
-			for i, r := range p.tabBarRanges() {
-				if m.X >= r[0] && m.X < r[1] {
-					p.switchTab(i)
-					return p.previewCmd()
-				}
+	}
+	return nil
+}
+
+func (p *Panel) onClick(m tea.Mouse) tea.Cmd {
+	if m.Button == tea.MouseLeft && m.Y == 1 { // the tab bar
+		for i, r := range p.tabBarRanges() {
+			if m.X >= r[0] && m.X < r[1] {
+				p.switchTab(i)
+				return p.previewCmd()
 			}
 		}
 	}

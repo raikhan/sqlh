@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/raikhan/sqlh/internal/config"
 )
@@ -210,7 +210,7 @@ func (pal *palette) count() (pos, total int) {
 	return
 }
 
-func (p *Panel) paletteKey(k tea.KeyMsg) tea.Cmd {
+func (p *Panel) paletteKey(k tea.KeyPressMsg) tea.Cmd {
 	pal := p.pal
 	key := k.String()
 	switch key {
@@ -252,12 +252,12 @@ func (p *Panel) paletteKey(k tea.KeyMsg) tea.Cmd {
 		pal.query = ""
 		pal.refilter()
 	default:
-		if pal.query == "" && p.km.action(p.cur, key) == "help" {
+		if pal.query == "" && p.km.actionOf(p.cur, k) == "help" {
 			p.pal = nil
 			return nil
 		}
-		if k.Type == tea.KeyRunes || k.Type == tea.KeySpace {
-			pal.query += string(k.Runes)
+		if text, ok := typed(k); ok {
+			pal.query += text
 			pal.refilter()
 		}
 	}
@@ -319,5 +319,5 @@ func (p *Panel) viewPalette(w, h int) []string {
 	gap := max(inner-lipgloss.Width(input)-lipgloss.Width(count), 1)
 	body := append([]string{stTitle.Render(pal.title), ""}, lines...)
 	body = append(body, "", input+strings.Repeat(" ", gap)+count)
-	return strings.Split(stMenuBox.Width(bw).Render(strings.Join(body, "\n")), "\n")
+	return strings.Split(stMenuBox.Width(bw+2).Render(strings.Join(body, "\n")), "\n") // v2: the width includes the border
 }

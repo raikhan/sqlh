@@ -19,7 +19,7 @@ import (
 	"sync"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/urfave/cli/v2"
 
 	"github.com/raikhan/sqlh/internal/catalog"
@@ -485,7 +485,7 @@ func panelRunCmd(c *cli.Context) error {
 		Icons: st.Panel.Icons, Keys: st.Panel.Keys, Syntax: st.Panel.Syntax, StatementCollapsed: st.Panel.StatementCollapsed, ChainsAll: st.Panel.ChainsAll, Cursor: res.Cursor, Workspace: ws,
 	})
 	defer logAway(c)()
-	prog := tea.NewProgram(p, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	prog := tea.NewProgram(p)
 	_, err = prog.Run()
 	return err
 }

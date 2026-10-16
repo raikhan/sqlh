@@ -2,6 +2,9 @@ package tui
 
 import (
 	"strings"
+	"unicode"
+
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/raikhan/sqlh/internal/config"
 )
@@ -68,6 +71,70 @@ func pickerKeymap(set map[string][]string) keymap {
 	return newKeymap([]map[string][]string{sc})
 }
 
+// usShifted: the US layout's shifted symbols (a terminal reporting
+// ctrl+shift+; for Ctrl-: — the config says ctrl+:).
+var usShifted = map[rune]rune{'1': '!', '2': '@', '3': '#', '4': '$', '5': '%', '6': '^', '7': '&', '8': '*', '9': '(', '0': ')',
+	'-': '_', '=': '+', '[': '{', ']': '}', '\\': '|', ';': ':', '\'': '"', ',': '<', '.': '>', '/': '?', '`': '~'}
+
+// keyNames: every name a key press goes by in a config: its text or
+// keystroke (G, ctrl+shift+r, space), and with shift folded into the key
+// (ctrl+R, ctrl+:).
+func keyNames(k tea.KeyPressMsg) []string {
+	names := []string{k.String()}
+	add := func(n string) {
+		for _, x := range names {
+			if x == n {
+				return
+			}
+		}
+		names = append(names, n)
+	}
+	add(k.Keystroke())
+	if k.Mod.Contains(tea.ModShift) {
+		// the modifiers but shift, then the shifted key
+		var mods string
+		for _, m := range []struct {
+			mod  tea.KeyMod
+			name string
+		}{{tea.ModCtrl, "ctrl+"}, {tea.ModAlt, "alt+"}, {tea.ModMeta, "meta+"}, {tea.ModHyper, "hyper+"}, {tea.ModSuper, "super+"}} {
+			if k.Mod.Contains(m.mod) {
+				mods += m.name
+			}
+		}
+		code := k.Code
+		if k.BaseCode != 0 {
+			code = k.BaseCode
+		}
+		switch {
+		case k.ShiftedCode != 0:
+			add(mods + string(k.ShiftedCode))
+		case unicode.IsLetter(code):
+			add(mods + string(unicode.ToUpper(code)))
+		case usShifted[code] != 0:
+			add(mods + string(usShifted[code]))
+		}
+	}
+	return names
+}
+
+// typed: the text a key press types (none with ctrl or alt).
+func typed(k tea.KeyPressMsg) (string, bool) {
+	if k.Text == "" || k.Mod.Contains(tea.ModCtrl) || k.Mod.Contains(tea.ModAlt) {
+		return "", false
+	}
+	return k.Text, true
+}
+
+// actionOf: the action of a key press in a scope ("" = none).
+func (k keymap) actionOf(scope int, msg tea.KeyPressMsg) string {
+	for _, n := range keyNames(msg) {
+		if a := k.action(scope, n); a != "" {
+			return a
+		}
+	}
+	return ""
+}
+
 // action: the action of a key in a scope ("" = none).
 func (k keymap) action(scope int, key string) string {
 	if scope < 0 || scope >= len(k.lookup) {
@@ -129,7 +196,7 @@ func keyLabel(k string) string {
 	switch k {
 	case "backspace":
 		return "⌫"
-	case " ":
+	case " ", "space":
 		return "space"
 	case "up":
 		return "↑"

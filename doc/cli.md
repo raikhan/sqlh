@@ -226,8 +226,8 @@ Keys (all configurable, see below):
   the groups; again for the next level), `L` (Statement) opens the next level, `z` scrolls
   the selected row to the top (vim's `zt`).
 - `c` creates a query file (`n` / `N` are the join chains' in Statement).
-- `ctrl+e` opens the config file the server reads in `$VISUAL` / `$EDITOR` (else `vi`), in
-  the panel's pane, and reloads it when you quit the editor; `ctrl+r` reloads it (after
+- `ctrl+:` opens the config file the server reads in `$VISUAL` / `$EDITOR` (else `vi`), in
+  the panel's pane, and reloads it when you quit the editor; `ctrl+R` reloads it (after
   editing it elsewhere). The panel takes the new keys, icons, colours and statement setting
   at once; the server its connections and the rest. A broken file is refused: the error stays
   on screen until a key, the old config stays.
@@ -278,16 +278,18 @@ The defaults:
 | `openResult` `editFile` `historyAllConns` | `o`, `e`, `c` |
 | `newConnection` `editConnection` `duplicateConnection` `deleteConnection` | `C`, `E`, `D`, `X` |
 | `refresh` `help` `quit` `backToEditor` | `r`, `?`, `q`, `backspace` |
-| `editConfig` `reloadConfig` | `ctrl+e`, `ctrl+r` |
+| `editConfig` `reloadConfig` | `ctrl+:`, `ctrl+R` |
 | `tab1` … `tab5` | `1` … `5` |
 | `searchUp` `searchDown` `searchOpen` `searchInsert` `searchCancel` `searchNextKind` `searchPrevKind` | `↑ ctrl+p ctrl+k`, `↓ ctrl+n ctrl+j`, `enter`, `ctrl+y`, `esc`, `tab`, `shift+tab` |
 | `formSave` `formTest` `formCancel` `formNext` `formPrev` | `ctrl+s`, `ctrl+t`, `esc`, `tab ↓`, `shift+tab ↑` |
 
-Key names are Bubble Tea's (`ctrl+y`, `shift+tab`, `backspace`, `space`, `G`, `]`). A key
-on two actions of one tab (or of the search, or the form), an unknown action or an action a
-tab doesn't have are config errors, and so are keys the terminal can't send distinctly to
-the panel (Bubble Tea v1 reads the classic encoding: `ctrl+R` arrives as `ctrl+r`, `ctrl+:`
-not at all; ctrl goes with a lower-case letter or `@ [ \ ] ^ _`).
+Key names are Bubble Tea's (`ctrl+y`, `shift+tab`, `backspace`, `space`, `G`, `]`). With
+shift, either spelling works: `ctrl+R` or `ctrl+shift+r`, `ctrl+:` or `ctrl+shift+;` (US
+layout) — the panel reads the kitty keyboard protocol (Bubble Tea v2), which Ghostty and
+Herdr speak. In a terminal without it (macOS Terminal, tmux without `extended-keys`)
+ctrl+shift combinations don't arrive: `?` lists every action and runs it. A key on two
+actions of one tab (or of the search, or the form), an unknown action or an action a tab
+doesn't have are config errors.
 
 How Ctrl-Y reaches Helix (which has no API for it): the panel stores the choice in the server
 and sends Helix `panel.insertKeys` (default `esc space i P`); that binding runs
