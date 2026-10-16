@@ -26,7 +26,7 @@ runs standalone, on the connection in the file's header (see [Query files](#quer
 | `sqlh schemas [--all]` / `sqlh databases` | lists (`-p` picks one): the connection's schemas, the server's databases |
 | `sqlh panel` | open (or focus) the side panel of this Helix pane: connections, objects, the statement at the cursor, queries, history; Ctrl-Y inserts at Helix's cursor (Herdr); see [Panel](#panel) |
 | `sqlh panel take` | print what the panel chose, for the cursor (the hidden Helix binding `space i P`) |
-| `sqlh tui` | the panel as an app, for the workspace around the current directory (`-C DIR`): `n` new query opened in Helix next to it; see [sqlh tui](#sqlh-tui) |
+| `sqlh tui` | the panel as an app, for the workspace around the current directory (`-C DIR`): `c` new query opened in Helix next to it; see [sqlh tui](#sqlh-tui) |
 
 A connection is one database and schema: to work in another, add a connection for it (the
 panel duplicates and edits connections). There is no switching of databases or schemas
@@ -166,14 +166,19 @@ Five tabs, `1`–`5` (it starts on **Statement**; `sqlh tui` on **Objects**):
    edits and from the requests Helix sends — completion, hover, …; `space i t` syncs it), open
    (`panel.statement: collapsed`: closed), their relationships first, written as the
    statement refers to them (`sds.input_id`). `/` finds among the statement's tables (name or
-   alias) and stays here. `:` finds **join chains**: the tables a chain of relationships
-   reaches from the statement's tables (at most `relations.chainDepth` joins, default 4),
-   nearest first, each with its shortest chain (`2 joins · orders → customer → region`,
-   `+1 more` when there are several); Enter opens the tree along the (first) shortest chain
-   and selects the table, Ctrl-Y inserts that chain as joins. Once `H` has closed the tables, tables
+   alias) and stays here. `:` finds **join chains**: the tables chains of relationships reach
+   from the statement's tables (at most `relations.chainDepth` joins, default 4; no table
+   twice, never through another of the statement's tables), nearest first, with how many
+   chains reach each and the shortest length (`3 chains · 2 joins`; at most
+   `relations.chainLimit`, default 10: `10+ chains`). Different chains can mean different
+   rows (through a batch table only the batched rows join), so Enter opens them one by one:
+   the shortest first, its table selected and its rows marked; `n` / `N` go to the next /
+   previous chain (closing the one before where it leaves the next one's path; `panel.chains:
+   all` opens them all at once), Esc stops. Ctrl-Y on a chain's table inserts that chain as
+   joins; on the search result, the shortest one. Once `H` has closed the tables, tables
    joining the statement later arrive closed too, until `L` opens them again.
 4. **Queries** — the files of `tui.queriesDir` (default `queries`), newest first; Enter opens
-   one in Helix, `n` creates the next `query_<N>.sql` (a `SELECT * FROM` of the highlighted
+   one in Helix, `c` creates the next `query_<N>.sql` (a `SELECT * FROM` of the highlighted
    table, if any). The preview shows the file (highlighted) and its last run, when the
    loaded history has it. `R` renames a file (relative to the folder; `.sql` added; a file
    open in the attached Helix is renamed there, with `:move`, so its buffer follows), `X`
@@ -220,6 +225,7 @@ Keys (all configurable, see below):
 - `H` closes the deepest open level of the tab's tree (open relations, then the tables, then
   the groups; again for the next level), `L` (Statement) opens the next level, `z` scrolls
   the selected row to the top (vim's `zt`).
+- `c` creates a query file (`n` / `N` are the join chains' in Statement).
 - `ctrl+e` opens the config file the server reads in `$VISUAL` / `$EDITOR` (else `vi`), in
   the panel's pane, and reloads it when you quit the editor; `ctrl+r` reloads it (after
   editing it elsewhere). The panel takes the new keys, icons, colours and statement setting
@@ -240,7 +246,7 @@ Keys (all configurable, see below):
 
 Actions belong to tabs: the Connections tab has `newConnection` … `deleteConnection`;
 Objects and Statement `insert`, `mark`, `sample`, `nextRow`, `prevRow`, `newQuery`, `refresh`
-(Statement also `expandAll`); Queries `newQuery`, `renameQuery`, `deleteQuery`; History
+(Statement also `expandAll`, `nextChain`, `prevChain`, `clearChains`); Queries `newQuery`, `renameQuery`, `deleteQuery`; History
 `insert`, `openResult`, `editFile`, `historyAllConns`; the rest are in every tab. A key of
 another tab says so in the footer.
 
@@ -267,7 +273,8 @@ The defaults:
 | `insert` `copy` `actions` `search` | `ctrl+y`, `y`, `. a`, `/` |
 | `previewNext` `previewPrev` `previewDown` `previewUp` | `tab`, `shift+tab`, `J`, `K` |
 | `sample` `nextRow` `prevRow` | `s`, `]`, `[` |
-| `newQuery` `renameQuery` `deleteQuery` | `n`, `R`, `X` |
+| `newQuery` `renameQuery` `deleteQuery` | `c`, `R`, `X` |
+| `nextChain` `prevChain` `clearChains` (Statement) | `n`, `N`, `esc` |
 | `openResult` `editFile` `historyAllConns` | `o`, `e`, `c` |
 | `newConnection` `editConnection` `duplicateConnection` `deleteConnection` | `C`, `E`, `D`, `X` |
 | `refresh` `help` `quit` `backToEditor` | `r`, `?`, `q`, `backspace` |
@@ -298,7 +305,7 @@ where it is (scripted tests). While the panel (or `sqlh tui`) runs, the log goes
 `sqlh tui` is the [panel](#panel) as an app, started from a shell (in Herdr) rather than from
 Helix; it starts on **Objects**.
 
-- `n` creates the next `query_<N>.sql` in `tui.queriesDir` (N = the highest existing number + 1,
+- `c` creates the next `query_<N>.sql` in `tui.queriesDir` (N = the highest existing number + 1,
   from 1; renamed or moved files are yours) with the connection header, and a `SELECT * FROM`
   of the highlighted table, if any; it opens in Helix (`tui.editor`, default `hx`) in a new
   pane next to the app (half of it, opposite `panel.placement`), and the app becomes that

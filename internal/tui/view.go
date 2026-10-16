@@ -38,7 +38,7 @@ func (p *Panel) subtitle() string {
 	case tabStmt:
 		return statementTitle(p.ctx, p.cursor)
 	case tabQueries:
-		return "n: new query"
+		return p.k("newQuery") + ": new query"
 	case tabHistory:
 		if c := p.historyConn(); c != "" {
 			return "recent runs on " + c + " · " + p.k("historyAllConns") + ": all connections"
@@ -289,6 +289,8 @@ func (p *Panel) viewRow(n *node, sel bool, w int) string {
 		styled = stMarked.Render(label)
 	case n.kind == nConnGroup || n.kind == nSchema:
 		styled = stBold.Render(label)
+	case p.onChain(n):
+		styled = stMatch.Render(label)
 	case n.kind == nRelation:
 		styled = stRelTable.Render(label)
 	default:
@@ -1096,6 +1098,14 @@ func (p *Panel) viewFooter() string {
 			hints = append(hints, [2]string{k("insert"), "insert"}, [2]string{k("openResult"), "result"})
 		case n.expandable():
 			hints = append(hints, [2]string{k("open"), "open"})
+		}
+		if cs := p.chainSet; cs != nil && p.cur == tabStmt {
+			more := ""
+			if cs.more {
+				more = "+"
+			}
+			hints = append([][2]string{{k("nextChain") + "/" + k("prevChain"), fmt.Sprintf("chain %d/%d%s", cs.cur+1, len(cs.chains), more)},
+				{k("clearChains"), "clear"}}, hints...)
 		}
 		hints = append(hints, [2]string{k("search"), "search"}, [2]string{k("actions"), "actions"})
 		if tabs := previewTabs(p.previewNode()); len(tabs) > 1 {

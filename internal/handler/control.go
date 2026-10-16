@@ -293,7 +293,11 @@ func (s *Server) handleControl(ctx context.Context, conn *jsonrpc2.Conn, req *js
 		if depth <= 0 {
 			depth = cfg.Relations.ChainDepthOrDefault()
 		}
-		return catalog.Chains(src, p.From, p.Target, depth, p.Limit, opt, cfg.Relations.MaybeEnabled())
+		limit := p.Limit
+		if limit <= 0 {
+			limit = cfg.Relations.ChainLimitOrDefault()
+		}
+		return catalog.Chains(src, p.From, p.Target, depth, limit, opt, cfg.Relations.MaybeEnabled())
 	case control.MethodContext:
 		var p control.ContextParams
 		if err := unmarshal(req, &p); err != nil {
@@ -506,6 +510,7 @@ func (s *Server) controlStatus() control.Status {
 			InsertKeys:         cfg.Panel.InsertKeysOrDefault(),
 			Keys:               keymaps(cfg.Panel.KeyMaps()),
 			StatementCollapsed: cfg.Panel.StatementCollapsed(),
+			ChainsAll:          cfg.Panel.ChainsAll(),
 			Syntax:             cfg.Panel.Syntax,
 			Icons:              cfg.Panel.Icons,
 			QueriesDir:         cfg.TUI.QueriesDirIn(s.workspace),

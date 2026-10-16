@@ -1633,7 +1633,7 @@ relationships**, to find a join path quickly:
 
 #### 14.3 Order of work (14.4 Q4)
 
-Recommended: 14.1 and 14.2 first, then the Bubble Tea v2 port (Phase 15) on the finished
+Recommended: 14.1 and 14.2 first, then the Bubble Tea v2 port (Phase 16) on the finished
 code, with a commit in between.
 
 - Neither depends on v2: 14.1 is a few lines of the picker; 14.2 is server logic (graph
@@ -1656,17 +1656,100 @@ code, with a commit in between.
    of the tree stays as it is.
 4. Ctrl-Y with several equally short chains: the first (the focused table's first, then the
    statement's order).
-5. Order: Phase 14, a commit, then Phase 15 (v2).
+5. Order: Phase 14, a commit, then the v2 port (now Phase 16; Phase 15 added before it).
 
-### Phase 15 — Bubble Tea v2 (planned 2026-10-16)
+### Phase 15 — join chains: all of them, n/N between them (2026-10-16) ✅ done (branch `tui-experiment`)
+
+Feedback on 14.2: one (shortest) chain isn't enough. Different chains to the same table
+don't mean the same rows: `sds_pdf_file → sds_data_raw_english` directly vs through
+`batch_document` — not every extraction goes through a batch, so the batch chain gives
+fewer rows. So the user wants to see every chain, and to step through them. Open questions
+in 15.5.
+
+#### 15.1 All chains to a table (server)
+
+- [ ] `sqlh/chains` with a target returns every simple chain (no table twice, never through
+      another statement table) from the statement's tables to the target, up to
+      `relations.chainDepth` joins, shortest first (then the statement's order, then the
+      relationships' order), capped (15.5).
+- [ ] Enumeration pruned by distance: a breadth-first pass from the target gives each
+      table's distance to it, and the depth-first walk drops a branch as soon as
+      `joins so far + distance to target > chainDepth` — no blow-up on large schemas
+      (CADE: hundreds of tables, ~10 relationships each).
+- [ ] The reachable list (no target) stays the cheap breadth-first pass: nearest distance and
+      the shortest chain; the number of chains is counted when one is chosen (15.5 Q4).
+
+#### 15.2 Enter opens them all; n / N step through them
+
+- [ ] Enter on a `:` result opens the Statement tree along **every** chain to the table (the
+      walk of 14.2 per chain; shared prefixes open once) and selects the target at the end of
+      the first (shortest) one.
+- [ ] A **chain set** stays active: the footer shows `chain 1/5 · n/N next/prev · esc
+      clear`; `n` selects the target at the end of the next chain (scrolling it into view),
+      `N` the previous, wrapping. The chain's rows are marked (accent bar or colour) so the
+      path to the selected target is visible among the open branches.
+- [ ] Cleared by Esc in the tree, a new search, another tab's `:` result, or the statement's
+      tables changing. The opened branches stay open (`H` closes them).
+- [ ] Ctrl-Y on a target row inserts *that* chain (as today: the row knows its path); Ctrl-Y
+      on a `:` search result still inserts the shortest one.
+- [ ] Actions `nextChain` / `prevChain` (Statement scope), keys `n` / `N`; in the `?` palette.
+
+#### 15.3 New query moves to `c`
+
+- [ ] `newQuery` default `n` → `c` ("create query") in Objects, Statement and Queries, so `n`
+      is free for the chains (and reads like vim's search navigation). History's `c` (all
+      connections) is another tab: no clash. The `.` menu keeps its own letters (`Q` new
+      query file; `n` there is "insert the name").
+- [ ] Docs, hints (Queries subtitle "c: new query", the empty Queries tab's "c creates
+      query_1.sql", Statement's "no editor: … create one (c)").
+
+#### 15.4 Tests
+
+- [ ] catalog: all chains to a target (the direct and the two-step chain both listed, shortest
+      first; the cap; pruning keeps chains exactly at the depth limit; never through a
+      statement table).
+- [ ] TUI: Enter opens every chain, `n`/`N` cycle the targets (wrapping), Esc clears,
+      Ctrl-Y on the 2nd chain's target inserts the 2nd chain, `c` creates a query.
+
+#### 15.6 Status ✅
+
+- [x] `catalog.Chains` rewritten: breadth-first for distances and order, depth-first for every
+      simple chain (counts per table up to the limit, `More` past it; a 200k-step budget);
+      with a target, pruned by a breadth-first distance-to-target over the edges seen (both
+      ways: a lower bound), shortest first, capped (`ChainsResult.More`).
+      `relations.chainLimit` (10), `panel.chains: one | all` (`PanelSettings.ChainsAll`).
+- [x] TUI `chainSet` (chains, current, each chain's row ids once walked, a queue for `all`):
+      `walkPath` per chain across lazy loads; one at a time closes the previous chain from
+      the first relation it doesn't share with the next; the current chain's rows marked;
+      footer `n/N chain 2/5 · esc clear`; cleared by Esc or when the statement's tables
+      change. `nextChain`/`prevChain`/`clearChains` (n, N, esc; Statement). `newQuery` → `c`
+      (hints follow the key).
+- [x] List detail `3 chains · 2 joins` / `10+ chains`.
+- [x] Tests: TestChains (all chains, longer ones after the shortest, limit/More, depth,
+      two statement tables), TestPanelChainSearch, TestPanelChainSteps (one and all: n,
+      wrap, N, the closed branch, Ctrl-Y on the 2nd chain, Esc, `c`). Live (shop): from
+      `order_line`, `:` listed `customer 2 chains · 2 joins`; Enter opened order_line →
+      orders → customer, `n` closed it and opened orders → v_orders → customer (chain 2/2).
+
+#### 15.5 Decided (2026-10-16)
+
+1. Every chain up to `relations.chainDepth` joins (default 4).
+2. At most `relations.chainLimit` chains per table (default 10).
+3. `panel.chains: one | all` — open one chain at a time (default: `n` closes the previous
+   chain's branch where it leaves the next one's path and opens the next), or all at once.
+4. The `:` list shows the number of chains and the shortest length (`3 chains · 2 joins`,
+   `10+ chains` past the limit), not the steps (seen in the tree once chosen).
+5. Before the v2 port (Phase 16).
+
+### Phase 16 — Bubble Tea v2 (planned 2026-10-16)
 
 Why: v2 reads the kitty keyboard protocol, so keys like `ctrl+:` and `ctrl+R` (= ctrl+shift+r)
 reach the panel; v1 reads only the classic encoding. Probed in Herdr (`/tmp/keyprobe`, v2.0.10):
 Herdr grants the app's keyboard-enhancement request (`Flags:1`, disambiguate) and forwards
 `ctrl+r`, `ctrl+shift+r`, `ctrl+:` (code `:`), `ctrl+shift+;` and `ctrl+;` as distinct keys
-(sent with `herdr pane send-keys`; a real Ghostty keypress still to confirm, 15.4).
+(sent with `herdr pane send-keys`; a real Ghostty keypress confirmed in 16.2).
 
-#### 15.1 The port
+#### 16.1 The port
 
 - [ ] Modules: `charm.land/bubbletea/v2`, `charm.land/lipgloss/v2`, `charm.land/bubbles/v2`
       (textinput, cursor), `charmbracelet/x/ansi` updated. easyredmine-tui (v2.0.2, its
@@ -1685,12 +1768,12 @@ Herdr grants the app's keyboard-enhancement request (`Flags:1`, disambiguate) an
       matcher maps a key press to every name it can have (`ctrl+R` = `ctrl+shift+r`,
       `ctrl+:` = ctrl + `:` or ctrl+shift+`;`, `G` = `shift+g`), so configs keep working.
       `receivable` (13.10) relaxed accordingly.
-- [ ] Defaults: `editConfig` `ctrl+:`, `reloadConfig` `ctrl+R` (15.4: fallbacks?).
+- [ ] Defaults: `editConfig` `ctrl+:`, `reloadConfig` `ctrl+R` (16.2: no fallbacks).
 - [ ] Tests: the key helper builds `tea.KeyPressMsg`; everything else unchanged; `-race`.
 - [ ] Live: panel, `sqlh tui`, pickers from Helix (`space i T`, `space i C`), the form,
       mouse clicks on the tab bar, `ctrl+e`/`ctrl+:` editing the config.
 
-#### 15.2 Decided (2026-10-16)
+#### 16.2 Decided (2026-10-16)
 
 1. No backup keys: `ctrl+:` / `ctrl+R` only; the `?` palette is the way in elsewhere.
 2. A real keypress in Ghostty → Herdr → v2: Ctrl-: arrives as `ctrl+shift+;` (code `;`,
@@ -1771,6 +1854,9 @@ Herdr grants the app's keyboard-enhancement request (`Flags:1`, disambiguate) an
 - **2026-10-16** Phase 7 done: fix for UNION lineage in derived tables/CTEs (+ Oracle
   `MINUS`); current schema per connection (`sqlh schema`, header `schema=`, CADE works from
   read-only logins); lineage for UNION views; go to definition of tables and `sqlh ddl`.
+
+- **2026-10-16** Phase 15: every join chain to a table (up to `chainDepth`, at most
+  `chainLimit`), opened one at a time (or all), `n`/`N` between them; new query on `c`.
 
 - **2026-10-16** Phase 14: pickers' highlighted row aligned and coloured (colour profile from
   /dev/tty), the connections popup like the tab; `:` in Statement finds join chains

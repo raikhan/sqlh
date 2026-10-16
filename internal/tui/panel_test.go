@@ -87,9 +87,12 @@ var fakeRels = map[string]*control.RelationsResult{
 		{Table: "orders", Insert: "orders", Kind: "table", Edge: "fk", Marker: "←", Cols: [][2]string{{"id", "customer_id"}}, Condition: "orders.customer_id = id"},
 		{Table: "region", Insert: "region", Kind: "table", Edge: "fk", Marker: "→", Out: true, Cols: [][2]string{{"region_id", "id"}}, Condition: "region.id = region_id", Note: "nullable"},
 	}},
-	"region":     {Table: "region", Insert: "region", Kind: "table", ViewsLoaded: true, Relations: []control.RelationItem{}},
-	"order_line": {Table: "order_line", Insert: "order_line", Kind: "table", ViewsLoaded: true, Relations: []control.RelationItem{}},
-	"v_orders":   {Table: "v_orders", Insert: "v_orders", Kind: "view", ViewsLoaded: true, Definition: "select id, customer_id from orders", Relations: []control.RelationItem{}},
+	"region": {Table: "region", Insert: "region", Kind: "table", ViewsLoaded: true, Relations: []control.RelationItem{}},
+	"order_line": {Table: "order_line", Insert: "order_line", Kind: "table", ViewsLoaded: true, Relations: []control.RelationItem{
+		{Table: "orders", Insert: "orders", Kind: "table", Edge: "fk", Marker: "→", Out: true, Cols: [][2]string{{"order_id", "id"}}, Condition: "orders.id = order_id"},
+		{Table: "customer", Insert: "customer", Kind: "table", Edge: "maybe", Marker: "→", Out: true, Cols: [][2]string{{"buyer_id", "id"}}, Condition: "customer.id = buyer_id", Note: "maybe"},
+	}},
+	"v_orders": {Table: "v_orders", Insert: "v_orders", Kind: "view", ViewsLoaded: true, Definition: "select id, customer_id from orders", Relations: []control.RelationItem{}},
 }
 
 func (f *fakeBackend) Catalog() (*control.CatalogResult, error) { return fakeCatalog, nil }
@@ -783,7 +786,7 @@ func TestTUIStandalone(t *testing.T) {
 	}
 	key(p, "2")
 	selectRow(t, p, "orders")
-	key(p, "n")
+	key(p, "c")
 	if len(be.bodies) != 1 || be.bodies[0] != "SELECT *\nFROM orders\n" || be.open[len(be.open)-1] != "/w/queries/query_2.sql" {
 		t.Errorf("new query %v %v", be.bodies, be.open)
 	}

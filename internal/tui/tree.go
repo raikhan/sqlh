@@ -374,11 +374,12 @@ func addRelation(g, t *node, r control.RelationItem) {
 
 // buildStatement makes the Statement tab: the statement's tables, open,
 // their relationships first.
-func buildStatement(ctx *control.ContextResult, rels map[string]*control.RelationsResult, cur *control.Cursor, editor, open bool, ic icons) []*node {
+// newKey: the new-query key, for the hint.
+func buildStatement(ctx *control.ContextResult, rels map[string]*control.RelationsResult, cur *control.Cursor, editor, open bool, newKey string, ic icons) []*node {
 	if cur == nil {
 		label := "no statement: the cursor of the editor shows here"
 		if !editor {
-			label = "no editor: open a query (4) or create one (n)"
+			label = "no editor: open a query (4) or create one (" + newKey + ")"
 		}
 		return []*node{top("stmt", &node{kind: nInfo, label: label})}
 	}
@@ -530,13 +531,13 @@ func firstLine(sql string) string { return strings.Join(strings.Fields(sql), " "
 var timeNow = time.Now
 
 // buildQueryFiles makes the Queries tab.
-func buildQueryFiles(files []string, ic icons) []*node {
+func buildQueryFiles(files []string, newKey string, ic icons) []*node {
 	var roots []*node
 	for _, f := range files {
 		roots = append(roots, top("files", &node{kind: nQueryFile, label: shortPath(f), file: f, icon: ic.file}))
 	}
 	if len(files) == 0 {
-		roots = append(roots, top("files", &node{kind: nInfo, label: "none yet: n creates query_1.sql"}))
+		roots = append(roots, top("files", &node{kind: nInfo, label: "none yet: " + newKey + " creates query_1.sql"}))
 	}
 	return roots
 }

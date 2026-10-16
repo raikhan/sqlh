@@ -65,6 +65,9 @@ type PanelConfig struct {
 	Icons string `json:"icons" yaml:"icons"`
 	// Statement: the Statement tab's tables open (default) or collapsed.
 	Statement string `json:"statement" yaml:"statement"`
+	// Chains: a join-chain search result opens its chains one at a time
+	// (default; n/N move on) or all at once.
+	Chains string `json:"chains" yaml:"chains"`
 	// Syntax: SQL highlighting colours by class ("#rrggbb"), see SyntaxClasses.
 	Syntax map[string]string `json:"syntax" yaml:"syntax"`
 }
@@ -79,6 +82,9 @@ type PickerConfig struct {
 }
 
 var hexColor = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
+
+// ChainsAll: panel.chains is all (open every chain at once).
+func (p PanelConfig) ChainsAll() bool { return strings.EqualFold(strings.TrimSpace(p.Chains), "all") }
 
 // StatementCollapsed: panel.statement is collapsed.
 func (p PanelConfig) StatementCollapsed() bool {
@@ -153,6 +159,16 @@ type RelationsConfig struct {
 	// ChainDepth: the panel's join-chain search goes at most this many
 	// joins from the statement's tables. Default 4.
 	ChainDepth int `json:"chainDepth" yaml:"chainDepth"`
+	// ChainLimit: at most this many chains to a table. Default 10.
+	ChainLimit int `json:"chainLimit" yaml:"chainLimit"`
+}
+
+// ChainLimitOrDefault is relations.chainLimit, default 10.
+func (r RelationsConfig) ChainLimitOrDefault() int {
+	if r.ChainLimit > 0 {
+		return r.ChainLimit
+	}
+	return 10
 }
 
 // ChainDepthOrDefault is relations.chainDepth, default 4.
@@ -256,6 +272,11 @@ func (c *Config) Validate() error {
 	case "", "open", "collapsed":
 	default:
 		return fmt.Errorf("panel.statement: %q is not open or collapsed", c.Panel.Statement)
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Panel.Chains)) {
+	case "", "one", "all":
+	default:
+		return fmt.Errorf("panel.chains: %q is not one or all", c.Panel.Chains)
 	}
 	for class, col := range c.Panel.Syntax {
 		if !contains(SyntaxClasses, class) {

@@ -33,7 +33,7 @@ import (
 func tuiCommand() *cli.Command {
 	return &cli.Command{
 		Name:  "tui",
-		Usage: "the database browser as an app: object tree, previews, history, query files (n: new query, opened in Helix next to it)",
+		Usage: "the database browser as an app: object tree, previews, history, query files (c: new query, opened in Helix next to it)",
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "dir", Aliases: []string{"C"}, Usage: "the workspace: `DIR` (default: the project around the current directory)"},
 		},
@@ -70,7 +70,7 @@ func tuiCmd(c *cli.Context) error {
 	be.insertKeys = st.Panel.InsertKeys
 	go be.watch()
 	p := tui.NewPanel(be, be.events, tui.Options{
-		Icons: st.Panel.Icons, Keys: st.Panel.Keys, Syntax: st.Panel.Syntax, StatementCollapsed: st.Panel.StatementCollapsed, Workspace: ws, Standalone: true,
+		Icons: st.Panel.Icons, Keys: st.Panel.Keys, Syntax: st.Panel.Syntax, StatementCollapsed: st.Panel.StatementCollapsed, ChainsAll: st.Panel.ChainsAll, Workspace: ws, Standalone: true,
 	})
 	_, err = tea.NewProgram(p, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
 	return err

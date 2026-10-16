@@ -100,7 +100,8 @@ var DefaultPanelKeys = Keymap{
 	"previewNext": {"tab"}, "previewPrev": {"shift+tab"},
 	"previewDown": {"J"}, "previewUp": {"K"},
 	"sample": {"s"}, "nextRow": {"]"}, "prevRow": {"["},
-	"newQuery": {"n"}, "openResult": {"o"}, "editFile": {"e"},
+	"newQuery": {"c"}, "openResult": {"o"}, "editFile": {"e"},
+	"nextChain": {"n"}, "prevChain": {"N"}, "clearChains": {"esc"},
 	"renameQuery": {"R"}, "deleteQuery": {"X"}, "historyAllConns": {"c"},
 	"newConnection": {"C"}, "editConnection": {"E"}, "duplicateConnection": {"D"}, "deleteConnection": {"X"},
 	"refresh": {"r"}, "help": {"?"}, "quit": {"q"},
@@ -131,7 +132,7 @@ var PanelCommonActions = []string{"up", "down", "top", "bottom", "pageDown", "pa
 var panelScopeOwn = map[string][]string{
 	"connections": {"newConnection", "editConnection", "duplicateConnection", "deleteConnection"},
 	"objects":     {"insert", "mark", "sample", "nextRow", "prevRow", "newQuery", "refresh"},
-	"statement":   {"insert", "mark", "sample", "nextRow", "prevRow", "newQuery", "refresh", "expandAll"},
+	"statement":   {"insert", "mark", "sample", "nextRow", "prevRow", "newQuery", "refresh", "expandAll", "nextChain", "prevChain", "clearChains"},
 	"queries":     {"newQuery", "renameQuery", "deleteQuery"},
 	"history":     {"insert", "openResult", "editFile", "historyAllConns"},
 	"search":      {"searchUp", "searchDown", "searchOpen", "searchInsert", "searchCancel", "searchNextKind", "searchPrevKind"},

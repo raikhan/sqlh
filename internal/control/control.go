@@ -207,17 +207,17 @@ type ChainsParams struct {
 	Target string   `json:"target,omitempty"`
 	// MaxDepth: at most this many joins (0: relations.chainDepth).
 	MaxDepth int `json:"maxDepth,omitempty"`
-	Limit    int `json:"limit,omitempty"` // chains to Target (default 5)
+	Limit    int `json:"limit,omitempty"` // 0: relations.chainLimit
 }
 
-// ChainTarget: a reachable table: Joins away, by Chains shortest chains,
-// Via the first one's tables (the statement's first).
+// ChainTarget: a reachable table: Joins away at the nearest, by Chains
+// chains (counted up to the limit; More: there are more).
 type ChainTarget struct {
-	Table  string   `json:"table"`
-	Kind   string   `json:"kind,omitempty"`
-	Joins  int      `json:"joins"`
-	Chains int      `json:"chains"`
-	Via    []string `json:"via"`
+	Table  string `json:"table"`
+	Kind   string `json:"kind,omitempty"`
+	Joins  int    `json:"joins"`
+	Chains int    `json:"chains"`
+	More   bool   `json:"more,omitempty"`
 }
 
 // Chain: a join chain from a statement table.
@@ -229,6 +229,7 @@ type Chain struct {
 type ChainsResult struct {
 	Targets []ChainTarget `json:"targets"`
 	Chains  []Chain       `json:"chains"`
+	More    bool          `json:"more,omitempty"` // chains past the limit
 }
 
 // FileParams: a file (absolute path).
@@ -517,6 +518,8 @@ type PanelSettings struct {
 	Keys map[string]map[string][]string `json:"keys"`
 	// StatementCollapsed: the Statement tab's tables start collapsed.
 	StatementCollapsed bool `json:"statementCollapsed,omitempty"`
+	// ChainsAll: a join-chain result opens all its chains at once.
+	ChainsAll bool `json:"chainsAll,omitempty"`
 	// Syntax: SQL colours by class (panel.syntax).
 	Syntax     map[string]string `json:"syntax,omitempty"`
 	Icons      string            `json:"icons"`

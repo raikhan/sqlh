@@ -482,7 +482,7 @@ func panelRunCmd(c *cli.Context) error {
 	be.settings = *st.Panel
 	go be.watch()
 	p := tui.NewPanel(be, be.events, tui.Options{
-		Icons: st.Panel.Icons, Keys: st.Panel.Keys, Syntax: st.Panel.Syntax, StatementCollapsed: st.Panel.StatementCollapsed, Cursor: res.Cursor, Workspace: ws,
+		Icons: st.Panel.Icons, Keys: st.Panel.Keys, Syntax: st.Panel.Syntax, StatementCollapsed: st.Panel.StatementCollapsed, ChainsAll: st.Panel.ChainsAll, Cursor: res.Cursor, Workspace: ws,
 	})
 	defer logAway(c)()
 	prog := tea.NewProgram(p, tea.WithAltScreen(), tea.WithMouseCellMotion())
@@ -701,7 +701,7 @@ func (b *panelBackend) Act(a control.PanelAction) error {
 	}
 	pane, _ := b.editor()
 	if pane == "" {
-		return errors.New("no editor: open a query file (n: new query)")
+		return errors.New("no editor: open a query file (c: new query)")
 	}
 	if !b.editorRuns() {
 		return errors.New("the editor's pane is gone")

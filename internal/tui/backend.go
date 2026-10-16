@@ -100,6 +100,9 @@ type Options struct {
 	Keys map[string]map[string][]string
 	// StatementCollapsed: the Statement tab's tables start collapsed.
 	StatementCollapsed bool
+	// ChainsAll: a join-chain result opens all its chains at once (else one
+	// at a time).
+	ChainsAll bool
 	// Syntax: SQL colours by class (panel.syntax; defaults for the rest).
 	Syntax map[string]string
 	// Cursor: the editor's cursor when the panel starts (may be nil).

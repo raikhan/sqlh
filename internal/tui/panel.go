@@ -207,8 +207,8 @@ type Panel struct {
 	rtop    int
 	// pendingReveal: a search result to select once its table has loaded
 	pendingReveal func(*node) bool
-	// pendingPath: a join chain the Statement tree is being opened along
-	pendingPath *control.Chain
+	// chainSet: the chains to a table (Statement's `:`), stepped with n / N
+	chainSet *chainSet
 	// chains: the tables join chains reach from the statement's (chainsFrom)
 	chains        *control.ChainsResult
 	chainsFrom    string
@@ -601,8 +601,8 @@ func (p *Panel) rebuild() []tea.Cmd {
 	default:
 		p.tabs[tabObjects].roots = []*node{top("obj", &node{kind: nInfo, label: "loading…"})}
 	}
-	p.tabs[tabStmt].roots = buildStatement(p.ctx, p.stmtRels, p.cursor, p.editor != "" || !p.opt.Standalone, !p.stmtCollapsed, p.ic)
-	p.tabs[tabQueries].roots = buildQueryFiles(p.files, p.ic)
+	p.tabs[tabStmt].roots = buildStatement(p.ctx, p.stmtRels, p.cursor, p.editor != "" || !p.opt.Standalone, !p.stmtCollapsed, p.k("newQuery"), p.ic)
+	p.tabs[tabQueries].roots = buildQueryFiles(p.files, p.k("newQuery"), p.ic)
 	p.tabs[tabHistory].roots = buildHistory(p.hist, p.historyConn(), p.ic)
 	var cmds []tea.Cmd
 	for i := range p.tabs {
@@ -860,12 +860,17 @@ func (p *Panel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return p, tea.Batch(p.rebuild()...)
 	case contextMsg:
+		before := strings.Join(p.stmtTables(), "\x00")
 		if msg.err == nil {
 			p.ctx, p.stmtRels = msg.ctx, msg.rels
 		} else {
 			p.ctx, p.stmtRels = nil, nil
 		}
-		return p, tea.Batch(p.rebuild()...)
+		cmds := p.rebuild()
+		if p.chainSet != nil && strings.Join(p.stmtTables(), "\x00") != before {
+			p.chainSet = nil // the statement's tables changed: the chains with them
+		}
+		return p, tea.Batch(cmds...)
 	case tableMsg:
 		delete(p.loading, msg.table)
 		if msg.err != nil {
@@ -1329,6 +1334,15 @@ func (p *Panel) do(action string) tea.Cmd {
 		return p.editConfig()
 	case "reloadConfig":
 		return p.reloadSettings()
+	case "nextChain":
+		return p.stepChain(1)
+	case "prevChain":
+		return p.stepChain(-1)
+	case "clearChains":
+		if p.chainSet != nil {
+			p.chainSet = nil
+			p.flash("chains cleared", false)
+		}
 	case "historyAllConns":
 		p.histAll = !p.histAll
 		return tea.Batch(append(p.rebuild(), p.previewCmd())...)
@@ -1640,6 +1654,7 @@ func (p *Panel) applySettings(st *control.PanelSettings) {
 	p.km = panelKeymap(st.Keys)
 	p.ic = iconSet(st.Icons)
 	p.sx = newSyntax(st.Syntax)
+	p.opt.ChainsAll = st.ChainsAll
 	if st.StatementCollapsed != p.opt.StatementCollapsed {
 		p.opt.StatementCollapsed, p.stmtCollapsed = st.StatementCollapsed, st.StatementCollapsed
 	}

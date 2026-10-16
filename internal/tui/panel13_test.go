@@ -286,16 +286,22 @@ func TestPanelReloadConfig(t *testing.T) {
 
 func (f *fakeBackend) Chains(from []string, target string) (*control.ChainsResult, error) {
 	cust := control.JoinHop{Table: "customer", Cols: [][2]string{{"customer_id", "id"}}}
-	if target == "" {
+	switch target {
+	case "":
 		return &control.ChainsResult{Targets: []control.ChainTarget{
-			{Table: "customer", Kind: "table", Joins: 1, Chains: 1, Via: []string{"orders", "customer"}},
-			{Table: "order_line", Kind: "table", Joins: 1, Chains: 1, Via: []string{"orders", "order_line"}},
-			{Table: "region", Kind: "table", Joins: 2, Chains: 1, Via: []string{"orders", "customer", "region"}},
+			{Table: "customer", Kind: "table", Joins: 1, Chains: 2},
+			{Table: "order_line", Kind: "table", Joins: 1, Chains: 1},
+			{Table: "region", Kind: "table", Joins: 2, Chains: 10, More: true},
 		}}, nil
-	}
-	if target == "region" {
+	case "region":
 		return &control.ChainsResult{Chains: []control.Chain{{Anchor: "orders", Hops: []control.JoinHop{cust,
 			{Table: "region", Cols: [][2]string{{"region_id", "id"}}}}}}}, nil
+	case "customer": // directly, and through order_line
+		return &control.ChainsResult{Chains: []control.Chain{
+			{Anchor: "orders", Hops: []control.JoinHop{cust}},
+			{Anchor: "orders", Hops: []control.JoinHop{{Table: "order_line", Cols: [][2]string{{"id", "order_id"}}},
+				{Table: "customer", Cols: [][2]string{{"buyer_id", "id"}}}}},
+		}}, nil
 	}
 	return &control.ChainsResult{}, nil
 }
@@ -308,7 +314,7 @@ func TestPanelChainSearch(t *testing.T) {
 	if p.skind != skChain || strings.Join(searchTexts(p), ",") != "customer,order_line,region" {
 		t.Fatalf("chains: %d %v", p.skind, searchTexts(p))
 	}
-	if view := plain(p.View()); !strings.Contains(view, "2 joins · orders → customer → region") {
+	if view := plain(p.View()); !strings.Contains(view, "10+ chains · 2 joins") || !strings.Contains(view, "2 chains · 1 join") {
 		t.Errorf("detail:\n%s", view)
 	}
 	typeText(p, "reg")
@@ -330,4 +336,75 @@ func TestPanelChainSearch(t *testing.T) {
 	if p.skind != skTable {
 		t.Errorf("Objects : is %d", p.skind)
 	}
+}
+
+func TestPanelChainSteps(t *testing.T) {
+	for _, all := range []bool{false, true} {
+		be := &fakeBackend{ctx: &control.ContextResult{InJoin: true, Tables: []control.ScopeTable{{Name: "orders", Alias: "o", Ref: "o"}}}}
+		p := newPanelWith(t, be, Options{Icons: "ascii", Cursor: &control.Cursor{File: "/w/q.sql", Line: 3, Col: 1}, ChainsAll: all})
+		key(p, "/")
+		typeText(p, ":customer")
+		key(p, "enter")
+		at := func() []string {
+			n := p.selected()
+			if n == nil || n.kind != nRelation {
+				return nil
+			}
+			return append([]string{n.anchor}, hopTablesOf(n.path)...)
+		}
+		if got := strings.Join(at(), ">"); got != "orders>customer" {
+			t.Fatalf("all=%v first: %s\n%s", all, got, plain(p.View()))
+		}
+		if !strings.Contains(plain(p.View()), "chain 1/2") {
+			t.Errorf("footer:\n%s", plain(p.View()))
+		}
+		viaOpen := func() bool { // the view's branch open
+			for _, n := range p.rows() {
+				if n.kind == nRelation && n.table == "order_line" && n.depth == 2 {
+					return n.expanded
+				}
+			}
+			return false
+		}
+		if viaOpen() != all {
+			t.Errorf("all=%v: the second chain open: %v", all, viaOpen())
+		}
+		key(p, "n")
+		if got := strings.Join(at(), ">"); got != "orders>order_line>customer" {
+			t.Fatalf("all=%v n: %s\n%s", all, got, plain(p.View()))
+		}
+		// ctrl+y inserts this chain
+		key(p, "ctrl+y")
+		if len(be.acts) != 1 || len(be.acts[0].Path) != 2 {
+			t.Errorf("all=%v insert: %+v", all, be.acts)
+		}
+		key(p, "n") // wraps
+		if got := strings.Join(at(), ">"); got != "orders>customer" {
+			t.Errorf("all=%v wrap: %s", all, got)
+		}
+		if !all && viaOpen() {
+			t.Errorf("one at a time: the second chain still open")
+		}
+		key(p, "N")
+		if got := strings.Join(at(), ">"); got != "orders>order_line>customer" {
+			t.Errorf("all=%v N: %s", all, got)
+		}
+		key(p, "esc")
+		if p.chainSet != nil {
+			t.Error("esc didn't clear")
+		}
+		// c creates a query now
+		key(p, "c")
+		if len(be.bodies) != 1 {
+			t.Errorf("c: %v", be.bodies)
+		}
+	}
+}
+
+func hopTablesOf(hops []control.JoinHop) []string {
+	var out []string
+	for _, h := range hops {
+		out = append(out, h.Table)
+	}
+	return out
 }

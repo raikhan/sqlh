@@ -18,6 +18,7 @@ relations:
   insert: join   # after JOIN the table picker inserts "t alias ON …" (join) or the name (name)
   maybe: true    # also offer relationships guessed from column names (customer_id → customer.id)
   # chainDepth: 4 # the panel's join-chain search (`:` in Statement): at most this many joins
+  # chainLimit: 10 # … and at most this many chains to a table
 
 # Query results ("Run → CSV" / "Export → CSV" code actions)
 results:
@@ -49,6 +50,7 @@ panel:
   #     sample: d
   # icons: unicode            # unicode (default), nerd (Nerd Font) or ascii
   # statement: open           # the Statement tab's tables: open (default) or collapsed
+  # chains: one               # a join-chain result: open its chains one at a time (n/N) or all
   # syntax:                   # SQL colours (default: Helix's modus_vivendi_tinted)
   #   keyword: "#b6a0ff"      # also comment, string, number, function, type, alias,
   #                           # parameter, operator
