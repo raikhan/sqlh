@@ -753,7 +753,11 @@ func (b *graphBuilder) recordOrigins(view, col string, set []*baseCol) {
 	var names []string
 	seen := map[string]bool{}
 	for _, bc := range set {
-		n := bc.table + "." + bc.col
+		col := bc.col
+		if c := b.column(bc.table, col); c != nil {
+			col = c.Name // the catalog's spelling
+		}
+		n := bc.table + "." + col
 		if !seen[strings.ToUpper(n)] {
 			seen[strings.ToUpper(n)] = true
 			names = append(names, n)

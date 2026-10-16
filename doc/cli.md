@@ -20,6 +20,7 @@ runs standalone, on the connection in the file's header (see [Query files](#quer
 | `sqlh open [CSV…]` | open the newest result CSV (or the given ones) in `results.viewer`, see [Viewer](#viewer) |
 | `sqlh tables [-s SCHEMA] [--all]` | tables/views as you'd type them (default schema unqualified, others `schema.table`, quoted when needed); `-p` picks one (preview: `describe`); with `--file F --line L --col C` the tables related to the statement's come first and after `JOIN` it inserts the join clause, see [Table picker](#table-picker) |
 | `sqlh describe TABLE` | columns (foreign keys marked), relationships, a view's definition (`--json`) |
+| `sqlh ddl TABLE` | a table's or view's CREATE statement(s), as go to definition shows it (`schema.table`, synonyms; `--json`; standalone with `--conn`/`--schema`) |
 | `sqlh relations TABLE` | the tables and views related to TABLE, grouped (`--long`, `--json`; `-p` picks one) |
 | `sqlh columns [TABLE] [--prefix p.] [--sep ", "]` | a table's columns; `-p` multi-picks (Tab, Ctrl-A all) → `p.a, p.b`; no TABLE with `-p`: pick the table first |
 | `sqlh schemas [--all]` / `sqlh databases` | lists; `-p` picks one |

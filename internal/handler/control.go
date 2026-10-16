@@ -85,8 +85,15 @@ func (s *Server) handleControl(ctx context.Context, conn *jsonrpc2.Conn, req *js
 			err = perr
 		}
 	}()
-	if req.Method == control.MethodRun {
+	switch req.Method {
+	case control.MethodRun:
 		return s.controlRun(ctx, conn, req)
+	case control.MethodDDL: // may wait for the database: takes s.mu itself
+		var p control.DDLParams
+		if err := unmarshal(req, &p); err != nil {
+			return nil, err
+		}
+		return s.controlDDL(ctx, p.Table)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

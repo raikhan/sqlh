@@ -37,6 +37,9 @@ type Server struct {
 	// curSchema: the current schema when switched away from the connection's
 	// default ("" = the default, see DBConfig.CurrentSchema).
 	curSchema string
+	// noMetadataDDL: connection \t target keys where Oracle refused
+	// DBMS_METADATA (go to definition generates the DDL instead)
+	noMetadataDDL sync.Map
 	// defaultSchema: the current schema of the connection without a switch
 	// (recorded when connecting without one).
 	defaultSchema string
@@ -138,6 +141,10 @@ func (s *Server) Handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.
 			err = perr
 		}
 	}()
+	if req.Method == "textDocument/definition" || req.Method == "textDocument/typeDefinition" {
+		// takes s.mu itself: may wait for the database without holding it
+		return s.handleDefinition(ctx, conn, req)
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if req.Method == "initialize" {
@@ -186,10 +193,6 @@ func (s *Server) handle(ctx context.Context, conn *jsonrpc2.Conn, req *jsonrpc2.
 		return s.handleTextDocumentSignatureHelp(ctx, conn, req)
 	case "textDocument/rename":
 		return s.handleTextDocumentRename(ctx, conn, req)
-	case "textDocument/definition":
-		return s.handleDefinition(ctx, conn, req)
-	case "textDocument/typeDefinition":
-		return s.handleDefinition(ctx, conn, req)
 	case "textDocument/references":
 		return s.handleReferences(ctx, conn, req)
 	case "window/showMessage":

@@ -26,8 +26,11 @@ import (
 	"os/exec"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/urfave/cli/v2"
+
+	"github.com/raikhan/sqlh/internal/database"
 
 	"github.com/raikhan/sqlh/internal/catalog"
 	"github.com/raikhan/sqlh/internal/control"
@@ -48,6 +51,20 @@ func relationCommands() []*cli.Command {
 			ArgsUsage: "TABLE",
 			Flags:     catalogFlags(),
 			Action:    editorAction(relationsCmd),
+		},
+		{
+			Name:      "ddl",
+			Usage:     "print a table's or view's CREATE statement(s), as go to definition shows it",
+			ArgsUsage: "TABLE",
+			Flags: []cli.Flag{
+				&cli.BoolFlag{Name: "json", Usage: "machine-readable output"},
+				&cli.StringFlag{Name: "dir", Aliases: []string{"C"}, Usage: "find the workspace from `DIR`"},
+				&cli.StringFlag{Name: "file", Aliases: []string{"f"}, Usage: "the SQL file being edited: finds the workspace"},
+				&cli.StringFlag{Name: "conn", Usage: "standalone: use connection `ALIAS`"},
+				&cli.StringFlag{Name: "schema", Usage: "standalone: current schema `NAME` (one of the connection's schemas:)"},
+				&cli.BoolFlag{Name: "standalone", Usage: "do not use a running server"},
+			},
+			Action: ddlCmd,
 		},
 		{
 			// fzf bindings of the table picker (drill-down state)
@@ -722,4 +739,106 @@ func chooseInsert(st *navState, item navItem, flip bool) string {
 		taken[strings.ToLower(t.Name)] = true
 	}
 	return space + catalog.ComposeJoin(steps, taken, st.Ctx.LowercaseKeywords, st.Ctx.Indent)
+}
+
+func ddlCmd(c *cli.Context) error {
+	name := strings.TrimSpace(c.Args().First())
+	if name == "" {
+		return errors.New("usage: sqlh ddl TABLE (or schema.table)")
+	}
+	var res *control.DDLResult
+	var err error
+	if c.Bool("standalone") || c.String("conn") != "" || c.String("schema") != "" {
+		res, err = ddlStandalone(c, name)
+	} else {
+		cl, _, serr := server(c)
+		switch {
+		case errors.Is(serr, control.ErrNoServer):
+			res, err = ddlStandalone(c, name)
+		case serr != nil:
+			return serr
+		default:
+			defer cl.Close()
+			res = &control.DDLResult{}
+			err = call(cl, control.MethodDDL, control.DDLParams{Table: name}, res)
+		}
+	}
+	if err != nil {
+		return err
+	}
+	if c.Bool("json") {
+		return printJSON(res)
+	}
+	fmt.Print(ddlText(res))
+	return nil
+}
+
+// ddlText: the statements under a comment saying what and from where.
+func ddlText(r *control.DDLResult) string {
+	what := r.Name
+	if r.Schema != "" {
+		what = r.Schema + "." + r.Name
+	}
+	head := "-- " + what + " (" + r.Kind + ")"
+	if r.Source != "" {
+		head += ": " + r.Source
+	}
+	head += "\n"
+	if r.Note != "" {
+		head += "-- " + r.Note + "\n"
+	}
+	return head + r.DDL
+}
+
+// ddlStandalone asks the database on a connection of its own.
+func ddlStandalone(c *cli.Context, name string) (*control.DDLResult, error) {
+	cfg, err := loadConfig(c)
+	if err != nil {
+		return nil, err
+	}
+	_, conn, err := chooseConnection(cfg, workspaceRoot(startDir(c)), c.String("conn"))
+	if err != nil {
+		return nil, err
+	}
+	if conn, err = withSchema(conn, c.String("schema")); err != nil {
+		return nil, err
+	}
+	dbc, err := database.Open(conn)
+	if err != nil {
+		return nil, err
+	}
+	defer dbc.Close()
+	repo, err := database.CreateRepository(conn.Driver, dbc.Conn)
+	if err != nil {
+		return nil, err
+	}
+	if f, ok := repo.(database.SchemaFilterer); ok {
+		f.SetSchemaFilter(conn.Schemas)
+	}
+	f, ok := repo.(database.DefinitionFetcher)
+	if !ok {
+		return nil, fmt.Errorf("%s: definitions are not supported", conn.Driver)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	schema, table := database.SplitQualified(name, conn.Driver)
+	qualified := schema != ""
+	if !qualified {
+		if schema, err = repo.CurrentSchema(ctx); err != nil {
+			return nil, err
+		}
+	}
+	d, err := f.Definition(ctx, schema, table, database.DefinitionOptions{})
+	if errors.Is(err, database.ErrNoObject) && !qualified {
+		// not in the current schema: a synonym, as the database resolves it
+		if sr, ok := repo.(database.SynonymResolver); ok {
+			if owner, target, serr := sr.ResolveSynonym(ctx, table); serr == nil && owner != "" {
+				d, err = f.Definition(ctx, owner, target, database.DefinitionOptions{})
+			}
+		}
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", name, err)
+	}
+	return &control.DDLResult{Schema: d.Schema, Name: d.Name, Kind: string(d.Kind), Source: d.Source, Note: d.Note, DDL: d.DDL}, nil
 }

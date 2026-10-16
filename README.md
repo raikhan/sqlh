@@ -164,14 +164,29 @@ Columns of CTEs and derived tables show their type and the table column they com
 
 #### Go to definition
 
-Table aliases and WITH query names jump to their definition. A view — its name, or one of its
-columns (`d.batch_name`, `v.col`, or an unqualified column only a view of the statement has) —
-opens its definition from the database: a read-only file
-`<runtime dir>/views/<workspace key>/<connection>/<schema>.<view>.sql` (`CREATE OR REPLACE VIEW … AS …`,
-rewritten on every request), at the line defining the column. Hover, go to definition and the
-CLI pickers (`sqlh tables -p --file …`: the directory maps back to the workspace's server) work
-inside it, so views on views can be followed down. Hover marks views that can't be written
-(`view (read-only)`, `no INSERT`).
+Table aliases and WITH query names jump to their definition. A table or view — its name
+(`t`, `schema.t`, also in DDL such as `ALTER TABLE t`), or one of its columns (`d.batch_name`,
+`t.col`, or an unqualified column only one table of the statement has) — opens its definition
+from the database: a read-only file
+`<runtime dir>/views/<workspace key>/<connection>/<schema>.<name>.sql`, rewritten on every
+request, at the line defining the column.
+
+- Views: `CREATE OR REPLACE VIEW … AS …`, from the schema cache for the current schema, else
+  fetched.
+- Tables: Oracle `DBMS_METADATA.GET_DDL` when the login may use it (the owner, or
+  `SELECT_CATALOG_ROLE`), otherwise — like DBeaver — generated from the `ALL_*` dictionary
+  views (columns, constraints with their CHECK conditions, indexes incl. expressions,
+  comments); PostgreSQL assembled from `pg_catalog`; SQLite `sqlite_master`. No triggers,
+  grants or storage clauses. The first line says where it came from.
+- The database is asked without blocking the CLI, for up to 5 s; if it doesn't answer the
+  table is generated from the schema cache (marked approximate).
+- Schemas: the current one and the others of the connection's `schemas:`; Oracle synonyms
+  resolve to their table when it is in one of them.
+
+Hover, go to definition and the CLI pickers (`sqlh tables -p --file …`: the directory maps back
+to the workspace's server) work inside the file, so views on views can be followed down. Hover
+marks views that can't be written (`view (read-only)`, `no INSERT`). `sqlh ddl TABLE` prints the
+same definition.
 
 #### Signature Help
 

@@ -35,9 +35,11 @@ const (
 	// ([]SchemaItem, Default = current); MethodUseSchema switches.
 	MethodSchemaChoices = "sqlh/schemaChoices"
 	MethodUseSchema     = "sqlh/useSchema"
-	MethodNotify        = "sqlh/notify"
-	MethodRelations     = "sqlh/relations"
-	MethodContext       = "sqlh/context"
+	// MethodDDL: a table's or view's CREATE statement(s) (DDLParams → DDLResult)
+	MethodDDL       = "sqlh/ddl"
+	MethodNotify    = "sqlh/notify"
+	MethodRelations = "sqlh/relations"
+	MethodContext   = "sqlh/context"
 )
 
 // SchemaItem is a schema; Default marks the connection's current schema.
@@ -147,6 +149,21 @@ type SchemasParams struct {
 type NotifyParams struct {
 	Message string `json:"message"`
 	Error   bool   `json:"error,omitempty"`
+}
+
+// DDLParams names a table or view: name, schema.name (quoted parts kept).
+type DDLParams struct {
+	Table string `json:"table"`
+}
+
+// DDLResult is a table's or view's definition.
+type DDLResult struct {
+	Schema string `json:"schema"`
+	Name   string `json:"name"`
+	Kind   string `json:"kind"`             // table | view | materialized view
+	Source string `json:"source,omitempty"` // DBMS_METADATA, pg_catalog, …
+	Note   string `json:"note,omitempty"`
+	DDL    string `json:"ddl"`
 }
 
 // DatabaseParams: the database (MethodUseDatabase) or schema (MethodUseSchema)
