@@ -52,6 +52,8 @@ var (
 	colMatch  = lipgloss.AdaptiveColor{Light: "#af5f00", Dark: "#ffaf5f"}
 	colSelBg  = lipgloss.AdaptiveColor{Light: "#d0d0d0", Dark: "#303a46"}
 	colErr    = lipgloss.AdaptiveColor{Light: "#af0000", Dark: "#ff5f5f"}
+	colAddBg  = lipgloss.AdaptiveColor{Light: "#d7f5dd", Dark: "#09301f"} // diffs (modus bg-added-faint-ish)
+	colDelBg  = lipgloss.AdaptiveColor{Light: "#fbe1e1", Dark: "#380a19"}
 
 	stDim        = lipgloss.NewStyle().Foreground(colDim)
 	stAccent     = lipgloss.NewStyle().Foreground(colAccent)

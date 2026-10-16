@@ -287,7 +287,7 @@ func TestHeadlessGivesWay(t *testing.T) {
 		t.Error("second headless server started")
 	}
 	// an editor's server does
-	startTestServer(t, cfg, ws, "select 1\n")
+	ed := startTestServer(t, cfg, ws, "select 1\n")
 	if !h.Released() {
 		t.Error("headless server still serving")
 	}
@@ -296,5 +296,32 @@ func TestHeadlessGivesWay(t *testing.T) {
 	}
 	if err := call(control.MethodCatalog, &cat); err != nil {
 		t.Errorf("editor's server: %v", err)
+	}
+	// released, it stays warm: the editor's server goes, it serves again at
+	// once with the same connection and cache
+	h.mu.Lock()
+	conn, cache := h.dbConn, h.worker.Cache()
+	h.mu.Unlock()
+	if conn == nil || cache == nil {
+		t.Fatal("released server dropped its connection")
+	}
+	_ = ed.s.Stop()
+	start := time.Now()
+	if err := h.Resume(); err != nil {
+		t.Fatal(err)
+	}
+	if d := time.Since(start); d > 300*time.Millisecond {
+		t.Errorf("resume took %v", d)
+	}
+	if err := call(control.MethodCatalog, &cat); err != nil || cat.Connection != "lite" {
+		t.Errorf("resumed catalog %+v %v", cat, err)
+	}
+	h.mu.Lock()
+	if h.dbConn != conn || h.worker.Cache() != cache {
+		t.Error("resume reconnected / reloaded the cache")
+	}
+	h.mu.Unlock()
+	if s := control.Servers(); len(s) != 1 || !s[0].Headless {
+		t.Errorf("servers after resume %+v", s)
 	}
 }

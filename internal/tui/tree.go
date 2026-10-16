@@ -230,11 +230,7 @@ func buildConnections(conns []control.Connection, ic icons) []*node {
 	groups := map[string]*node{}
 	var order []string
 	item := func(c control.Connection) *node {
-		n := &node{kind: nConnItem, label: c.Alias, detail: connTarget(c), conn: c, icon: ic.connection}
-		if c.Current {
-			n.detail = "● " + n.detail
-		}
-		return n
+		return &node{kind: nConnItem, label: c.Alias, detail: connTarget(c), conn: c, icon: ic.connection}
 	}
 	for _, c := range conns {
 		if c.Group == "" {
@@ -357,7 +353,7 @@ func addRelation(g, t *node, r control.RelationItem) {
 
 // buildStatement makes the Statement tab: the statement's tables, open,
 // their relationships first.
-func buildStatement(ctx *control.ContextResult, rels map[string]*control.RelationsResult, cur *control.Cursor, editor bool, ic icons) []*node {
+func buildStatement(ctx *control.ContextResult, rels map[string]*control.RelationsResult, cur *control.Cursor, editor, open bool, ic icons) []*node {
 	if cur == nil {
 		label := "no statement: the cursor of the editor shows here"
 		if !editor {
@@ -391,7 +387,7 @@ func buildStatement(ctx *control.ContextResult, rels map[string]*control.Relatio
 			insert = r.Insert
 		}
 		roots = append(roots, top("stmt", &node{kind: nStmtTable, label: label, table: insert, ref: t.Ref, lazy: true,
-			icon: ic.kind("table"), expanded: true}))
+			icon: ic.kind("table"), expanded: open}))
 	}
 	return roots
 }

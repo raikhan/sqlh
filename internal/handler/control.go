@@ -8,7 +8,9 @@ import (
 	"log"
 	"net"
 	"os"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/sourcegraph/jsonrpc2"
 
@@ -17,6 +19,7 @@ import (
 	"github.com/raikhan/sqlh/internal/control"
 	"github.com/raikhan/sqlh/internal/database"
 	"github.com/raikhan/sqlh/internal/exec"
+	"github.com/raikhan/sqlh/internal/history"
 	"github.com/raikhan/sqlh/internal/lsp"
 	"github.com/raikhan/sqlh/internal/state"
 )
@@ -149,14 +152,15 @@ func (s *Server) handleControl(ctx context.Context, conn *jsonrpc2.Conn, req *js
 		if !s.headless {
 			return nil, errors.New("this server belongs to an editor")
 		}
-		// an editor's server starts for the workspace: stop serving (also
-		// the database: the subscribers reconnect to the new server)
+		// an editor's server starts for the workspace: stop serving (the
+		// subscribers reconnect to the new server) but stay warm — the
+		// connection and the schema cache — to take over again at once when
+		// the editor exits (Resume)
 		s.mu.Lock()
-		err := s.stopLocked()
+		s.stopJob("the editor's server took over")
+		s.stopControl()
+		s.releasedAt = time.Now()
 		s.mu.Unlock()
-		if err != nil {
-			log.Println("release:", err)
-		}
 		return "released", nil
 	case control.MethodSample: // queries the database: takes s.mu itself
 		var p control.SampleParams
@@ -179,6 +183,12 @@ func (s *Server) handleControl(ctx context.Context, conn *jsonrpc2.Conn, req *js
 		return s.allColumns()
 	case control.MethodCatalog:
 		return s.controlCatalog()
+	case control.MethodCurrentVersion:
+		var p control.CurrentVersionParams
+		if err := unmarshal(req, &p); err != nil {
+			return nil, err
+		}
+		return s.currentVersion(p)
 	case control.MethodHistory:
 		var p control.HistoryParams
 		if err := unmarshal(req, &p); err != nil {
@@ -311,6 +321,58 @@ func RunHeadless(cfg *config.Config, configPath, workspace string) (*Server, err
 	return s, nil
 }
 
+// Resume serves the workspace again after a release (the editor's server
+// is gone), with the connection and schema cache it kept: the config
+// re-read if it changed, the workspace's remembered connection followed,
+// the cache refreshed in the background if DDL ran meanwhile.
+func (s *Server) Resume() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.control != nil {
+		return nil
+	}
+	ctx := context.Background()
+	if _, err := s.reloadConfigIfChanged(ctx); err != nil {
+		log.Println("resume: config:", err)
+	}
+	if alias := state.Connection(s.workspace); alias != "" && (s.curDBCfg == nil || s.curDBCfg.Alias != alias) {
+		if _, err := s.switchTo(ctx, alias); err != nil {
+			log.Println("resume: connect", alias+":", err)
+		}
+	}
+	s.startControl()
+	if s.control == nil {
+		return errors.New("could not serve the workspace (another server?)")
+	}
+	if ranDDLSince(s.workspace, s.releasedAt) {
+		go func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if _, err := s.refreshCache(context.Background()); err != nil {
+				log.Println("resume: refresh:", err)
+			}
+		}()
+	}
+	return nil
+}
+
+// ddlStatement: a statement that changes the schema.
+var ddlStatement = regexp.MustCompile(`(?im)^\s*(create|alter|drop|rename|comment\s+on)\b`)
+
+// ranDDLSince: the workspace's history has DDL run after t.
+func ranDDLSince(workspace string, t time.Time) bool {
+	entries, err := history.Find(workspace, history.Query{Limit: 200})
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if e.Time.After(t) && e.Status == "ok" && ddlStatement.MatchString(e.SQL) {
+			return true
+		}
+	}
+	return false
+}
+
 // Released reports whether the server has given its socket away.
 func (s *Server) Released() bool {
 	s.mu.Lock()
@@ -418,13 +480,15 @@ func (s *Server) controlStatus() control.Status {
 	if cfg := s.getConfig(); cfg != nil {
 		st.Viewer = cfg.Results.Viewer
 		st.Panel = &control.PanelSettings{
-			Placement:  cfg.Panel.PlacementOrDefault(),
-			InsertKeys: cfg.Panel.InsertKeysOrDefault(),
-			Keys:       cfg.Panel.KeyMap(),
-			Icons:      cfg.Panel.Icons,
-			QueriesDir: cfg.TUI.QueriesDirIn(s.workspace),
-			Editor:     cfg.TUI.EditorOrDefault(),
-			ConfigPath: s.editableConfigPath(),
+			Placement:          cfg.Panel.PlacementOrDefault(),
+			InsertKeys:         cfg.Panel.InsertKeysOrDefault(),
+			Keys:               keymaps(cfg.Panel.KeyMaps()),
+			StatementCollapsed: cfg.Panel.StatementCollapsed(),
+			Syntax:             cfg.Panel.Syntax,
+			Icons:              cfg.Panel.Icons,
+			QueriesDir:         cfg.TUI.QueriesDirIn(s.workspace),
+			Editor:             cfg.TUI.EditorOrDefault(),
+			ConfigPath:         s.editableConfigPath(),
 		}
 	}
 	return st
@@ -473,4 +537,12 @@ func (s *Server) catalog(all bool) (catalog.Source, catalog.Options, error) {
 	return catalog.CacheSource{C: cache}, catalog.Options{
 		Driver: s.curDBCfg.Driver, Lower: s.getConfig().LowercaseIdentifiers, All: all,
 	}, nil
+}
+
+func keymaps(in map[string]config.Keymap) map[string]map[string][]string {
+	out := map[string]map[string][]string{}
+	for scope, km := range in {
+		out[scope] = km
+	}
+	return out
 }

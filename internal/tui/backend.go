@@ -51,6 +51,11 @@ type Backend interface {
 	NewQuery(body string) (string, error)
 	// OpenFile opens a file in the editor (sqlh tui: a new one if none).
 	OpenFile(path string) error
+	// FileText reads a query file (its preview; long ones cut).
+	FileText(path string) (string, error)
+	// CurrentVersion: the statement of a file most like an earlier run's
+	// SQL (its live buffer), for the run's diff.
+	CurrentVersion(file, sql string) (*control.CurrentVersionResult, error)
 
 	// ConnectionFields reads a connection of the config file.
 	ConnectionFields(alias string) (connedit.Fields, error)
@@ -72,8 +77,13 @@ const (
 type Options struct {
 	// Icons: unicode (default), nerd or ascii.
 	Icons string
-	// Keys: action → keys (the defaults for the rest).
-	Keys map[string][]string
+	// Keys: scope (config.PanelScopes) → action → keys (the defaults for
+	// the rest).
+	Keys map[string]map[string][]string
+	// StatementCollapsed: the Statement tab's tables start collapsed.
+	StatementCollapsed bool
+	// Syntax: SQL colours by class (panel.syntax; defaults for the rest).
+	Syntax map[string]string
 	// Cursor: the editor's cursor when the panel starts (may be nil).
 	Cursor *control.Cursor
 	// Workspace: the workspace root (titles).

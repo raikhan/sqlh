@@ -69,7 +69,7 @@ type PickOptions struct {
 
 // PickerKeys: the keys of a picker action (with the configured ones).
 func PickerKeys(set map[string][]string, action string) []string {
-	return pickerKeymap(set).keys[action]
+	return pickerKeymap(set).keys[0][action]
 }
 
 // PickResult is what was chosen.

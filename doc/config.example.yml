@@ -35,12 +35,21 @@ panel:
   # `:insert-output sqlh panel take …` (the hidden binding space i P, see doc/cli.md)
   # insertKeys: [esc, space, i, P]
   # keys by action (a key or a list; Bubble Tea key names; the rest keep their defaults,
-  # all listed in doc/cli.md#panel), e.g.:
+  # all listed in doc/cli.md#panel); per tab in a section (connections, objects,
+  # statement, queries, history; search, form), e.g.:
   # keys:
   #   insert: ctrl+y          # insert at Helix's cursor (Enter navigates)
   #   backToEditor: backspace # focus the panel's Helix pane
-  #   tab1: "1"               # Connections; tab2 Objects, tab3 Statement, tab4 Queries, tab5 History
+  #   collapseAll: H          # H collapse all, L expand all (Statement), z row to the top
+  #   connections:
+  #     duplicateConnection: d
+  #   objects:
+  #     sample: d
   # icons: unicode            # unicode (default), nerd (Nerd Font) or ascii
+  # statement: open           # the Statement tab's tables: open (default) or collapsed
+  # syntax:                   # SQL colours (default: Helix's modus_vivendi_tinted)
+  #   keyword: "#b6a0ff"      # also comment, string, number, function, type, alias,
+  #                           # parameter, operator
 # the inline picker (tables -p, connect, …): keys by action, e.g.
 # picker:
 #   keys:

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -56,16 +57,32 @@ type PanelConfig struct {
 	// must run `:insert-output sqlh panel take …` (see doc/cli.md).
 	// Herdr key names. Default: esc, space, i, P.
 	InsertKeys []string `json:"insertKeys" yaml:"insertKeys"`
-	// Keys: action → key or keys, replacing the defaults (DefaultPanelKeys).
-	Keys map[string]KeyList `json:"keys" yaml:"keys"`
+	// Keys: action → key or keys, replacing the defaults (DefaultPanelKeys);
+	// sections by tab (connections, objects, statement, queries, history)
+	// and search, form.
+	Keys PanelKeys `json:"keys" yaml:"keys"`
 	// Icons: unicode (the default), nerd (Nerd Font) or ascii.
 	Icons string `json:"icons" yaml:"icons"`
+	// Statement: the Statement tab's tables open (default) or collapsed.
+	Statement string `json:"statement" yaml:"statement"`
+	// Syntax: SQL highlighting colours by class ("#rrggbb"), see SyntaxClasses.
+	Syntax map[string]string `json:"syntax" yaml:"syntax"`
 }
+
+// SyntaxClasses are the classes of panel.syntax.
+var SyntaxClasses = []string{"keyword", "comment", "string", "number", "function", "type", "alias", "parameter", "operator"}
 
 // PickerConfig controls the inline picker (`tables -p`, `connect`, …).
 type PickerConfig struct {
 	// Keys: action → key or keys, replacing the defaults (DefaultPickerKeys).
 	Keys map[string]KeyList `json:"keys" yaml:"keys"`
+}
+
+var hexColor = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
+
+// StatementCollapsed: panel.statement is collapsed.
+func (p PanelConfig) StatementCollapsed() bool {
+	return strings.EqualFold(strings.TrimSpace(p.Statement), "collapsed")
 }
 
 // Placements of the panel.
@@ -218,11 +235,24 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("panel.icons: %q is not unicode, nerd or ascii", c.Panel.Icons)
 	}
-	if err := checkKeys("panel.keys", DefaultPanelKeys, c.Panel.Keys, PanelKeyScopes); err != nil {
+	if err := checkPanelKeys(c.Panel.Keys); err != nil {
 		return err
 	}
-	if err := checkKeys("picker.keys", DefaultPickerKeys, c.Picker.Keys, PickerKeyScopes); err != nil {
+	if err := checkPickerKeys(c.Picker.Keys); err != nil {
 		return err
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Panel.Statement)) {
+	case "", "open", "collapsed":
+	default:
+		return fmt.Errorf("panel.statement: %q is not open or collapsed", c.Panel.Statement)
+	}
+	for class, col := range c.Panel.Syntax {
+		if !contains(SyntaxClasses, class) {
+			return fmt.Errorf("panel.syntax: unknown class %s (classes: %s)", class, strings.Join(SyntaxClasses, ", "))
+		}
+		if !hexColor.MatchString(col) {
+			return fmt.Errorf("panel.syntax.%s: %q is not a colour like \"#b6a0ff\"", class, col)
+		}
 	}
 	if r := strings.TrimSpace(c.Results.ReuseFor); r != "" {
 		if d, err := parseDuration(r); err != nil || d < 0 {

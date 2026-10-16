@@ -134,10 +134,12 @@ relationships and inserts the join chain. See [doc/cli.md](doc/cli.md#relationsh
 editor with five tabs (`1`–`5`): **Connections** (grouped; new, edit, duplicate, delete — a
 form that writes the config file), **Objects** of the current connection, the **Statement** at
 the cursor (its tables and their relationships), **Queries** (query files) and **History**
-(runs and versions), with a Describe/DDL/Sample preview. Enter navigates; Ctrl-Y inserts at
+(runs and versions), with a preview fitting the selection (Describe/DDL/Sample, a query file,
+a run and its diff; SQL highlighted). Enter navigates; Ctrl-Y inserts at
 the cursor — after `JOIN` with its alias and `ON` condition, or as a whole join chain. `/`
 searches like an omni bar (`:` tables, `.` columns, `@` connections, …). Every key is
-configurable. `sqlh tui` is the same as an app. The panel closes with its Helix. See
+configurable, per tab; `?` lists the tab's keys, searchable. `sqlh tui` is the same as an
+app. The panel closes with its Helix. See
 [doc/cli.md](doc/cli.md#panel).
 
 #### Query files

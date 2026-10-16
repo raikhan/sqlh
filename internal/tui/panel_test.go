@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"regexp"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/raikhan/sqlh/internal/config"
 	"github.com/raikhan/sqlh/internal/connedit"
 	"github.com/raikhan/sqlh/internal/control"
 	"github.com/raikhan/sqlh/internal/history"
@@ -34,6 +36,8 @@ type fakeBackend struct {
 	deleted   []string
 	tested    []connedit.Fields
 	conf      map[string]connedit.Fields
+	texts     map[string]string
+	current   map[string]string // run SQL → today's version
 }
 
 type savedConn struct {
@@ -550,10 +554,23 @@ func TestPanelConnections(t *testing.T) {
 	p := newTestPanel(t, be, nil)
 	key(p, "1")
 	view := plain(p.View())
-	for _, want := range []string{"pg_local  ● shop › sales", "CADE  2"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("connections lack %q:\n%s", want, view)
+	if !regexp.MustCompile(`pg_local +● shop +sales +dev`).MatchString(view) || !strings.Contains(view, "CADE  2") {
+		t.Errorf("connections:\n%s", view)
+	}
+	// a table: the header's columns over the rows'
+	var header, row string
+	for _, l := range strings.Split(view, "\n") {
+		if strings.Contains(l, "connection") && strings.Contains(l, "database") {
+			header = l
 		}
+		if strings.Contains(l, "● shop") {
+			row = l
+		}
+	}
+	col := func(s, sub string) int { return len([]rune(s[:strings.Index(s, sub)])) }
+	if header == "" || col(header, "database") != col(row, "shop") || col(header, "schema") != col(row, "sales") ||
+		col(header, "connection") != col(row, "pg_local") || col(header, "env") != col(row, "dev") {
+		t.Errorf("not aligned:\n%s\n%s", header, row)
 	}
 	if strings.Contains(view, "oracle_prod") {
 		t.Errorf("the group is open:\n%s", view)
@@ -714,8 +731,12 @@ func TestPanelHistory(t *testing.T) {
 		}
 	}
 	p.tab().sel = indexOf(p.rows(), older)
+	if view = plain(p.View()); !strings.Contains(view, "─ Query │ Diff") || strings.Contains(view, "- where o.total") {
+		t.Errorf("query tab:\n%s", view)
+	}
+	key(p, "tab")
 	view = plain(p.View())
-	if !strings.Contains(view, "- where o.total > 100") {
+	if !strings.Contains(view, "- where o.total > 100") || !strings.Contains(view, "against the statement at the cursor") {
 		t.Errorf("diff:\n%s", view)
 	}
 	key(p, "enter")
@@ -763,7 +784,7 @@ func TestTUIStandalone(t *testing.T) {
 
 func TestPanelKeysConfigurable(t *testing.T) {
 	be := &fakeBackend{}
-	p := newPanelWith(t, be, Options{Icons: "ascii", Keys: map[string][]string{"insert": {"i"}, "tab2": {"o"}}})
+	p := newPanelWith(t, be, Options{Icons: "ascii", Keys: testKeys(map[string]config.KeyList{"insert": {"i"}, "tab2": {"o"}}, nil)})
 	key(p, "o")
 	if p.cur != tabObjects {
 		t.Fatalf("tab2 on o: %d", p.cur)
@@ -816,4 +837,31 @@ func TestLineDiff(t *testing.T) {
 	if got := strings.Join(lineDiff("x > 50", "x > 1"), "|"); got != "- x > 50|+ x > 1" {
 		t.Errorf("changed line: %s", got)
 	}
+}
+
+// testKeys: the keymaps of a panel.keys.
+func testKeys(all map[string]config.KeyList, scopes map[string]map[string]config.KeyList) map[string]map[string][]string {
+	out := map[string]map[string][]string{}
+	for scope, km := range (config.PanelKeys{All: all, Scopes: scopes}).Keymaps() {
+		out[scope] = km
+	}
+	return out
+}
+
+func (b *fakeBackend) FileText(path string) (string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if t, ok := b.texts[path]; ok {
+		return t, nil
+	}
+	return "", fmt.Errorf("no such file %s", path)
+}
+
+func (b *fakeBackend) CurrentVersion(file, sql string) (*control.CurrentVersionResult, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if v, ok := b.current[sql]; ok {
+		return &control.CurrentVersionResult{Statement: v, Line: 3}, nil
+	}
+	return &control.CurrentVersionResult{}, nil
 }

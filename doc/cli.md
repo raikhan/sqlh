@@ -143,8 +143,9 @@ press **Ctrl-Y**: it is inserted at Helix's cursor and the focus goes back to He
 
 Five tabs, `1`–`5` (it starts on **Statement**; `sqlh tui` on **Objects**):
 
-1. **Connections** — the configured connections, `alias  database › schema  env`, the
-   current one marked `●`; connections with a `group:` sit in a folder of that name. The
+1. **Connections** — the configured connections as a table (connection, database, schema,
+   env; the database and schema shrink, then go, in a narrow pane), the current one marked
+   `●`; connections with a `group:` sit in a folder of that name. The
    preview shows a connection field by field (host, port, database, schema, user, password
    masked, options; connection strings taken apart). Enter connects (and shows its objects).
    `C` new, `E` edit, `D` duplicate, `X` delete (asks first; not the current one): a form
@@ -159,18 +160,23 @@ Five tabs, `1`–`5` (it starts on **Statement**; `sqlh tui` on **Objects**):
    the whole join chain after `JOIN`), the views using it, its indexes, constraints and
    triggers, and its columns.
 3. **Statement** — follows the cursor: the tables of the statement you are editing (from your
-   edits and from the requests Helix sends — completion, hover, …; `space i t` syncs it), open,
-   their relationships first, written as the statement refers to them (`sds.input_id`).
+   edits and from the requests Helix sends — completion, hover, …; `space i t` syncs it), open
+   (`panel.statement: collapsed`: closed), their relationships first, written as the
+   statement refers to them (`sds.input_id`). `H` closes them all — and tables joining the
+   statement later arrive closed — until `L` opens them all again.
 4. **Queries** — the files of `tui.queriesDir` (default `queries`), newest first; Enter opens
    one in Helix, `n` creates the next `query_<N>.sql` (a `SELECT * FROM` of the highlighted
-   table, if any).
+   table, if any). The preview shows the file (highlighted) and its last run, when the
+   loaded history has it.
 5. **History** — **This statement**: the versions of the statement you are editing (earlier
    runs of a similar query in the same file), newest first, the current text marked; then the
-   workspace's recent queries, each opening (Enter) to its versions. The preview shows the
-   run (when, connection, rows, time, error, result file) and, for a version, the diff
-   against the statement at the cursor; `.` `r` **replaces the statement in the buffer**
-   with it (one undo step). `o` opens a run's result in `results.viewer` (it must open its own
-   window or pane, like the Herdr pane script), `e` its file.
+   workspace's recent queries, each opening (Enter) to its versions. The preview's **Query**
+   tab shows the run (when, connection, rows, time, error, result file) and its SQL; **Diff**
+   compares it with the statement at the cursor (a version of it), else with today's version
+   in its file (the statement most like it, from Helix's buffer); `.` `r` **replaces the
+   statement in the buffer** with a version (one undo step). `o` opens a run's result in
+   `results.viewer` (it must open its own window or pane, like the Herdr pane script), `e` its
+   file.
 
 Keys (all configurable, see below):
 
@@ -187,8 +193,16 @@ Keys (all configurable, see below):
   query); a first character picks another kind: `:` tables and views, `.` columns (`.cust`,
   or `.orders.tot` for table.column), `#` indexes and constraints, `~` sequences,
   `@` connections, `*` everything. Enter goes to the result (in its tab), Ctrl-Y inserts it.
-- Tab / Shift-Tab switch the preview: **Describe** (columns, relationships, a view's
-  definition), **DDL** (as go to definition shows it), **Sample**; J/K scroll it.
+- Tab / Shift-Tab switch the preview's tabs, which depend on the selection: a table or view
+  has **Describe** (columns, relationships, a view's definition), **DDL** (as go to
+  definition shows it) and **Sample**; a column Describe and Sample; an index, constraint,
+  sequence Describe; a connection, a query file one tab each; a run **Query** and **Diff**.
+  The tab chosen is kept for that kind of selection (DDL stays DDL from table to table).
+  J/K scroll the preview. SQL is highlighted in the colours of Helix's `modus_vivendi_tinted`
+  theme; `panel.syntax.<class>: "#rrggbb"` changes them (`keyword`, `comment`, `string`,
+  `number`, `function`, `type`, `alias`, `parameter`, `operator`).
+- `H` collapses the tab's tree (Statement: see above), `L` expands all in Statement, `z`
+  scrolls the selected row to the top (vim's `zt`).
 - **Sample** shows one row of the table as `column  value`, wrapped to fit; `]`/`[` the
   next/previous of up to 50 fetched. On a column, `s` counts its most common values. Samples
   run on a pooled session of their own (never the editor's: they neither wait for nor block a
@@ -196,28 +210,50 @@ Keys (all configurable, see below):
   Per connection `sample: auto | manual | off`; the default follows `environment`: automatic
   for tables on `dev`/`test` (once the selection rests; views only on request, they may be
   expensive queries), on request (`s`) on `prod`.
-- `y` copies the name, `r` refreshes the schema cache, `?` lists the keys, `q` quits;
-  Backspace (`backToEditor`) focuses the panel's Helix pane (Herdr's `prefix space o` goes to
-  the previous pane).
+- `?` — the keys of the tab, as a searchable list: the tab's own actions first, then
+  navigation, the preview, the rest. Typing filters the descriptions (`@` + a key filters on
+  the keys); Enter runs the action, Esc clears the filter, then closes.
+- `y` copies the name, `r` refreshes the schema cache, `q` quits; Backspace (`backToEditor`)
+  focuses the panel's Helix pane (Herdr's `prefix space o` goes to the previous pane).
 
-`panel.keys.<action>: key` (or a list) in the config replaces an action's keys:
+Actions belong to tabs: the Connections tab has `newConnection` … `deleteConnection`;
+Objects and Statement `insert`, `mark`, `sample`, `nextRow`, `prevRow`, `newQuery`, `refresh`
+(Statement also `expandAll`); Queries `newQuery`; History `insert`, `openResult`, `editFile`;
+the rest are in every tab. A key of another tab says so in the footer.
+
+`panel.keys.<action>: key` (or a list) in the config replaces an action's keys in every tab;
+`panel.keys.<tab>.<action>` (tabs `connections`, `objects`, `statement`, `queries`, `history`;
+also `search`, `form`) in one tab, so a key may mean different things in different tabs:
+
+```yaml
+panel:
+  keys:
+    insert: i                # every tab
+    connections:
+      duplicateConnection: d
+    objects:
+      sample: d
+```
+
+The defaults:
 
 | actions | default |
 |---|---|
-| `up` `down` `top` `bottom` `pageUp` `pageDown` | `k ↑ ctrl+p`, `j ↓ ctrl+n`, `g home`, `G end`, `ctrl+u pgup`, `ctrl+d pgdown` |
-| `expand` `collapse` `open` `mark` | `l →`, `h ←`, `enter`, `space` |
+| `up` `down` `top` `bottom` `pageUp` `pageDown` `scrollTop` | `k ↑ ctrl+p`, `j ↓ ctrl+n`, `g home`, `G end`, `ctrl+u pgup`, `ctrl+d pgdown`, `z` |
+| `expand` `collapse` `collapseAll` `expandAll` `open` `mark` | `l →`, `h ←`, `H`, `L`, `enter`, `space` |
 | `insert` `copy` `actions` `search` | `ctrl+y`, `y`, `. a`, `/` |
 | `previewNext` `previewPrev` `previewDown` `previewUp` | `tab`, `shift+tab`, `J`, `K` |
 | `sample` `nextRow` `prevRow` | `s`, `]`, `[` |
 | `newQuery` `openResult` `editFile` | `n`, `o`, `e` |
 | `newConnection` `editConnection` `duplicateConnection` `deleteConnection` | `C`, `E`, `D`, `X` |
 | `refresh` `help` `quit` `backToEditor` | `r`, `?`, `q`, `backspace` |
-| `tab1` … `tab9` | `1` … `9` |
+| `tab1` … `tab5` | `1` … `5` |
 | `searchUp` `searchDown` `searchOpen` `searchInsert` `searchCancel` | `↑ ctrl+p ctrl+k`, `↓ ctrl+n ctrl+j`, `enter`, `ctrl+y`, `esc` |
 | `formSave` `formTest` `formCancel` `formNext` `formPrev` | `ctrl+s`, `ctrl+t`, `esc`, `tab ↓`, `shift+tab ↑` |
 
 Key names are Bubble Tea's (`ctrl+y`, `shift+tab`, `backspace`, `space`, `G`, `]`). A key
-on two actions of the same scope is a config error.
+on two actions of one tab (or of the search, or the form), an unknown action or an action a
+tab doesn't have are config errors.
 
 How Ctrl-Y reaches Helix (which has no API for it): the panel stores the choice in the server
 and sends Helix `panel.insertKeys` (default `esc space i P`); that binding runs
@@ -245,7 +281,11 @@ Helix; it starts on **Objects**.
 
 Without an editor's server for the workspace the app runs one itself (headless: no editor,
 the same catalog, runs and history); when Helix starts there, its server takes over the socket
-and the app follows it, and back when Helix exits.
+and the app follows it, and back when Helix exits. Helix stops its language servers when it
+quits, so the editor's sqlh server ends with it; the app's own server stays connected (the
+database and the schema cache, one idle session) while it gives way, and serves again at once
+— the config re-read if it changed, the workspace's connection followed, the cache refreshed
+in the background if DDL ran meanwhile. The app keeps its trees through the switch.
 
 ## History
 

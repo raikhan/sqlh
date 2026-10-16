@@ -274,10 +274,10 @@ func (p *Panel) viewForm(w, h int) []string {
 	default:
 		rows = append(rows, "")
 	}
-	rows = append(rows, stKey.Render(p.km.label("formSave"))+stDim.Render(" save · ")+
-		stKey.Render(p.km.label("formTest"))+stDim.Render(" test · ")+
-		stKey.Render(p.km.label("formNext"))+stDim.Render(" next · ")+
-		stKey.Render(p.km.label("formCancel"))+stDim.Render(" cancel"))
+	rows = append(rows, stKey.Render(p.k("formSave"))+stDim.Render(" save · ")+
+		stKey.Render(p.k("formTest"))+stDim.Render(" test · ")+
+		stKey.Render(p.k("formNext"))+stDim.Render(" next · ")+
+		stKey.Render(p.k("formCancel"))+stDim.Render(" cancel"))
 	// keep the focused row visible in a short pane
 	if extra := len(rows) + 2 - h; extra > 0 {
 		cut := min(extra, max(cf.focus, 0))

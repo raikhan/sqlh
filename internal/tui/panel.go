@@ -24,15 +24,112 @@ const (
 var mainTabNames = []string{"Connections", "Objects", "Statement", "Queries", "History"}
 var mainTabShort = []string{"Conns", "Objects", "Stmt", "Queries", "History"}
 
-// preview tabs
+// preview tabs (which ones show depends on the selection: previewTabs)
 const (
 	ptDescribe = iota
 	ptDDL
 	ptSample
-	numPreviewTabs
+	ptConnection
+	ptFile
+	ptRun
+	ptDiff
 )
 
-var previewTabNames = []string{"Describe", "DDL", "Sample"}
+var previewTabNames = []string{"Describe", "DDL", "Sample", "Connection", "Query", "Query", "Diff"}
+
+// previewKind: the kind of selection, for its preview tabs.
+func previewKind(n *node) string {
+	if n == nil {
+		return ""
+	}
+	switch n.kind {
+	case nConnItem:
+		return "conn"
+	case nQueryFile:
+		return "file"
+	case nHistory:
+		return "run"
+	case nColumn:
+		return "column"
+	case nTable, nRelation, nStmtTable:
+		return "table"
+	}
+	if previewTable(n) != "" {
+		if n.kind == nGroup {
+			return "table"
+		}
+		return "object"
+	}
+	switch n.kind {
+	case nObject, nSchema, nConnGroup:
+		return "object"
+	}
+	return ""
+}
+
+// previewTabs: the preview tabs of a selection.
+func previewTabs(n *node) []int {
+	switch previewKind(n) {
+	case "table":
+		return []int{ptDescribe, ptDDL, ptSample}
+	case "column":
+		return []int{ptDescribe, ptSample}
+	case "object":
+		return []int{ptDescribe}
+	case "conn":
+		return []int{ptConnection}
+	case "file":
+		return []int{ptFile}
+	case "run":
+		return []int{ptRun, ptDiff}
+	}
+	return nil
+}
+
+// previewTab: the selection's preview tab (the one last chosen for its kind).
+func (p *Panel) previewTab() int {
+	n := p.previewNode()
+	tabs := previewTabs(n)
+	if len(tabs) == 0 {
+		return -1
+	}
+	if pt, ok := p.ptabFor[previewKind(n)]; ok {
+		for _, t := range tabs {
+			if t == pt {
+				return pt
+			}
+		}
+	}
+	return tabs[0]
+}
+
+// setPreviewTab chooses a preview tab for the selection's kind (when it has it).
+func (p *Panel) setPreviewTab(pt int) {
+	n := p.previewNode()
+	for _, t := range previewTabs(n) {
+		if t == pt {
+			p.ptabFor[previewKind(n)] = pt
+			p.pscroll = 0
+		}
+	}
+}
+
+// cyclePreview moves through the selection's preview tabs.
+func (p *Panel) cyclePreview(d int) {
+	n := p.previewNode()
+	tabs := previewTabs(n)
+	if len(tabs) < 2 {
+		return
+	}
+	cur := p.previewTab()
+	for i, t := range tabs {
+		if t == cur {
+			p.ptabFor[previewKind(n)] = tabs[(i+d+len(tabs))%len(tabs)]
+			p.pscroll = 0
+			return
+		}
+	}
+}
 
 // tabState: a main tab's tree and position.
 type tabState struct {
@@ -40,6 +137,8 @@ type tabState struct {
 	sel   int
 	top   int
 	selID string
+	// zTop: scrolled by scrollTop (z): the top may pass the last page
+	zTop bool
 }
 
 // Panel is the Bubble Tea model of the panel (and of sqlh tui).
@@ -82,10 +181,18 @@ type Panel struct {
 	tabs     [numMainTabs]tabState
 	cur      int             // the main tab
 	expanded map[string]bool // ids of expanded nodes (kept across rebuilds)
-	marked   map[string]bool // ids of marked columns
+	// stmtCollapsed: the Statement tab's tables arrive collapsed
+	stmtCollapsed bool
+	marked        map[string]bool // ids of marked columns
 
-	ptab    int // the preview tab
+	connLay connColumns // the Connections table's columns (per frame)
+
+	ptabFor map[string]int // the preview tab chosen per kind of selection
 	pscroll int
+	sx      syntax // SQL colours
+
+	fileTexts   map[string]fileEntry    // query files' text
+	curVersions map[string]versionEntry // runs' current versions (by run id)
 
 	search  bool
 	query   string
@@ -98,7 +205,7 @@ type Panel struct {
 	pendingReveal func(*node) bool
 
 	menu    *menu
-	help    bool
+	pal     *palette
 	form    *connForm
 	confirm *confirm
 
@@ -120,6 +227,31 @@ type sampleEntry struct {
 	loading bool
 }
 
+type fileEntry struct {
+	text    string
+	err     error
+	loading bool
+	at      time.Time
+}
+
+type versionEntry struct {
+	res     *control.CurrentVersionResult
+	err     error
+	loading bool
+}
+
+type fileMsg struct {
+	path string
+	text string
+	err  error
+}
+
+type versionMsg struct {
+	id  string
+	res *control.CurrentVersionResult
+	err error
+}
+
 type ddlEntry struct {
 	res     *control.DDLResult
 	err     error
@@ -136,8 +268,10 @@ type confirm struct {
 // backend's synthetic ones).
 func NewPanel(be Backend, events <-chan control.Event, opt Options) *Panel {
 	p := &Panel{be: be, opt: opt, ic: iconSet(opt.Icons), km: panelKeymap(opt.Keys), events: events, cursor: opt.Cursor,
-		expanded: map[string]bool{}, marked: map[string]bool{}} // no size until the terminal reports it
+		expanded: map[string]bool{}, marked: map[string]bool{}, ptabFor: map[string]int{}, sx: newSyntax(opt.Syntax),
+		fileTexts: map[string]fileEntry{}, curVersions: map[string]versionEntry{}} // no size until the terminal reports it
 	p.cur = tabStmt
+	p.stmtCollapsed = opt.StatementCollapsed
 	if opt.Standalone {
 		p.cur = tabObjects
 	}
@@ -157,6 +291,47 @@ func (p *Panel) resetCaches() {
 }
 
 func (p *Panel) tab() *tabState { return &p.tabs[p.cur] }
+
+// unloadLazy: tables' children load again (from the caches, or the server).
+func (p *Panel) unloadLazy() {
+	for i := range p.tabs {
+		walkAll(p.tabs[i].roots, func(n *node) {
+			if n.lazy && n.kind != nHistory {
+				n.loaded, n.loading = false, false
+			}
+		})
+	}
+}
+
+// forgetErrors drops what failed (e.g. while the server was away), so it
+// loads again.
+func (p *Panel) forgetErrors() {
+	failed := p.errs
+	p.errs = map[string]error{}
+	p.loading = map[string]bool{}
+	for k, e := range p.ddl {
+		if e.err != nil || e.loading {
+			delete(p.ddl, k)
+		}
+	}
+	for k, e := range p.samples {
+		if e.err != nil || e.loading {
+			delete(p.samples, k)
+		}
+	}
+	for k, e := range p.curVersions {
+		if e.err != nil || e.loading {
+			delete(p.curVersions, k)
+		}
+	}
+	for i := range p.tabs {
+		walkAll(p.tabs[i].roots, func(n *node) {
+			if n.lazy && n.kind != nHistory && (failed[n.table] != nil || n.loading) {
+				n.loaded, n.loading = false, false
+			}
+		})
+	}
+}
 
 // ---- messages ---------------------------------------------------------------
 
@@ -299,6 +474,38 @@ func (p *Panel) loadDDL(table string) tea.Cmd {
 	return func() tea.Msg { r, err := be.DDL(table); return ddlMsg{table, r, err} }
 }
 
+// loadFile reads a query file for its preview (again when older than 2 s).
+func (p *Panel) loadFile(path string) tea.Cmd {
+	if e, ok := p.fileTexts[path]; ok && (e.loading || time.Since(e.at) < 2*time.Second) {
+		return nil
+	}
+	e := p.fileTexts[path]
+	e.loading = true
+	p.fileTexts[path] = e
+	be := p.be
+	return func() tea.Msg { t, err := be.FileText(path); return fileMsg{path, t, err} }
+}
+
+// loadVersion finds today's version of a run's statement in its file (not
+// for a version of the statement at the cursor: that is the comparison).
+func (p *Panel) loadVersion(n *node) tea.Cmd {
+	if n.run == nil || n.run.File == "" || p.diffAgainstCursor(n) {
+		return nil
+	}
+	id := n.run.ID
+	if e, ok := p.curVersions[id]; ok && (e.loading || e.res != nil) {
+		return nil
+	}
+	p.curVersions[id] = versionEntry{loading: true}
+	file, sql, be := n.run.File, n.run.SQL, p.be
+	return func() tea.Msg { r, err := be.CurrentVersion(file, sql); return versionMsg{id, r, err} }
+}
+
+// diffAgainstCursor: a version of the statement at the cursor compares with it.
+func (p *Panel) diffAgainstCursor(n *node) bool {
+	return n.version && p.hist != nil && p.hist.Statement != ""
+}
+
 func sampleKey(table, column string) string {
 	if column == "" {
 		return table
@@ -379,7 +586,7 @@ func (p *Panel) rebuild() []tea.Cmd {
 	default:
 		p.tabs[tabObjects].roots = []*node{top("obj", &node{kind: nInfo, label: "loading…"})}
 	}
-	p.tabs[tabStmt].roots = buildStatement(p.ctx, p.stmtRels, p.cursor, p.editor != "" || !p.opt.Standalone, p.ic)
+	p.tabs[tabStmt].roots = buildStatement(p.ctx, p.stmtRels, p.cursor, p.editor != "" || !p.opt.Standalone, !p.stmtCollapsed, p.ic)
 	p.tabs[tabQueries].roots = buildQueryFiles(p.files, p.ic)
 	p.tabs[tabHistory].roots = buildHistory(p.hist, p.ic)
 	var cmds []tea.Cmd
@@ -518,6 +725,58 @@ func (p *Panel) setExpanded(n *node, e bool) tea.Cmd {
 	return nil
 }
 
+// tabPrefix: the ids of a tab's nodes start with it.
+var tabPrefix = [numMainTabs]string{"conns/", "obj/", "stmt/", "files/", "hist/"}
+
+// collapseAll closes every node of the tab (the Statement tab's tables
+// arrive collapsed from now on, until expandAll).
+func (p *Panel) collapseAll() tea.Cmd {
+	t := p.tab()
+	t.zTop = false
+	if n := p.selected(); n != nil {
+		t.selID = n.id
+	}
+	for id := range p.expanded {
+		if strings.HasPrefix(id, tabPrefix[p.cur]) {
+			delete(p.expanded, id)
+		}
+	}
+	walkAll(t.roots, func(n *node) {
+		if n.expandable() {
+			n.expanded = false
+			p.expanded[n.id] = false
+		}
+	})
+	if p.cur == tabStmt {
+		p.stmtCollapsed = true
+		for id := range p.expanded {
+			if strings.HasPrefix(id, tabPrefix[tabStmt]) {
+				delete(p.expanded, id) // collapsed is the default now
+			}
+		}
+	}
+	restoreSelection(t)
+	return p.previewCmd()
+}
+
+// expandAll opens the Statement tab's tables (and their relations), and
+// keeps new ones open.
+func (p *Panel) expandAll() tea.Cmd {
+	t := p.tab()
+	t.zTop = false
+	if n := p.selected(); n != nil {
+		t.selID = n.id
+	}
+	p.stmtCollapsed = false
+	for id := range p.expanded {
+		if strings.HasPrefix(id, tabPrefix[tabStmt]) {
+			delete(p.expanded, id)
+		}
+	}
+	cmds := p.rebuild()
+	return tea.Batch(append(cmds, p.previewCmd())...)
+}
+
 func (p *Panel) switchTab(i int) {
 	if i < 0 || i >= numMainTabs {
 		return
@@ -535,6 +794,10 @@ func (p *Panel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.width, p.height = msg.Width, msg.Height
 		return p, nil
 	case catalogMsg:
+		if p.cat != nil && msg.cat != nil && p.cat.Connection != msg.cat.Connection {
+			p.resetCaches() // another connection (another server)
+			p.unloadLazy()
+		}
 		p.cat, p.catErr = msg.cat, msg.err
 		if msg.err == nil {
 			p.objs = tableObjects(msg.cat)
@@ -583,6 +846,12 @@ func (p *Panel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return p, p.runSearch()
 		}
 		return p, nil
+	case fileMsg:
+		p.fileTexts[msg.path] = fileEntry{text: msg.text, err: msg.err, at: time.Now()}
+		return p, nil
+	case versionMsg:
+		p.curVersions[msg.id] = versionEntry{res: msg.res, err: msg.err}
+		return p, nil
 	case ddlMsg:
 		p.ddl[msg.table] = ddlEntry{res: msg.res, err: msg.err}
 		return p, nil
@@ -595,7 +864,7 @@ func (p *Panel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return p, tea.Batch(p.rebuild()...)
 	case sampleDueMsg:
-		if msg.tok != p.sampleTok || p.ptab != ptSample {
+		if msg.tok != p.sampleTok || p.previewTab() != ptSample {
 			return p, nil
 		}
 		if n := p.previewNode(); n != nil && autoSample(n) {
@@ -638,7 +907,9 @@ func (p *Panel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return p, nil
 	case doneMsg:
-		if msg.err != nil {
+		if msg.err != nil && p.disconnected {
+			p.flash("the sqlh server is reconnecting: try again in a moment", true)
+		} else if msg.err != nil {
 			p.flash(msg.err.Error(), true)
 		} else if msg.popup {
 			p.popup, p.popupAt = msg.text, time.Now()
@@ -701,13 +972,7 @@ func (p *Panel) onEvent(ev control.Event) tea.Cmd {
 	switch ev.Kind {
 	case control.EventCache, control.EventConnection:
 		p.resetCaches()
-		for i := range p.tabs {
-			walkAll(p.tabs[i].roots, func(n *node) {
-				if n.lazy && n.kind != nHistory {
-					n.loaded, n.loading = false, false
-				}
-			})
-		}
+		p.unloadLazy()
 		// the background load sends several events: reload once they settle
 		p.reloadAt = time.Now().Add(250 * time.Millisecond)
 		cmds := []tea.Cmd{func() tea.Msg { time.Sleep(300 * time.Millisecond); return reloadMsg{} }}
@@ -722,6 +987,7 @@ func (p *Panel) onEvent(ev control.Event) tea.Cmd {
 		return nil
 	case control.EventHistory:
 		p.versions = map[string][]history.Entry{}
+		p.curVersions = map[string]versionEntry{}
 		for _, n := range p.tabs[tabHistory].roots {
 			if n.lazy {
 				n.loaded, n.loading = false, false
@@ -729,6 +995,7 @@ func (p *Panel) onEvent(ev control.Event) tea.Cmd {
 		}
 		return p.loadHistory()
 	case control.EventCursor, control.EventFocus:
+		p.curVersions = map[string]versionEntry{} // the buffer may have changed
 		if ev.Cursor != nil {
 			c := *ev.Cursor
 			p.cursor = &c
@@ -738,10 +1005,12 @@ func (p *Panel) onEvent(ev control.Event) tea.Cmd {
 		p.disconnected = true
 		p.flash("lost the sqlh server; reconnecting…", true)
 	case EventReconnected:
+		// the trees and caches stay (catalogMsg resets them if the server is
+		// on another connection); what failed meanwhile loads again
 		p.disconnected = false
 		p.flash("reconnected", false)
-		p.resetCaches()
-		return tea.Batch(p.loadCatalog(), p.loadContext(), p.loadHistory())
+		p.forgetErrors()
+		return tea.Batch(append(p.rebuild(), p.loadCatalog(), p.loadContext(), p.loadHistory(), p.previewCmd())...)
 	}
 	return nil
 }
@@ -752,11 +1021,18 @@ func (p *Panel) previewCmd() tea.Cmd {
 	if n == nil {
 		return nil
 	}
+	pt := p.previewTab()
+	switch pt {
+	case ptFile:
+		return p.loadFile(n.file)
+	case ptDiff:
+		return p.loadVersion(n)
+	}
 	table := previewTable(n)
 	if table == "" {
 		return nil
 	}
-	switch p.ptab {
+	switch pt {
 	case ptDDL:
 		return p.loadDDL(table)
 	case ptSample:
@@ -821,9 +1097,8 @@ func (p *Panel) onKey(k tea.KeyMsg) tea.Cmd {
 		p.flash("cancelled", false)
 		return nil
 	}
-	if p.help {
-		p.help = false
-		return nil
+	if p.pal != nil {
+		return p.paletteKey(k)
 	}
 	if p.menu != nil {
 		return p.menuKey(key)
@@ -831,7 +1106,18 @@ func (p *Panel) onKey(k tea.KeyMsg) tea.Cmd {
 	if p.search {
 		return p.searchKey(k)
 	}
-	return p.do(p.km.action(scopeMain, key))
+	action := p.km.action(p.cur, key)
+	if action == "" {
+		// a key of another tab: say where it works
+		for i := 0; i < numMainTabs; i++ {
+			if a := p.km.action(i, key); a != "" {
+				p.flash(fmt.Sprintf("%s (%s) is not in this tab", keyLabel(key), actionTitle(a)), false)
+				break
+			}
+		}
+		return nil
+	}
+	return p.do(action)
 }
 
 // do runs a main action on the selection.
@@ -864,6 +1150,7 @@ func (p *Panel) do(action string) tea.Cmd {
 	case "up":
 		return move(-1)
 	case "top":
+		t.zTop = false
 		return move(-len(rows))
 	case "bottom":
 		return move(len(rows))
@@ -919,12 +1206,10 @@ func (p *Panel) do(action string) tea.Cmd {
 	case "actions":
 		p.openMenu(n)
 	case "previewNext":
-		p.ptab = (p.ptab + 1) % numPreviewTabs
-		p.pscroll = 0
+		p.cyclePreview(1)
 		return p.previewCmd()
 	case "previewPrev":
-		p.ptab = (p.ptab + numPreviewTabs - 1) % numPreviewTabs
-		p.pscroll = 0
+		p.cyclePreview(-1)
 		return p.previewCmd()
 	case "sample":
 		return p.sampleNow()
@@ -972,7 +1257,13 @@ func (p *Panel) do(action string) tea.Cmd {
 			return doneMsg{text: "schema cache refreshed"}
 		}
 	case "help":
-		p.help = true
+		p.openPalette()
+	case "scrollTop":
+		t.top, t.zTop = t.sel, true
+	case "collapseAll":
+		return p.collapseAll()
+	case "expandAll":
+		return p.expandAll()
 	}
 	return nil
 }
@@ -988,7 +1279,7 @@ func (p *Panel) sampleNow() tea.Cmd {
 		p.flash("sample rows are off for this connection (sample: off)", true)
 		return nil
 	}
-	p.ptab = ptSample
+	p.setPreviewTab(ptSample)
 	table, col := previewTable(n), ""
 	if n.kind == nColumn {
 		col = n.col.Insert
@@ -1041,7 +1332,7 @@ func (p *Panel) open(n *node) tea.Cmd {
 	}
 	switch n.kind {
 	case nColumn, nObject, nHistory:
-		p.flash(p.km.label("insert")+": insert · "+p.km.label("copy")+": copy · "+p.km.label("actions")+": actions", false)
+		p.flash(p.k("insert")+": insert · "+p.k("copy")+": copy · "+p.k("actions")+": actions", false)
 	}
 	return nil
 }
@@ -1303,7 +1594,7 @@ func (p *Panel) openMenu(n *node) {
 		})
 		add("y", "copy the name", func() tea.Cmd { return p.copyCmd(table) })
 		add("q", "new query file: SELECT * FROM "+table, func() tea.Cmd { return p.newQueryCmd() })
-		add("d", "show the DDL", func() tea.Cmd { p.ptab = ptDDL; p.pscroll = 0; return p.previewCmd() })
+		add("d", "show the DDL", func() tea.Cmd { p.setPreviewTab(ptDDL); return p.previewCmd() })
 		add("S", "show a sample row", func() tea.Cmd { return p.sampleNow() })
 	case nColumn:
 		add("i", "insert", func() tea.Cmd { return p.insertNode(n) })

@@ -1155,6 +1155,219 @@ needs its own place in the flow (a tab or a full-screen view) — revisit after 
    stays.
 9. Keys under each part: `panel.keys.<action>` (panel and `sqlh tui`), `picker.keys.<action>`.
 
+### Phase 12 — panel polish, round 2 (2026-10-16) ✅ done (branch `tui-experiment`)
+
+Feedback after using Phase 11; decisions in 12.9. Built as planned, except: a group row keeps
+the preview pane (an empty one; a layout that changes while moving through the tree jumps), and
+the History rows' one-line SQL stays dim (not highlighted). Status per item in 12.10.
+
+#### 12.1 Connections as an aligned table
+
+Today `alias  db › schema  env` runs together, and the `●` of the current one shifts its row.
+
+- Columns, widths taken over all rows (a group's indentation counts toward the first):
+  `marker icon alias │ database │ schema │ env`, padded; no `›`. The env chip has a fixed
+  width (`prod`, `test`, `dev ` padded), so all chips line up.
+- The current connection: `●` in a marker column of its own before the icon, and a bold alias.
+- Narrow panes: schema, then database, are cut with `…` first; the alias is never cut below
+  12 cells; under ~40 columns only the alias and env.
+- SQLite: database = the file name, schema empty.
+- Possibly a dim header row (`alias  database  schema  env`) and a driver column (`pg`, `ora`,
+  `lite`); see 12.9.
+
+#### 12.2 SQL syntax highlighting
+
+- New `internal/tui/sqlhl.go`: tokens from the existing `token` lexer (dialect of the
+  connection), then light classification:
+  - keyword; comment (the `-- sqlh:` header included); string; number;
+  - function (an identifier followed by `(`); type (after `::`, in `CAST(… AS t)`, column types
+    in DDL);
+  - alias (the identifier after `AS`, or after a table name in `FROM`/`JOIN`); parameter
+    (`:x`, `$1`, `?`); operators and punctuation dim.
+- Used everywhere SQL is shown: DDL, a view's definition in Describe, a history run's SQL, the
+  version diff (`+`/`-` gutter coloured, the code highlighted), the query-file preview (12.6),
+  and the history rows' one-line SQL (dimmer when not selected).
+- Wrapping after highlighting, ANSI-aware (`ansi.Wrap`); lines cut at the width stay styled.
+- Colours by default from Helix's `modus_vivendi_tinted`, the theme Helix uses here:
+  - keyword `#b6a0ff`, comment `#ff9f80`, string `#79a8ff`, number `#00bcff`;
+  - function `#feacd0`, type `#6ae4b9`, alias `#00d3d0`, punctuation `#989898`.
+- Override in `panel.syntax.<class>: "#hex"`, or read Helix's own theme (12.9).
+- `icons: ascii` / `NO_COLOR`: no colour.
+- Tests: the classes of a sample statement (golden: class per token), wrap keeps the styles.
+
+#### 12.3 Collapse all
+
+- New actions:
+  - `collapseAll` collapses everything to the top level: Statement → the statement's tables;
+    Objects → Tables / Views / … and the other schemas; Connections → the groups; History →
+    the groups.
+  - Possibly `expandAll`, to one level below the top (see 12.9).
+  - The selection moves to the nearest row still visible.
+- Statement: after `collapseAll`, tables that join the statement later arrive collapsed too, so
+  following the cursor doesn't reopen everything. This lasts until `expandAll`, or until a
+  table is opened by hand. Whether the Statement tab should *start* collapsed: see 12.9.
+- Also on the tab's group rows, by mouse? No: keys and the palette (12.4) only.
+
+#### 12.4 The actions palette (`?`), actions per tab
+
+Modelled on easyredmine-tui's `HelpOverlay` (`internal/tui/help.go` there), ported to Bubble
+Tea v1 / bubbles textinput.
+
+- A box over the panel:
+  - a title (the tab and the selection);
+  - the list in groups, each entry `key  description`;
+  - a filter input, with the focus in it at once;
+  - a hint and an "n of m" count.
+- Filtering: typing filters on the description (substring hits first, then fuzzy); `@…`
+  filters on the keys.
+- Keys: Enter runs the entry (as if its key were pressed); ↑/↓, Ctrl-J/K, PgUp/PgDn move; Esc
+  clears the filter, then closes; `?` with an empty filter closes.
+- Groups, in this order:
+  1. **Selection: <label>** — what the `.` menu offers for the highlighted node (insert join,
+     SELECT *, columns, DDL, sample; connect/edit/duplicate/delete; replace/insert/open…).
+  2. **<Tab>** — the tab's own actions (Connections: new connection; Queries: new query;
+     History: open result, open file; Statement/Objects: sample, refresh).
+  3. **Navigation** — move, expand/collapse, collapse all, preview tabs and scrolling, the main
+     tabs.
+  4. **Global** — search, back to editor, help, quit.
+- Every action gets an availability:
+  - the main tabs it belongs to, and the node kinds it applies to;
+  - outside them its key does nothing (a short "not in this tab" note) and it is left out of
+    the footer and the palette.
+- Today's single-key `.` menu: kept as the quick menu, or folded into the palette (12.9).
+- `panel.keys` stays flat (action → keys).
+  - Clashes are checked within the actions available together: global against every tab,
+    then per tab.
+  - So the same key may serve different actions in different tabs (e.g. `d` duplicate in
+    Connections, DDL in Objects), if wanted (12.9).
+- Tests:
+  - the palette lists only the tab's actions;
+  - the filter, `@` key filter, Enter runs, Esc semantics;
+  - an unavailable key is a no-op;
+  - per-tab clash validation.
+
+#### 12.5 The slow handover when `sqlh tui`'s Helix exits
+
+Cause: not Helix's setup as such.
+
+- Helix starts its language servers as child processes and on `:q` sends them
+  `shutdown`/`exit`, so the editor's sqlh server ends with it (normal LSP lifecycle; nothing
+  in `languages.toml` keeps it).
+- The delay is sqlh's own recovery:
+  1. `watch()` sleeps 1 s before its first retry;
+  2. `connect()` then waits another 1.5 s (in case an editor is starting);
+  3. it starts a new headless server, which opens the database again;
+  4. the TUI throws its caches away on `reconnected` and loads the catalog again (seconds on
+     Oracle).
+
+Fix:
+
+- [ ] **Warm standby.**
+  - On `sqlh/release` the headless server closes only its control socket and keeps its
+    database connection, catalog and sample pool. While Helix is open that is one extra idle
+    session.
+  - When the editor's server goes, `startHeadless` takes the socket back at once, with the
+    warm state:
+    - config re-read if it changed;
+    - the workspace's remembered connection followed (the editor may have switched);
+    - a background catalog refresh if the editor ran DDL meanwhile (history has the runs).
+- [ ] **No blind waits.** The backend knows why the server went:
+  - if ours was released, an editor is starting: poll for its socket every 100 ms (3 s at most);
+  - if the editor's server went, take over at once;
+  - retries back off from 100 ms, not 1 s.
+- [ ] **The UI stays usable through it.**
+  - Trees, catalog and previews stay; on reconnect to the same connection the caches are
+    refreshed in place, not reset.
+  - Actions during the gap say "reconnecting…" instead of failing on a closed connection.
+- Goal: under ~300 ms from `:q` to a working app.
+- Test: a fake editor server that goes away → the backend serves again within the bound, and
+  the warm catalog is not reloaded (load counter).
+- (Rejected: making Helix's LSP a thin proxy to the app's server — a large change for this.)
+
+#### 12.6 Queries tab preview
+
+- A query file's preview:
+  - the relative path, modified time, size;
+  - the header's connection (marked when it isn't the current one);
+  - the file highlighted (12.2), scrollable with J/K; no 10-line cap, the pane cuts it.
+- Possibly the file's last run from history (when, rows, status), as in History (12.9).
+- Read by the TUI directly (it's a local file; at most 256 KB, more is cut with a note).
+
+#### 12.7 Preview tabs by selection
+
+- The preview's tabs depend on what is highlighted:
+
+  | selection | tabs |
+  |---|---|
+  | table, view, relation, statement table | Describe · DDL · Sample |
+  | column | Describe (its table, the column marked) · Sample (most common values) |
+  | index, constraint, sequence, type, trigger | Describe (· DDL when the server has it) |
+  | connection | Connection |
+  | query file | Query |
+  | history run | Run |
+  | group / info row | none (the tree gets the height) |
+
+- Tab/Shift-Tab cycle only through the tabs shown.
+- The chosen tab is remembered per kind of selection: DDL on tables stays DDL after visiting a
+  query file.
+- A single tab shows just its name in the separator line, with no `│` choices.
+
+#### 12.8 Docs, tests, live check
+
+- doc/cli.md: the Panel section (connections table, palette, collapse all, preview tabs, colours).
+- README and the config example (`panel.syntax`, new actions).
+- Tests as listed per item.
+- Live check in Herdr:
+  - `:q` of the app's Helix → the app is usable at once;
+  - highlighting in DDL, History and Queries;
+  - the palette per tab.
+
+#### 12.10 Status ✅
+
+- [x] 12.1 `connLayout`/`connRow`/`connHeader` (view.go): header row, rune-aligned columns
+      (test checks the header over the row), `●` column, chip padded to 4.
+- [x] 12.2 `sqlhl.go`: own lexer (comments, `'…'`, `$$…$$`/`$tag$`, `"…"`, numbers,
+      parameters `$1 :x @x ?`, `::`) + word classes from neighbours (keyword list of the
+      completion + extras − name-like words; function before `(`; types; aliases after `AS` or
+      a FROM/JOIN table); wraps at spaces, each line styled on its own; diff lines on a
+      green/red background. `panel.syntax` validated (class, `#rrggbb`).
+- [x] 12.3 `collapseAll` (H, every tab), `expandAll` (L, Statement), `scrollTop` (z; may scroll
+      past the last page until `g`/H/L), `panel.statement: open | collapsed`.
+- [x] 12.4 `help.go`: the palette (groups: the tab's own, Navigation, Preview, Global; filter,
+      `@` keys, Enter runs, Esc clears/closes, `?` closes). `panel.keys` sections per scope
+      (`config.PanelKeys`, `PanelScopes`, `PanelScopeActions`); keymap per scope in the TUI
+      (`PanelSettings.Keys` scope → action → keys); a key of another tab notes where it works.
+- [x] 12.5 `Server.Resume` (warm standby: `sqlh/release` stops the socket and the running job
+      only), `ranDDLSince` → background refresh; `panelBackend.watch` knows whether ours was
+      released (wait up to 3 s for the editor's server) or the editor's went (take over at once),
+      retries from 20 ms; the TUI keeps trees/caches on reconnect (`forgetErrors`; a catalog of
+      another connection resets them). Live: `:q` of the app's Helix → serving again in under
+      the 50 ms polling step, no `db worker: start` in the log. `TestHeadlessGivesWay` checks
+      the same connection and cache after Resume, < 300 ms.
+- [x] 12.6 `FileText` (256 KB cap), last run from the loaded history.
+- [x] 12.7 `previewTabs`/`previewKind`, tab per kind remembered; History: **Query** / **Diff**
+      (`sqlh/currentVersion`: the file's statement most like the run, from the live buffer,
+      similarity ≥ 0.6).
+- [x] 12.8 doc/cli.md (Panel, sqlh tui), README, config example; tests: TestPanelCollapseAll,
+      TestPanelPalette, TestPanelKeysPerTab (incl. config errors), TestPanelPreviewTabs,
+      TestSQLHighlight, connections alignment, history Diff tab. Live in Herdr: table, colours
+      (truecolor `#b6a0ff` keywords in DDL), palette, handover.
+
+#### 12.9 Decided (2026-10-16)
+
+1. Connections table: a dim header row; no driver column.
+2. Colours: built-in palette matching modus_vivendi_tinted, `panel.syntax.<class>` overrides.
+3. `H` collapses all (every tab). `z` scrolls the selected row to the top of the view (vim `zt`).
+   `L` expands all in the Statement tab only (not Objects). Statement opens as now by default;
+   `panel.statement: open | collapsed` chooses.
+4. The `.` menu stays as it is (selection actions); the `?` palette lists the keys/actions of
+   the tab. Maybe merged later.
+5. Keys per tab: `panel.keys` gets per-tab sections (`panel.keys.connections.<action>`, …,
+   the flat `panel.keys.<action>` = all tabs); a key may mean different things in different tabs.
+6. Query preview shows the file's last run when history has it (already loaded).
+7. History preview: tab **Query** (the run and its SQL, default) and tab **Diff** (against the
+   current version of that statement in the file / at the cursor).
+
 ### Phase 5 — later / optional
 
 - [ ] `EXPLAIN` to buffer
@@ -1228,6 +1441,11 @@ needs its own place in the flow (a tab or a full-screen view) — revisit after 
 - **2026-10-16** Phase 7 done: fix for UNION lineage in derived tables/CTEs (+ Oracle
   `MINUS`); current schema per connection (`sqlh schema`, header `schema=`, CADE works from
   read-only logins); lineage for UNION views; go to definition of tables and `sqlh ddl`.
+
+- **2026-10-16** Phase 12: connections table, SQL highlighting, collapse/expand all + `z`,
+  `?` keys palette per tab with per-tab key config, preview tabs by selection (query file
+  text + last run; run Query/Diff against the file now), warm headless standby (instant
+  handover when `sqlh tui`'s Helix exits).
 
 - **2026-10-16** Phase 11 (first-use feedback): tabs 1–5, omni search with prefixes, Enter
   navigates / Ctrl-Y inserts, connection form editing config.yml (connedit), groups,

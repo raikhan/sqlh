@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -430,7 +431,7 @@ func panelRunCmd(c *cli.Context) error {
 	if hd, err := herdr.FromEnv(); err == nil {
 		be.hd = hd
 	}
-	res, err := be.connect()
+	res, err := be.connect(false)
 	if err != nil {
 		return err
 	}
@@ -442,7 +443,7 @@ func panelRunCmd(c *cli.Context) error {
 	be.settings = *st.Panel
 	go be.watch()
 	p := tui.NewPanel(be, be.events, tui.Options{
-		Icons: st.Panel.Icons, Keys: st.Panel.Keys, Cursor: res.Cursor, Workspace: ws,
+		Icons: st.Panel.Icons, Keys: st.Panel.Keys, Syntax: st.Panel.Syntax, StatementCollapsed: st.Panel.StatementCollapsed, Cursor: res.Cursor, Workspace: ws,
 	})
 	defer logAway(c)()
 	prog := tea.NewProgram(p, tea.WithAltScreen(), tea.WithMouseCellMotion())
@@ -465,7 +466,8 @@ type panelBackend struct {
 	file string // the file last opened in the editor (under mu)
 	// startServer starts a server when there is none (sqlh tui: headless)
 	startServer func() error
-	connected   bool // connect succeeded once
+	// ownServer: startServer's server is the one serving (sqlh tui)
+	ownServer func() bool
 }
 
 // editor returns the editor's pane and process (they change in sqlh tui).
@@ -487,22 +489,16 @@ func (b *panelBackend) client() *control.Client {
 	return b.cl
 }
 
-// connect dials the workspace's server and subscribes.
-func (b *panelBackend) connect() (*control.SubscribeResult, error) {
+// connect dials the workspace's server and subscribes. Without one it
+// starts its own (startServer), unless waitEditor: an editor's server is
+// starting (it took the socket from ours).
+func (b *panelBackend) connect(waitEditor bool) (*control.SubscribeResult, error) {
 	sock, _, err := control.Find(b.ws)
-	if errors.Is(err, control.ErrNoServer) && b.startServer != nil {
-		if b.connected {
-			// an editor's server may be starting (it took the socket from
-			// ours): give it a moment before starting another
-			time.Sleep(1500 * time.Millisecond)
-			sock, _, err = control.Find(b.ws)
+	if errors.Is(err, control.ErrNoServer) && b.startServer != nil && !waitEditor {
+		if serr := b.startServer(); serr != nil {
+			return nil, serr
 		}
-		if errors.Is(err, control.ErrNoServer) {
-			if serr := b.startServer(); serr != nil {
-				return nil, serr
-			}
-			sock, _, err = control.Find(b.ws)
-		}
+		sock, _, err = control.Find(b.ws)
 	}
 	if err != nil {
 		return nil, err
@@ -526,7 +522,6 @@ func (b *panelBackend) connect() (*control.SubscribeResult, error) {
 	}
 	b.mu.Lock()
 	b.cl = cl
-	b.connected = true
 	b.mu.Unlock()
 	return &res, nil
 }
@@ -538,20 +533,37 @@ func (b *panelBackend) resubscribe() {
 	_ = call(b.client(), control.MethodSubscribe, control.SubscribeParams{Pane: herdr.CurrentPane(), EditorPane: pane}, &res)
 }
 
-// watch reconnects when the server goes away (e.g. :lsp-restart).
+// watch reconnects when the server goes away (e.g. :lsp-restart, the
+// editor exiting). When ours gave the socket to an editor's server, that one
+// is given editorGrace to appear; when an editor's server went, ours takes
+// over at once (sqlh tui).
 func (b *panelBackend) watch() {
 	for {
+		ours := b.ownServer != nil && b.ownServer()
 		<-b.client().Done()
+		// released since: an editor's server is taking over
+		editorStarting := ours && !b.ownServer()
 		b.events <- control.Event{Kind: tui.EventDisconnected}
+		start, delay := time.Now(), 20*time.Millisecond
 		for {
-			time.Sleep(time.Second)
-			if _, err := b.connect(); err == nil {
+			wait := editorStarting && time.Since(start) < editorGrace
+			if _, err := b.connect(wait); err == nil {
 				b.events <- control.Event{Kind: tui.EventReconnected}
 				break
+			}
+			time.Sleep(delay)
+			if !wait {
+				delay = min(delay*2, time.Second)
+			} else {
+				delay = 100 * time.Millisecond
 			}
 		}
 	}
 }
+
+// editorGrace: how long an editor's server that took the socket may take
+// to serve it.
+const editorGrace = 3 * time.Second
 
 func (b *panelBackend) Catalog() (out *control.CatalogResult, err error) {
 	err = call(b.client(), control.MethodCatalog, nil, &out)
@@ -739,6 +751,32 @@ func (b *panelBackend) queriesDir() string {
 
 // QueryFiles lists the query folder's .sql files, newest first.
 func (b *panelBackend) QueryFiles() ([]string, error) { return queryFiles(b.queriesDir()) }
+
+// maxPreviewFile: a query file's preview reads this much.
+const maxPreviewFile = 256 << 10
+
+func (b *panelBackend) FileText(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	buf := make([]byte, maxPreviewFile+1)
+	n, err := io.ReadFull(f, buf)
+	if err != nil && err != io.ErrUnexpectedEOF && err != io.EOF {
+		return "", err
+	}
+	text := string(buf[:min(n, maxPreviewFile)])
+	if n > maxPreviewFile {
+		text += "\n-- … (cut at 256 KB)"
+	}
+	return text, nil
+}
+
+func (b *panelBackend) CurrentVersion(file, sql string) (out *control.CurrentVersionResult, err error) {
+	err = call(b.client(), control.MethodCurrentVersion, control.CurrentVersionParams{File: file, SQL: sql}, &out)
+	return
+}
 
 // NewQuery creates the next query_<N>.sql: the connection header, then body.
 func (b *panelBackend) NewQuery(body string) (string, error) {

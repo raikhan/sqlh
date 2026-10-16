@@ -57,8 +57,9 @@ func tuiCmd(c *cli.Context) error {
 		be.hd = hd
 	}
 	be.startServer = be.startHeadless
+	be.ownServer = be.servesItself
 	defer be.stopHeadless()
-	if _, err := be.connect(); err != nil {
+	if _, err := be.connect(false); err != nil {
 		return err
 	}
 	st, err := serverStatus(be.client())
@@ -69,7 +70,7 @@ func tuiCmd(c *cli.Context) error {
 	be.insertKeys = st.Panel.InsertKeys
 	go be.watch()
 	p := tui.NewPanel(be, be.events, tui.Options{
-		Icons: st.Panel.Icons, Keys: st.Panel.Keys, Workspace: ws, Standalone: true,
+		Icons: st.Panel.Icons, Keys: st.Panel.Keys, Syntax: st.Panel.Syntax, StatementCollapsed: st.Panel.StatementCollapsed, Workspace: ws, Standalone: true,
 	})
 	_, err = tea.NewProgram(p, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
 	return err
@@ -110,6 +111,12 @@ func (b *tuiBackend) startHeadless() error {
 		return nil
 	}
 	if b.headless != nil {
+		// warm since the editor's server took over: serve again at once
+		if err := b.headless.Resume(); err == nil {
+			return nil
+		} else {
+			log.Println("headless server: resume:", err)
+		}
 		_ = b.headless.Stop()
 	}
 	// the config as the file has it now (the app may have edited it)
@@ -123,6 +130,13 @@ func (b *tuiBackend) startHeadless() error {
 	}
 	b.headless = s
 	return nil
+}
+
+// servesItself: the app's own server is the one serving (not an editor's).
+func (b *tuiBackend) servesItself() bool {
+	b.hmu.Lock()
+	defer b.hmu.Unlock()
+	return b.headless != nil && !b.headless.Released()
 }
 
 func (b *tuiBackend) stopHeadless() {

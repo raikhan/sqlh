@@ -55,6 +55,29 @@ func (s *Server) controlHistory(p control.HistoryParams) (*control.HistoryResult
 	return res, nil
 }
 
+// currentVersion: the statement of a file (its live buffer) most like an
+// earlier run's SQL, when similar enough to be its version. s.mu must be held.
+func (s *Server) currentVersion(p control.CurrentVersionParams) (*control.CurrentVersionResult, error) {
+	d := sqlsplit.PostgreSQL
+	if s.curDBCfg != nil {
+		d = sqlsplit.DialectOf(string(s.curDBCfg.Driver))
+	}
+	_, text, err := s.documentText(p.File)
+	if err != nil {
+		return nil, err
+	}
+	want := history.Tokens(p.SQL)
+	res := &control.CurrentVersionResult{}
+	best := 0.0
+	for _, st := range sqlsplit.Split(text, d) {
+		sql := strings.TrimSpace(st.SQL)
+		if sc := history.Similarity(want, history.Tokens(sql)); sc >= history.Similar && sc > best {
+			best, res.Statement, res.Line = sc, sql, st.Start.Line+1
+		}
+	}
+	return res, nil
+}
+
 // statementAt finds the statement at a cursor (1-based) in a file's live
 // buffer.
 func (s *Server) statementAt(file string, line, col int) (sqlsplit.Statement, string, error) {

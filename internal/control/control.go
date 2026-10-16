@@ -71,6 +71,9 @@ const (
 	MethodAllColumns = "sqlh/allColumns"
 	// MethodReloadConfig re-reads the config file (the panel edited it).
 	MethodReloadConfig = "sqlh/reloadConfig"
+	// MethodCurrentVersion finds today's version of a run's statement in its
+	// file (CurrentVersionParams → CurrentVersionResult): the panel's diff.
+	MethodCurrentVersion = "sqlh/currentVersion"
 
 	// EventNotification is the server → subscriber notification (Event).
 	EventNotification = "sqlh/event"
@@ -189,6 +192,19 @@ type HistoryParams struct {
 	Line    int    `json:"line,omitempty"`
 	Col     int    `json:"col,omitempty"`
 	Limit   int    `json:"limit,omitempty"` // recent runs (default 50)
+}
+
+// CurrentVersionParams: a file and the SQL of an earlier run of it.
+type CurrentVersionParams struct {
+	File string `json:"file"`
+	SQL  string `json:"sql"`
+}
+
+// CurrentVersionResult: the file's statement most like the SQL ("" = none
+// similar enough), and its line (1-based).
+type CurrentVersionResult struct {
+	Statement string `json:"statement,omitempty"`
+	Line      int    `json:"line,omitempty"`
 }
 
 // HistoryResult: Statement is the text at the cursor; Versions its earlier
@@ -452,12 +468,18 @@ type Status struct {
 
 // PanelSettings are the panel's settings from the server's configuration.
 type PanelSettings struct {
-	Placement  string              `json:"placement"`
-	InsertKeys []string            `json:"insertKeys"`
-	Keys       map[string][]string `json:"keys"` // the panel's keymap (defaults merged)
-	Icons      string              `json:"icons"`
-	QueriesDir string              `json:"queriesDir"` // resolved
-	Editor     []string            `json:"editor"`     // tui.editor
+	Placement  string   `json:"placement"`
+	InsertKeys []string `json:"insertKeys"`
+	// Keys: the panel's keymap per scope (connections, objects, statement,
+	// queries, history, search, form): action → keys, defaults merged.
+	Keys map[string]map[string][]string `json:"keys"`
+	// StatementCollapsed: the Statement tab's tables start collapsed.
+	StatementCollapsed bool `json:"statementCollapsed,omitempty"`
+	// Syntax: SQL colours by class (panel.syntax).
+	Syntax     map[string]string `json:"syntax,omitempty"`
+	Icons      string            `json:"icons"`
+	QueriesDir string            `json:"queriesDir"` // resolved
+	Editor     []string          `json:"editor"`     // tui.editor
 	// ConfigPath: the config file the server reads ("" = not from a file):
 	// the panel edits connections there.
 	ConfigPath string `json:"configPath,omitempty"`
