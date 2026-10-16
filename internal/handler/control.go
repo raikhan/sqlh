@@ -187,6 +187,20 @@ func (s *Server) handleControl(ctx context.Context, conn *jsonrpc2.Conn, req *js
 			return nil, err
 		}
 		return repo.Databases(ctx)
+	case control.MethodSchemaChoices:
+		return s.schemaChoices()
+	case control.MethodUseSchema:
+		var p control.DatabaseParams
+		if err := unmarshal(req, &p); err != nil {
+			return nil, err
+		}
+		msg, err := s.useSchema(ctx, p.Name)
+		if err != nil {
+			return nil, err
+		}
+		s.stampFile(p.File)
+		s.notifyEditor(msg)
+		return msg, nil
 	case control.MethodUseDatabase:
 		var p control.DatabaseParams
 		if err := unmarshal(req, &p); err != nil {
@@ -204,7 +218,7 @@ func (s *Server) handleControl(ctx context.Context, conn *jsonrpc2.Conn, req *js
 }
 
 // stampFile updates the connection header of a file the CLI acted from
-// (`connect/db --file`), if the editor has it open.
+// (`connect/db/schema --file`), if the editor has it open.
 func (s *Server) stampFile(path string) {
 	if path == "" {
 		return
@@ -294,6 +308,8 @@ func (s *Server) controlStatus() control.Status {
 			Desc: database.DescribeConnection(s.curDBCfg), Current: true,
 		}
 		st.ResultsDir = exec.ExpandDir(s.getConfig().Results.Dir, s.workspace, connAlias(s.curDBCfg))
+		st.Schema = s.currentSchema()
+		st.Database = s.curDBCfg.DBName
 	}
 	if j := s.runningJob(); j != nil {
 		st.Job = j.title

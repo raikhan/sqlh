@@ -24,8 +24,10 @@ func oracleOpen(dbConnCfg *DBConfig) (*DBConnection, error) {
 	}
 
 	// go-ora is a pure Go driver: no Oracle Instant Client needed.
-	conn, err := sql.Open("oracle", DSName)
-	if err != nil {
+	var conn *sql.DB
+	if schema := dbConnCfg.CurrentSchema(); schema != "" {
+		conn = sql.OpenDB(&initConnector{Connector: go_ora.NewConnector(DSName), init: oracleSchemaInit(schema)})
+	} else if conn, err = sql.Open("oracle", DSName); err != nil {
 		return nil, err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

@@ -41,7 +41,65 @@ type DBConfig struct {
 	SSHCfg    *SSHConfig        `json:"sshConfig" yaml:"sshConfig"`
 	// Schemas is the metadata allow-list used for completion/hover. Oracle:
 	// empty means the login schema only. PostgreSQL: empty means all schemas.
+	// The schemas `sqlh schema` switches between; the first is the default.
 	Schemas []string `json:"schemas" yaml:"schemas"`
+	// Schema is the current schema to start on (Oracle CURRENT_SCHEMA,
+	// PostgreSQL first in search_path); default: the first of Schemas, else
+	// the login's own.
+	Schema string `json:"schema" yaml:"schema"`
+}
+
+// SupportsSchema reports whether the driver can switch the current schema.
+func (c *DBConfig) SupportsSchema() bool {
+	return c.Driver == dialect.DatabaseDriverOracle || c.Driver == dialect.DatabaseDriverPostgreSQL
+}
+
+// CurrentSchema is the schema the connection is set to on connect: Schema,
+// else the first of Schemas; "" leaves the login's default (Oracle: the login
+// schema, PostgreSQL: the search_path of the connection string).
+func (c *DBConfig) CurrentSchema() string {
+	if !c.SupportsSchema() {
+		return ""
+	}
+	if s := strings.TrimSpace(c.Schema); s != "" {
+		return c.normSchema(s)
+	}
+	for _, s := range c.Schemas {
+		if s = strings.TrimSpace(s); s != "" {
+			return c.normSchema(s)
+		}
+	}
+	return ""
+}
+
+// normSchema: unquoted Oracle names are stored upper-case; PostgreSQL schema
+// names are taken as written (case-sensitive, like a quoted identifier).
+func (c *DBConfig) normSchema(s string) string {
+	if c.Driver == dialect.DatabaseDriverOracle {
+		return strings.ToUpper(s)
+	}
+	return s
+}
+
+// AllowedSchema returns the spelling of name in Schemas (Oracle: case
+// insensitively), and whether it is listed.
+func (c *DBConfig) AllowedSchema(name string) (string, bool) {
+	name = strings.TrimSpace(name)
+	for _, s := range c.Schemas {
+		s = strings.TrimSpace(s)
+		if s == name || c.Driver == dialect.DatabaseDriverOracle && strings.EqualFold(s, name) {
+			return c.normSchema(s), true
+		}
+	}
+	return "", false
+}
+
+// defaultProto: PostgreSQL/MySQL/Vertica connections with a host but no proto
+// connect over TCP.
+func (c *DBConfig) defaultProto() {
+	if c.Proto == "" && c.DataSourceName == "" && (c.Host != "" || c.Port != 0) {
+		c.Proto = ProtoTCP
+	}
 }
 
 // envRefRe matches ${NAME}. Bare $NAME is deliberately not expanded so that
@@ -99,6 +157,16 @@ func (c *DBConfig) Validate() error {
 	if c.Driver == "" {
 		return errors.New("required: connections[].driver")
 	}
+	if s := strings.TrimSpace(c.Schema); s != "" {
+		if !c.SupportsSchema() {
+			return fmt.Errorf("connections[].schema: not supported for %s", c.Driver)
+		}
+		if len(c.Schemas) > 0 {
+			if _, ok := c.AllowedSchema(s); !ok {
+				return fmt.Errorf("connections[].schema %q is not in connections[].schemas %v", s, c.Schemas)
+			}
+		}
+	}
 
 	switch c.Driver {
 	case
@@ -108,6 +176,7 @@ func (c *DBConfig) Validate() error {
 		dialect.DatabaseDriverMySQL56,
 		dialect.DatabaseDriverPostgreSQL,
 		dialect.DatabaseDriverVertica:
+		c.defaultProto()
 		if c.DataSourceName == "" && c.Proto == "" {
 			return errors.New("required: connections[].dataSourceName or connections[].proto")
 		}

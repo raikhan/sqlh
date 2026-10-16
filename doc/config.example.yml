@@ -33,7 +33,9 @@ connections:
     driver: postgresql
     # search_path makes unqualified completion and FK join hints use your schema
     dataSourceName: host=localhost port=5432 user=admin password=${PG_LOCAL_PASSWORD} dbname=sdsai sslmode=disable options='-c search_path=cadetst,public'
-    # optional metadata allow-list (PostgreSQL: empty = all schemas)
+    # optional metadata allow-list (PostgreSQL: empty = all schemas); also the schemas
+    # `sqlh schema` switches between, the first being the current one on connect
+    # (SET search_path after connecting: works behind PgBouncer, which refuses it in the DSN)
     # schemas: [cadetst, public]
 
   - alias: oracle_dev
@@ -45,8 +47,11 @@ connections:
     # password from the macOS keychain, created with:
     #   security add-generic-password -a cade -s sqlh-oracle_dev -w '<password>'
     passwdCmd: security find-generic-password -s sqlh-oracle_dev -w
-    # metadata allow-list (Oracle: empty = login schema only)
+    # metadata allow-list (Oracle: empty = login schema only). The first is the current
+    # schema on connect (ALTER SESSION SET CURRENT_SCHEMA): unqualified names resolve in
+    # CADE even for another login; `sqlh schema` / space i S switch among them
     schemas: [CADE, CADE500]
+    # schema: CADE500         # start on another schema of the list
     # params are go-ora URL options, e.g.:
     # params: { "SSL": "true", "TIMEOUT": "30" }
     # or a full go-ora URL / TNS descriptor:

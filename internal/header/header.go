@@ -1,10 +1,10 @@
 // Package header reads and writes a query file's connection header, a
 // comment among the file's leading comments:
 //
-//	-- sqlh: conn=pg_local db=reports
+//	-- sqlh: conn=pg_local db=reports schema=sales
 //
-// The editor's server keeps it pointing at the connection (and database, when
-// switched) the file last ran on; `sqlh dump` runs the file there.
+// The editor's server keeps it pointing at the connection (and database and
+// schema, when switched) the file last ran on; `sqlh dump` runs the file there.
 package header
 
 import (
@@ -17,14 +17,16 @@ import (
 
 // Keys written by sqlh; others are kept as they are.
 const (
-	KeyConn = "conn"
-	KeyDB   = "db"
+	KeyConn   = "conn"
+	KeyDB     = "db"
+	KeySchema = "schema"
 )
 
 // Header is a file's "-- sqlh:" line.
 type Header struct {
-	Conn string
-	DB   string
+	Conn   string
+	DB     string
+	Schema string
 	// Line is the 0-based line of the header, -1 when the file has none.
 	Line int
 	// text is the header line as found (without the line break).
@@ -87,6 +89,8 @@ func parsePairs(s string) Header {
 			h.Conn = v
 		case KeyDB:
 			h.DB = v
+		case KeySchema:
+			h.Schema = v
 		default:
 			h.extra = append(h.extra, pair{k, v})
 		}
@@ -122,7 +126,7 @@ func fields(s string) []string {
 	return out
 }
 
-// String renders the header line: conn, db, then the other keys.
+// String renders the header line: conn, db, schema, then the other keys.
 func (h Header) String() string {
 	parts := []string{"-- sqlh:"}
 	add := func(k, v string) {
@@ -140,6 +144,9 @@ func (h Header) String() string {
 	}
 	if h.DB != "" {
 		add(KeyDB, h.DB)
+	}
+	if h.Schema != "" {
+		add(KeySchema, h.Schema)
 	}
 	for _, p := range h.extra {
 		add(p.key, p.value)
@@ -161,17 +168,17 @@ type Edit struct {
 	Text   string
 }
 
-// Stamp returns the edit that makes text's header name conn and db (db ""
-// drops it), inserting a header at the top when there is none. ok is false
-// when the header is already right.
-func Stamp(text, conn, db string) (e Edit, ok bool) {
+// Stamp returns the edit that makes text's header name conn, db and schema
+// ("" drops db/schema), inserting a header at the top when there is none. ok
+// is false when the header is already right.
+func Stamp(text, conn, db, schema string) (e Edit, ok bool) {
 	h := Parse(text)
 	if h.Line >= 0 {
-		if h.Conn == conn && h.DB == db {
+		if h.Conn == conn && h.DB == db && h.Schema == schema {
 			return Edit{}, false
 		}
 		old := h.text
-		h.Conn, h.DB = conn, db
+		h.Conn, h.DB, h.Schema = conn, db, schema
 		return Edit{Line: h.Line, OldLen: utf16Len(old), Text: indent(old) + h.String()}, true
 	}
 	firstLine, _, _ := strings.Cut(text, "\n")
@@ -179,7 +186,7 @@ func Stamp(text, conn, db string) (e Edit, ok bool) {
 	if strings.HasSuffix(firstLine, "\r") {
 		nl = "\r\n"
 	}
-	ins := Header{Conn: conn, DB: db}.String() + nl
+	ins := Header{Conn: conn, DB: db, Schema: schema}.String() + nl
 	// a blank line between the header and SQL; none before other comments
 	if first := strings.TrimSpace(firstLine); first != "" && !strings.HasPrefix(first, "--") && !strings.HasPrefix(first, "/*") {
 		ins += nl

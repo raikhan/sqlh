@@ -13,6 +13,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/raikhan/sqlh/dialect"
+	"github.com/raikhan/sqlh/internal/catalog"
+	"github.com/raikhan/sqlh/internal/control"
 	"github.com/raikhan/sqlh/internal/database"
 	"github.com/raikhan/sqlh/internal/lsp"
 	"github.com/raikhan/sqlh/internal/state"
@@ -25,6 +27,7 @@ const (
 	CommandShowSchemas      = "showSchemas"
 	CommandShowConnections  = "showConnections"
 	CommandSwitchDatabase   = "switchDatabase"
+	CommandSwitchSchema     = "switchSchema"
 	CommandSwitchConnection = "switchConnections"
 	CommandShowTables       = "showTables"
 )
@@ -154,6 +157,13 @@ func (s *Server) handleWorkspaceExecuteCommand(ctx context.Context, conn *jsonrp
 		result, err = s.showConnections(ctx, params)
 	case CommandSwitchDatabase:
 		result, err = s.switchDatabase(ctx, params)
+	case CommandSwitchSchema:
+		name, _ := firstString(params.Arguments)
+		if name == "" {
+			err = errors.New("required argument: the schema name")
+		} else {
+			result, err = s.useSchema(ctx, name)
+		}
 	case CommandSwitchConnection:
 		result, err = s.switchConnections(ctx, params)
 	case CommandShowTables:
@@ -177,7 +187,7 @@ func (s *Server) presentCommandResult(ctx context.Context, conn *jsonrpc2.Conn, 
 	}
 	text, ok := result.(string)
 	if !ok || strings.TrimSpace(text) == "" {
-		if command == CommandSwitchConnection || command == CommandSwitchDatabase {
+		if command == CommandSwitchConnection || command == CommandSwitchDatabase || command == CommandSwitchSchema {
 			_ = m.ShowInfo(ctx, fmt.Sprintf("%s: done", command))
 		}
 		return
@@ -360,19 +370,117 @@ func (s *Server) useDatabase(ctx context.Context, dbName string) (string, error)
 	if s.curDBCfg != nil {
 		switch s.curDBCfg.Driver {
 		case dialect.DatabaseDriverOracle:
-			return "", errors.New("Oracle has one database per connection; to work with another schema add it to the connection's `schemas:` list and use schema.table")
+			return "", errors.New("Oracle has one database per connection; to work in another schema add it to the connection's `schemas:` list and switch to it (sqlh schema)")
 		case dialect.DatabaseDriverSQLite3:
 			return "", errors.New("SQLite has one database per file; add another connection instead")
 		}
 	}
-	prev := s.curDBName
-	s.curDBName = dbName
+	// a schema switch belongs to the previous database
+	prev, prevSchema := s.curDBName, s.curSchema
+	s.curDBName, s.curSchema = dbName, ""
 	if err := s.reconnectionDB(ctx); err != nil {
-		s.curDBName = prev
+		s.curDBName, s.curSchema = prev, prevSchema
 		return "", err
 	}
 	s.relintOpen() // connection headers compare against the new target
 	return fmt.Sprintf("switched database to %s", dbName), nil
+}
+
+// targetKey tells apart the databases and schemas of a connection (result
+// reuse, executed DDL): "" when neither is switched.
+func (s *Server) targetKey() string {
+	if s.curSchema == "" {
+		return s.curDBName
+	}
+	return s.curDBName + "\x1f" + s.curSchema
+}
+
+// currentSchema is the connection's current schema (as the cache knows it).
+func (s *Server) currentSchema() string {
+	if s.dbConn == nil {
+		return ""
+	}
+	if c := s.worker.Cache(); c != nil {
+		return c.DefaultSchema()
+	}
+	return ""
+}
+
+// schemaChoices lists the schemas the connection can switch to: its
+// `schemas:` list; PostgreSQL without one: the database's schemas. The
+// current one is marked Default.
+func (s *Server) schemaChoices() ([]control.SchemaItem, error) {
+	if s.dbConn == nil || s.curDBCfg == nil {
+		return nil, ErrNoConnection
+	}
+	cfg := s.curDBCfg
+	if !cfg.SupportsSchema() {
+		return nil, fmt.Errorf("%s connections have no current schema to switch", cfg.Driver)
+	}
+	cur := s.currentSchema()
+	var names []string
+	switch {
+	case len(cfg.Schemas) > 0:
+		for _, n := range cfg.Schemas {
+			if a, ok := cfg.AllowedSchema(n); ok {
+				names = append(names, a)
+			}
+		}
+	case cfg.Driver == dialect.DatabaseDriverPostgreSQL:
+		src, opt, err := s.catalog(false)
+		if err != nil {
+			return nil, err
+		}
+		for _, it := range catalog.Schemas(src, opt) {
+			names = append(names, it.Name)
+		}
+	default: // Oracle without a list: the login schema only
+		names = []string{cur}
+	}
+	var out []control.SchemaItem
+	seen := map[string]bool{}
+	for _, n := range names {
+		if n != "" && !seen[n] {
+			seen[n] = true
+			out = append(out, control.SchemaItem{Name: n, Default: n == cur})
+		}
+	}
+	return out, nil
+}
+
+// useSchema makes another schema current: the connection is reopened with
+// it (rolled back if that fails), the cache rebuilt for it.
+func (s *Server) useSchema(ctx context.Context, name string) (string, error) {
+	choices, err := s.schemaChoices()
+	if err != nil {
+		return "", err
+	}
+	target := ""
+	var names []string
+	for _, c := range choices {
+		names = append(names, c.Name)
+		if c.Name == name || s.curDBCfg.Driver == dialect.DatabaseDriverOracle && strings.EqualFold(c.Name, name) {
+			target = c.Name
+		}
+	}
+	if target == "" {
+		return "", fmt.Errorf("schema %q is not one of %s (the connection's `schemas:`)", name, strings.Join(names, ", "))
+	}
+	if target == s.currentSchema() {
+		return "already on schema " + target, nil
+	}
+	override := target
+	if target == s.defaultSchema {
+		override = "" // back to the connection's own
+	}
+	prev := s.curSchema
+	s.curSchema = override
+	if err := s.reconnectionDB(ctx); err != nil {
+		s.curSchema = prev
+		return "", err
+	}
+	s.relintOpen() // connection headers compare against the new target
+	return "switched schema to " + target, nil
 }
 
 func (s *Server) showConnections(ctx context.Context, params lsp.ExecuteCommandParams) (result interface{}, err error) {
@@ -435,10 +543,10 @@ func (s *Server) switchTo(ctx context.Context, name string) (string, error) {
 	}
 	// Reconnect database (rolled back if the reconnect fails). The database
 	// override from switchDatabase belongs to the previous connection.
-	prevIndex, prevDBName := s.curConnectionIndex, s.curDBName
-	s.curConnectionIndex, s.curDBName = index, ""
+	prevIndex, prevDBName, prevSchema := s.curConnectionIndex, s.curDBName, s.curSchema
+	s.curConnectionIndex, s.curDBName, s.curSchema = index, "", ""
 	if err := s.reconnectionDB(ctx); err != nil {
-		s.curConnectionIndex, s.curDBName = prevIndex, prevDBName
+		s.curConnectionIndex, s.curDBName, s.curSchema = prevIndex, prevDBName, prevSchema
 		return "", err
 	}
 	if s.curDBCfg != nil && s.curDBCfg.Alias != "" {

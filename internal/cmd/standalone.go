@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -136,6 +137,27 @@ func statements(p control.RunParams, d sqlsplit.Dialect) ([]sqlsplit.Statement, 
 }
 
 // runStandalone runs without a server, on its own connection.
+// withSchema is conn set to start on schema (one of its `schemas:`); ""
+// leaves it as configured.
+func withSchema(conn *database.DBConfig, schema string) (*database.DBConfig, error) {
+	if schema == "" {
+		return conn, nil
+	}
+	if !conn.SupportsSchema() {
+		return nil, fmt.Errorf("connection %s (%s) has no current schema to set", alias(conn), conn.Driver)
+	}
+	if len(conn.Schemas) > 0 {
+		s, ok := conn.AllowedSchema(schema)
+		if !ok {
+			return nil, fmt.Errorf("schema %q is not in connection %s's schemas: %s", schema, alias(conn), strings.Join(conn.Schemas, ", "))
+		}
+		schema = s
+	}
+	cp := *conn // don't mutate the loaded configuration
+	cp.Schema = schema
+	return &cp, nil
+}
+
 func runStandalone(c *cli.Context, p control.RunParams) (*control.RunResult, error) {
 	cfg, err := loadConfig(c)
 	if err != nil {
@@ -144,6 +166,9 @@ func runStandalone(c *cli.Context, p control.RunParams) (*control.RunResult, err
 	ws := workspaceRoot(startDir(c))
 	_, conn, err := chooseConnection(cfg, ws, c.String("conn"))
 	if err != nil {
+		return nil, err
+	}
+	if conn, err = withSchema(conn, c.String("schema")); err != nil {
 		return nil, err
 	}
 	stmts, err := statements(p, sqlsplit.DialectOf(string(conn.Driver)))

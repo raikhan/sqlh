@@ -369,7 +369,7 @@ type runEnv struct {
 	dialect    sqlsplit.Dialect
 	resultsDir string
 	workspace  string
-	db         string // database override (switched database), "" = the connection's
+	db         string // database and schema switches (targetKey), "" = the connection's own
 	limit      int
 	null       string
 	reuse      *resultRecord // dump: copy this result instead of running
@@ -407,7 +407,7 @@ func (s *Server) startRun(ctx context.Context, req runRequest) (*job, error) {
 		alias:     connAlias(s.curDBCfg),
 		dialect:   sqlsplit.DialectOf(string(s.curDBCfg.Driver)),
 		workspace: s.workspace,
-		db:        s.curDBName,
+		db:        s.targetKey(),
 		limit:     req.limit,
 		null:      cfg.Null,
 	}

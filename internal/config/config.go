@@ -131,8 +131,14 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("results.reuseFor: %q is not a duration (e.g. 10m, 90s, 0)", r)
 		}
 	}
-	if len(c.Connections) > 0 {
-		return c.Connections[0].Validate()
+	for i, conn := range c.Connections {
+		if err := conn.Validate(); err != nil {
+			name := conn.Alias
+			if name == "" {
+				name = fmt.Sprintf("#%d", i+1)
+			}
+			return fmt.Errorf("connection %s: %w", name, err)
+		}
 	}
 	return nil
 }

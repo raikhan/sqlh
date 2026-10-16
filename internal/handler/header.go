@@ -23,12 +23,20 @@ const (
 )
 
 // headerTarget is where a document's header points, or where the editor is:
-// a connection alias and a database override ("" = the connection's own).
-type headerTarget struct{ conn, db string }
+// a connection alias, a database and a schema override ("" = the
+// connection's own).
+type headerTarget struct{ conn, db, schema string }
 
 func (t headerTarget) String() string {
+	var sw []string
 	if t.db != "" {
-		return t.conn + " (database " + t.db + ")"
+		sw = append(sw, "database "+t.db)
+	}
+	if t.schema != "" {
+		sw = append(sw, "schema "+t.schema)
+	}
+	if len(sw) > 0 {
+		return t.conn + " (" + strings.Join(sw, ", ") + ")"
 	}
 	return t.conn
 }
@@ -38,21 +46,37 @@ func (t headerTarget) String() string {
 type headerState struct {
 	editor  headerTarget // conn "" when not connected or unnamed
 	aliases []string     // configured connection aliases
+	// schemas: a connection's default schema, which a header needn't name
+	schemas map[string]string
 }
 
 func (s *Server) headerState() headerState {
-	var st headerState
-	if s.dbConn != nil && s.curDBCfg != nil {
-		st.editor = headerTarget{s.curDBCfg.Alias, s.curDBName}
-	}
+	st := headerState{schemas: map[string]string{}}
 	if cfg := s.getConfig(); cfg != nil {
 		for _, c := range cfg.Connections {
 			if c.Alias != "" {
 				st.aliases = append(st.aliases, c.Alias)
+				st.schemas[c.Alias] = c.CurrentSchema()
 			}
 		}
 	}
+	if s.dbConn != nil && s.curDBCfg != nil {
+		st.editor = headerTarget{s.curDBCfg.Alias, s.curDBName, s.curSchema}
+		if s.defaultSchema != "" {
+			st.schemas[s.curDBCfg.Alias] = s.defaultSchema
+		}
+	}
 	return st
+}
+
+// target is where a header points; a schema= naming the connection's
+// default schema counts as none.
+func (st headerState) target(h header.Header) headerTarget {
+	t := headerTarget{h.Conn, h.DB, h.Schema}
+	if d := st.schemas[h.Conn]; t.schema != "" && strings.EqualFold(t.schema, d) {
+		t.schema = ""
+	}
+	return t
 }
 
 // headerDiagnostics flags a header naming a connection that isn't
@@ -72,7 +96,7 @@ func headerDiagnostics(text string, st headerState) []lsp.Diagnostic {
 		},
 		Source: &diagnosticSource,
 	}
-	file := headerTarget{h.Conn, h.DB}
+	file := st.target(h)
 	switch {
 	case !contains(st.aliases, h.Conn):
 		d.Severity = lsp.SeverityWarning
@@ -107,7 +131,7 @@ func (s *Server) headerActions(uri string, rng lsp.Range) (actions []lsp.Command
 		return nil, false
 	}
 	st := s.headerState()
-	file := headerTarget{h.Conn, h.DB}
+	file := st.target(h)
 	if st.editor.conn == "" || file == st.editor {
 		return nil, false
 	}
@@ -124,7 +148,7 @@ func (s *Server) headerActions(uri string, rng lsp.Range) (actions []lsp.Command
 	return actions, rng.Start.Line <= h.Line && h.Line <= rng.End.Line
 }
 
-// useHeader switches the editor to the connection and database of a
+// useHeader switches the editor to the connection, database and schema of a
 // document's header.
 func (s *Server) useHeader(ctx context.Context, uri string) (string, error) {
 	f, ok := s.files[uri]
@@ -156,8 +180,19 @@ func (s *Server) useHeader(ctx context.Context, uri string) (string, error) {
 		}
 		msgs = append(msgs, m)
 	}
+	if want := s.headerState().target(h); want.schema != s.curSchema {
+		target := want.schema
+		if target == "" {
+			target = s.defaultSchema // back to the connection's own
+		}
+		m, err := s.useSchema(ctx, target)
+		if err != nil {
+			return "", err
+		}
+		msgs = append(msgs, m)
+	}
 	if len(msgs) == 0 {
-		return "already on " + headerTarget{h.Conn, h.DB}.String(), nil
+		return "already on " + s.headerState().target(h).String(), nil
 	}
 	return strings.Join(msgs, "; "), nil
 }
@@ -170,8 +205,8 @@ func (s *Server) relintOpen() {
 	}
 }
 
-// stampHeader points the "-- sqlh: conn=… db=…" header of an open document
-// at the current connection and database, inserting it if missing, so that
+// stampHeader points the "-- sqlh: conn=… db=… schema=…" header of an open
+// document at the current connection, database and schema, inserting it if missing, so that
 // `sqlh dump` runs the file where it last ran in the editor. The client
 // applies the edit (the buffer becomes modified; the CLI reads it once
 // saved); files that aren't open are never touched. Call with s.mu held.
@@ -184,7 +219,7 @@ func (s *Server) stampHeader(uri string) {
 		log.Println("connection header: the connection has no alias to name it by")
 		return
 	}
-	e, changed := header.Stamp(f.Text, s.curDBCfg.Alias, s.curDBName)
+	e, changed := header.Stamp(f.Text, s.curDBCfg.Alias, s.curDBName, s.curSchema)
 	if !changed {
 		return
 	}

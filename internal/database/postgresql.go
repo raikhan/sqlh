@@ -31,19 +31,23 @@ func postgreSQLOpen(dbConnCfg *DBConfig) (*DBConnection, error) {
 		return nil, err
 	}
 
+	var opts []stdlib.OptionOpenDB
+	if schema := dbConnCfg.CurrentSchema(); schema != "" {
+		opts = append(opts, stdlib.OptionAfterConnect(pgSchemaAfterConnect(schema)))
+	}
 	if dbConnCfg.SSHCfg != nil {
-		dbConn, dbSSHConn, err := openPostgreSQLViaSSH(dsn, dbConnCfg.SSHCfg)
+		dbConn, dbSSHConn, err := openPostgreSQLViaSSH(dsn, dbConnCfg.SSHCfg, opts...)
 		if err != nil {
 			return nil, err
 		}
 		conn = dbConn
 		sshConn = dbSSHConn
 	} else {
-		dbConn, err := sql.Open("pgx", dsn)
+		conf, err := pgx.ParseConfig(dsn)
 		if err != nil {
 			return nil, err
 		}
-		conn = dbConn
+		conn = stdlib.OpenDB(*conf, opts...)
 	}
 	if err = conn.PingContext(context.Background()); err != nil {
 		return nil, err
@@ -58,7 +62,7 @@ func postgreSQLOpen(dbConnCfg *DBConfig) (*DBConnection, error) {
 	}, nil
 }
 
-func openPostgreSQLViaSSH(dsn string, sshCfg *SSHConfig) (*sql.DB, *ssh.Client, error) {
+func openPostgreSQLViaSSH(dsn string, sshCfg *SSHConfig, opts ...stdlib.OptionOpenDB) (*sql.DB, *ssh.Client, error) {
 	sshConfig, err := sshCfg.ClientConfig()
 	if err != nil {
 		return nil, nil, err
@@ -76,7 +80,7 @@ func openPostgreSQLViaSSH(dsn string, sshCfg *SSHConfig) (*sql.DB, *ssh.Client, 
 		return sshConn.Dial(network, addr)
 	}
 
-	conn := stdlib.OpenDB(*conf)
+	conn := stdlib.OpenDB(*conf, opts...)
 
 	return conn, sshConn, nil
 }
@@ -440,7 +444,7 @@ func genPostgresConfig(connCfg *DBConfig) (string, error) {
 	q.Set("dbname", quotePostgresParam(connCfg.DBName))
 
 	switch connCfg.Proto {
-	case ProtoTCP, ProtoUDP:
+	case ProtoTCP, ProtoUDP, "": // host/port without proto: TCP
 		host, port := connCfg.Host, connCfg.Port
 		if host == "" {
 			host = "127.0.0.1"
@@ -454,7 +458,7 @@ func genPostgresConfig(connCfg *DBConfig) (string, error) {
 		q.Set("host", quotePostgresParam(connCfg.Path))
 	case ProtoHTTP:
 	default:
-		return "", fmt.Errorf("default addr for network %s unknown", connCfg.Proto)
+		return "", fmt.Errorf("connections[].proto %q: use tcp or unix (or set dataSourceName)", connCfg.Proto)
 	}
 
 	for k, v := range connCfg.Params {

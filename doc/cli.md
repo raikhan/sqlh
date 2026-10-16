@@ -13,7 +13,7 @@ runs standalone, on the connection in the file's header (see [Query files](#quer
 | `sqlh dump FILE…` | run query files on the connection in their header → `<file>.csv` in the current directory (`-d DIR`, `-o FILE`), all rows; see [Query files](#query-files-connection-header-and-dump) |
 | `sqlh connect [alias]` | switch the editor's connection (no alias: pick with fzf); remembered per workspace; `--file F`: also point F's connection header at it |
 | `sqlh connections` / `ls` | list connections, `*` = current |
-| `sqlh status [--all]` | workspace, connection, running query, results dir (`--all`: all servers) |
+| `sqlh status [--all]` | workspace, connection, current schema, running query, results dir (`--all`: all servers) |
 | `sqlh cancel` | cancel the running query |
 | `sqlh refresh` | reload schema metadata (done automatically after a run that executed DDL, unless `refreshAfterDDL: false`; for changes made elsewhere) |
 | `sqlh latest` | path of the newest result CSV: `vd $(sqlh latest)` |
@@ -24,6 +24,29 @@ runs standalone, on the connection in the file's header (see [Query files](#quer
 | `sqlh columns [TABLE] [--prefix p.] [--sep ", "]` | a table's columns; `-p` multi-picks (Tab, Ctrl-A all) → `p.a, p.b`; no TABLE with `-p`: pick the table first |
 | `sqlh schemas [--all]` / `sqlh databases` | lists; `-p` picks one |
 | `sqlh db [NAME]` | switch the editor's connection to another database (PostgreSQL; no NAME: pick); `--file F` as for `connect` |
+| `sqlh schema [NAME]` | switch the editor's current schema among the connection's `schemas:` (Oracle, PostgreSQL; no NAME: pick, `*` = current); `--file F` as for `connect`. See [Current schema](#current-schema) |
+
+`run`/`export --schema NAME` and `dump --schema NAME` run standalone with another current
+schema (one of the connection's `schemas:`); they don't change the editor's.
+
+## Current schema
+
+A connection's current schema is where unqualified names resolve — in your queries and in
+completion, hover, diagnostics, join hints, relationships and go to definition, which all
+work in that schema (other schemas of the allow-list: tables and columns, `schema.table`).
+
+- It starts on the connection's `schema:`, else the **first of its `schemas:`**, else the
+  login's own (Oracle: the login schema; PostgreSQL: the DSN's `search_path`).
+- Oracle: `ALTER SESSION SET CURRENT_SCHEMA` on every session sqlh opens. A read-only login
+  (`cade_read_only`) works in `CADE` as if logged in as its owner — names resolve to what the
+  login may see.
+- PostgreSQL: `SET search_path TO <schema>, <the rest of the original path>` after
+  connecting (extensions in `public` keep working). Set after connecting because PgBouncer
+  refuses `search_path` as a startup parameter before PostgreSQL 18; fine with PgBouncer in
+  session mode.
+- `sqlh schema` / `space i S` switch it: the connection is reopened (a running query is
+  stopped, an open transaction lost) and the schema cache rebuilt. Not remembered: the editor
+  starts on the connection's default; a file's header (`schema=`) says where it ran.
 
 ## Pickers
 
@@ -151,28 +174,29 @@ current directory for scratch buffers.
 A query file says which connection it runs on in a header among its leading comments:
 
 ```sql
--- sqlh: conn=pg_local db=reports
+-- sqlh: conn=pg_local db=reports schema=sales
 
 select …
 ```
 
 - **The editor keeps it up to date.** Whenever a statement of an open file runs in the
   editor's server (code actions, `space i r/e/d`, `sqlh run --file`), and when you switch
-  connection or database from it (`space i C/D`, `sqlh connect/db --file F`), the server
-  rewrites the header — or inserts it at the top — in the **buffer** (`workspace/applyEdit`;
-  the buffer becomes modified, save it for the CLI to see it). `db=` only appears after a
-  database switch. Files that aren't open are never edited.
+  connection, database or schema from it (`space i C/D/S`, `sqlh connect/db/schema --file F`),
+  the server rewrites the header — or inserts it at the top — in the **buffer**
+  (`workspace/applyEdit`; the buffer becomes modified, save it for the CLI to see it). `db=`
+  and `schema=` only appear after a database / schema switch (a `schema=` naming the
+  connection's default counts as none). Files that aren't open are never edited.
 - Edit it by hand to point the file somewhere else; other `key=value` pairs are kept.
 - **When the header and the editor differ** (you switched from another buffer, or opened a
   file last run elsewhere), the header line gets an information diagnostic — "this file
   targets oracle_dev, the editor is on pg_local" — and the code actions (`space a`; first when
-  the cursor is on the header) offer **Switch the editor to oracle_dev** (connection and
-  database; `sqlh.useHeader`) and **Point the file's header at pg_local** (rewrites it without
+  the cursor is on the header) offer **Switch the editor to oracle_dev** (connection, database
+  and schema; `sqlh.useHeader`) and **Point the file's header at pg_local** (rewrites it without
   running; `sqlh.stampHeader`). A connection that isn't configured is a warning. These checks
   stay on with `diagnostics: false`.
-- No schema in it: the schema comes from the connection (DSN `search_path`, Oracle login
-  schema). Session state (`SET search_path`, `ALTER SESSION`, temp tables, an open
-  transaction) is not carried over to `dump`: put what the query needs in the file.
+- Session state set by statements (`SET search_path`, `ALTER SESSION`, temp tables, an open
+  transaction) is not carried over to `dump`: put what the query needs in the file, or use
+  `schema=` for the current schema.
 
 `sqlh dump FILE… [-d DIR | -o FILE] [--line L [--col C]] [--conn ALIAS]` runs each file on its
 header's connection (`--conn` overrides; neither → that file fails) on a new connection and
@@ -235,7 +259,8 @@ t = [":insert-output sqlh tables -p --editor -f r##'%{buffer_name}'## -l %{curso
 f = ":format"
 C = [":pipe-to sqlh connect --editor -f r##'%{buffer_name}'##", ":redraw"]
 D = [":pipe-to sqlh db --editor -f r##'%{buffer_name}'##", ":redraw"]
-S = ":sh sqlh status -f r##'%{buffer_name}'##"
+S = [":pipe-to sqlh schema --editor -f r##'%{buffer_name}'##", ":redraw"]
+s = ":sh sqlh status -f r##'%{buffer_name}'##"
 X = ":lsp-workspace-command sqlh.cancel"
 U = ":lsp-workspace-command sqlh.refresh"
 ```
@@ -251,8 +276,8 @@ path survives); with the default `sh`, write `'%{buffer_name}'`. `r`/`e` open th
 | `space i o` | open the latest result in the viewer |
 | `space i t` | insert a table (related first; after `JOIN` the join clause), see [Table picker](#table-picker) |
 | `space i f` | format the file (`:format`) |
-| `space i C` / `D` | switch connection / database (fzf); the buffer's connection header follows |
-| `space i S` | status: connection, running query, results directory (popup, Esc closes) |
+| `space i C` / `D` / `S` | switch connection / database / schema (fzf); the buffer's connection header follows |
+| `space i s` | status: connection, schema, running query, results directory (popup, Esc closes) |
 | `space i X` | cancel the running query (`:lsp-workspace-command sqlh.cancel`) |
 | `space i U` | reload schema metadata (`:lsp-workspace-command sqlh.refresh`; runs that execute DDL reload it themselves) |
 

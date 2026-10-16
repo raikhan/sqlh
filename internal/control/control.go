@@ -31,9 +31,13 @@ const (
 	MethodColumns     = "sqlh/columns"
 	MethodDatabases   = "sqlh/databases"
 	MethodUseDatabase = "sqlh/useDatabase"
-	MethodNotify      = "sqlh/notify"
-	MethodRelations   = "sqlh/relations"
-	MethodContext     = "sqlh/context"
+	// MethodSchemaChoices lists the schemas `sqlh schema` can switch to
+	// ([]SchemaItem, Default = current); MethodUseSchema switches.
+	MethodSchemaChoices = "sqlh/schemaChoices"
+	MethodUseSchema     = "sqlh/useSchema"
+	MethodNotify        = "sqlh/notify"
+	MethodRelations     = "sqlh/relations"
+	MethodContext       = "sqlh/context"
 )
 
 // SchemaItem is a schema; Default marks the connection's current schema.
@@ -145,6 +149,8 @@ type NotifyParams struct {
 	Error   bool   `json:"error,omitempty"`
 }
 
+// DatabaseParams: the database (MethodUseDatabase) or schema (MethodUseSchema)
+// to switch to.
 type DatabaseParams struct {
 	Name string `json:"name"`
 	File string `json:"file,omitempty"` // as ConnectParams.File
@@ -166,8 +172,11 @@ type Status struct {
 	PID        int         `json:"pid"`
 	Connection *Connection `json:"connection,omitempty"`
 	Connected  bool        `json:"connected"`
-	Job        string      `json:"job,omitempty"` // running job, if any
-	ResultsDir string      `json:"resultsDir"`
+	// Database and Schema: the connection's current ones ("" if unknown).
+	Database   string `json:"database,omitempty"`
+	Schema     string `json:"schema,omitempty"`
+	Job        string `json:"job,omitempty"` // running job, if any
+	ResultsDir string `json:"resultsDir"`
 	// Viewer: results.viewer, the command that opens result files.
 	Viewer []string `json:"viewer,omitempty"`
 }

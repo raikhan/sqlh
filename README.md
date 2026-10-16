@@ -130,14 +130,22 @@ relationships and inserts the join chain. See [doc/cli.md](doc/cli.md#relationsh
 
 #### Query files
 
-A `-- sqlh: conn=ALIAS [db=NAME]` header at the top of a file records the connection it last
-ran on in the editor (the server keeps it up to date in the buffer as you run statements and
-switch connections). `sqlh dump report.sql [-d DIR]` runs the file there from the terminal and
+A `-- sqlh: conn=ALIAS [db=NAME] [schema=NAME]` header at the top of a file records the
+connection it last ran on in the editor (the server keeps it up to date in the buffer as you
+run statements and switch connections, databases or schemas). `sqlh dump report.sql [-d DIR]` runs the file there from the terminal and
 writes `report.csv`, e.g. from a scheduled job; Helix `space i d` dumps the statement at the
 cursor, copying a recent complete result of the same query instead of running it again. A
 header naming another connection than the editor's is flagged, with code actions to switch the
 editor to it or to point the header at the editor's connection. See
 [doc/cli.md](doc/cli.md#query-files-connection-header-and-dump).
+
+#### Current schema
+
+A connection works in one schema at a time: the first of its `schemas:` (or `schema:`), set on
+every session (Oracle `ALTER SESSION SET CURRENT_SCHEMA`, PostgreSQL `SET search_path`), so a
+read-only login works in the owner's schema with unqualified names, and completion,
+relationships and go to definition follow. `sqlh schema` / Helix `space i S` switch it. See
+[doc/cli.md](doc/cli.md#current-schema).
 
 #### CodeAction
 
@@ -360,7 +368,7 @@ The first setting in `connections` is the default connection.
 | alias          | Connection alias name. Optional.            |
 | driver         | `mysql`, `postgresql`, `sqlite3`, `mssql`, `h2`. Required. |
 | dataSourceName | Data source name.                           |
-| proto          | `tcp`, `udp`, `unix`.                       |
+| proto          | `tcp`, `udp`, `unix`. Default `tcp` when `host`/`port` is set. |
 | user           | User name                                   |
 | passwd         | Password                                    |
 | host           | Host                                        |
@@ -369,6 +377,8 @@ The first setting in `connections` is the default connection.
 | dbName         | Database name                               |
 | params         | Option params. Optional.                    |
 | sshConfig      | ssh config. Optional.                       |
+| schemas        | Metadata allow-list, and the schemas `sqlh schema` switches between (Oracle, PostgreSQL). The first is the current schema on connect. Optional. |
+| schema         | Current schema to start on instead of the first of `schemas`. Optional. |
 
 #### sshConfig
 

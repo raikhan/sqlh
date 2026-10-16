@@ -84,7 +84,7 @@ func TestGetConfig(t *testing.T) {
 			},
 			want:    nil,
 			wantErr: true,
-			errMsg:  "failed validation, required: connections[].driver",
+			errMsg:  "failed validation, connection sqls_mysql: required: connections[].driver",
 		},
 		{
 			name: "no connection",
@@ -93,7 +93,7 @@ func TestGetConfig(t *testing.T) {
 			},
 			want:    nil,
 			wantErr: true,
-			errMsg:  "failed validation, required: connections[].dataSourceName or connections[].proto",
+			errMsg:  "failed validation, connection sqls_mysql: required: connections[].dataSourceName or connections[].proto",
 		},
 		{
 			name: "no user",
@@ -102,7 +102,7 @@ func TestGetConfig(t *testing.T) {
 			},
 			want:    nil,
 			wantErr: true,
-			errMsg:  "failed validation, required: connections[].user",
+			errMsg:  "failed validation, connection sqls_mysql: required: connections[].user",
 		},
 		{
 			name: "invalid proto",
@@ -111,7 +111,7 @@ func TestGetConfig(t *testing.T) {
 			},
 			want:    nil,
 			wantErr: true,
-			errMsg:  "failed validation, invalid: connections[].proto",
+			errMsg:  "failed validation, connection sqls_mysql: invalid: connections[].proto",
 		},
 		{
 			name: "no path",
@@ -120,7 +120,7 @@ func TestGetConfig(t *testing.T) {
 			},
 			want:    nil,
 			wantErr: true,
-			errMsg:  "failed validation, required: connections[].path",
+			errMsg:  "failed validation, connection sqls_mysql: required: connections[].path",
 		},
 		{
 			name: "no dsn",
@@ -146,7 +146,7 @@ func TestGetConfig(t *testing.T) {
 			},
 			want:    nil,
 			wantErr: true,
-			errMsg:  "failed validation, required: connections[]sshConfig.host",
+			errMsg:  "failed validation, connection mysql_with_bastion: required: connections[]sshConfig.host",
 		},
 		{
 			name: "no ssh user",
@@ -155,7 +155,7 @@ func TestGetConfig(t *testing.T) {
 			},
 			want:    nil,
 			wantErr: true,
-			errMsg:  "failed validation, required: connections[].sshConfig.user",
+			errMsg:  "failed validation, connection mysql_with_bastion: required: connections[].sshConfig.user",
 		},
 		{
 			name: "no ssh private key",
@@ -164,7 +164,7 @@ func TestGetConfig(t *testing.T) {
 			},
 			want:    nil,
 			wantErr: true,
-			errMsg:  "failed validation, required: connections[].sshConfig.privateKey",
+			errMsg:  "failed validation, connection mysql_with_bastion: required: connections[].sshConfig.privateKey",
 		},
 		{
 			name: "oracle config",
@@ -181,7 +181,7 @@ func TestGetConfig(t *testing.T) {
 				},
 			},
 			wantErr: true,
-			errMsg:  "failed validation, required: connections[].sshConfig.privateKey",
+			errMsg:  "failed validation, connection mysql_with_bastion: required: connections[].sshConfig.privateKey",
 		},
 	}
 	for _, tt := range tests {

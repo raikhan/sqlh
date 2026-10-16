@@ -34,6 +34,12 @@ type Server struct {
 	curDBCfg           *database.DBConfig
 	curDBName          string
 	curConnectionIndex int
+	// curSchema: the current schema when switched away from the connection's
+	// default ("" = the default, see DBConfig.CurrentSchema).
+	curSchema string
+	// defaultSchema: the current schema of the connection without a switch
+	// (recorded when connecting without one).
+	defaultSchema string
 
 	// The initOptionDBConfig is an optional param
 	// sent by the client as part of the LSP InitializationOptions
@@ -236,6 +242,7 @@ func (s *Server) handleInitialize(ctx context.Context, conn *jsonrpc2.Conn, req 
 					CommandShowSchemas,
 					CommandShowConnections,
 					CommandSwitchDatabase,
+					CommandSwitchSchema,
 					CommandSwitchConnection,
 					CommandShowTables,
 				},
@@ -457,6 +464,9 @@ func (s *Server) reconnectionDB(ctx context.Context) error {
 	s.jsonKeys.Clear()
 	s.closeSession()
 	s.dbConn, s.curDBCfg = dbConn, cfg
+	if s.curSchema == "" {
+		s.defaultSchema = s.currentSchema()
+	}
 	if prevConn != nil {
 		if err := prevConn.Close(); err != nil {
 			log.Println("close previous connection:", err)
@@ -468,21 +478,19 @@ func (s *Server) reconnectionDB(ctx context.Context) error {
 // newDBConnection opens a connection for the current connection index / db
 // name without touching server state.
 func (s *Server) newDBConnection(ctx context.Context) (*database.DBConnection, *database.DBConfig, error) {
-	// Get the most preferred DB connection settings
-	connCfg := s.topConnection()
-	if connCfg == nil {
-		return nil, nil, ErrNoConnection
+	connCfg, err := s.configuredConnection()
+	if err != nil {
+		return nil, nil, err
 	}
-	if s.curConnectionIndex != 0 {
-		connCfg = s.getConnection(s.curConnectionIndex)
-	}
-	if connCfg == nil {
-		return nil, nil, fmt.Errorf("not found database connection config, index %d", s.curConnectionIndex+1)
-	}
-	if s.curDBName != "" {
+	if s.curDBName != "" || s.curSchema != "" {
 		// copy: don't mutate the loaded configuration
 		c := *connCfg
-		c.DBName = s.curDBName
+		if s.curDBName != "" {
+			c.DBName = s.curDBName
+		}
+		if s.curSchema != "" {
+			c.Schema = s.curSchema
+		}
 		connCfg = &c
 	}
 
@@ -491,6 +499,22 @@ func (s *Server) newDBConnection(ctx context.Context) (*database.DBConnection, *
 		return nil, nil, err
 	}
 	return conn, connCfg, nil
+}
+
+// configuredConnection is the current connection as configured (without
+// the database and schema switches).
+func (s *Server) configuredConnection() (*database.DBConfig, error) {
+	connCfg := s.topConnection()
+	if connCfg == nil {
+		return nil, ErrNoConnection
+	}
+	if s.curConnectionIndex != 0 {
+		connCfg = s.getConnection(s.curConnectionIndex)
+	}
+	if connCfg == nil {
+		return nil, fmt.Errorf("not found database connection config, index %d", s.curConnectionIndex+1)
+	}
+	return connCfg, nil
 }
 
 func newRepository(cfg *database.DBConfig, conn *database.DBConnection) (database.DBRepository, error) {

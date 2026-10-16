@@ -287,6 +287,13 @@ func catalogCommands() []*cli.Command {
 			Flags:     []cli.Flag{&cli.StringFlag{Name: "dir", Aliases: []string{"C"}, Usage: "find the workspace from `DIR`"}, headerFileFlag, editorFlag("")},
 			Action:    editorAction(dbCmd),
 		},
+		{
+			Name:      "schema",
+			Usage:     "switch the editor's current schema among the connection's `schemas:` (no NAME: pick)",
+			ArgsUsage: "[NAME]",
+			Flags:     []cli.Flag{&cli.StringFlag{Name: "dir", Aliases: []string{"C"}, Usage: "find the workspace from `DIR`"}, headerFileFlag, editorFlag("")},
+			Action:    editorAction(schemaCmd),
+		},
 	}
 }
 
@@ -509,6 +516,47 @@ func dbCmd(c *cli.Context) error {
 	}
 	var msg string
 	if err := call(cl, control.MethodUseDatabase, control.DatabaseParams{Name: name, File: file}, &msg); err != nil {
+		return err
+	}
+	fmt.Fprintln(os.Stderr, msg)
+	return nil
+}
+
+func schemaCmd(c *cli.Context) error {
+	cl, _, err := server(c)
+	if err != nil {
+		if errors.Is(err, control.ErrNoServer) {
+			return errors.New("no running sqlh server for this workspace (open a .sql file in the editor first; standalone runs take --schema)")
+		}
+		return err
+	}
+	defer cl.Close()
+	name := c.Args().First()
+	if name == "" {
+		var choices []control.SchemaItem
+		if err := call(cl, control.MethodSchemaChoices, nil, &choices); err != nil {
+			return err
+		}
+		lines := make([]string, len(choices))
+		for i, sc := range choices {
+			mark := " "
+			if sc.Default {
+				mark = "*"
+			}
+			lines[i] = sc.Name + "\t" + mark + " " + sc.Name
+		}
+		vals, err := pick(lines, pickOpts{prompt: "schema"})
+		if err != nil || len(vals) == 0 {
+			return err
+		}
+		name = vals[0]
+	}
+	file, err := optionalAbs(c.String("file"))
+	if err != nil {
+		return err
+	}
+	var msg string
+	if err := call(cl, control.MethodUseSchema, control.DatabaseParams{Name: name, File: file}, &msg); err != nil {
 		return err
 	}
 	fmt.Fprintln(os.Stderr, msg)

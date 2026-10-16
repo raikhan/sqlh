@@ -139,6 +139,7 @@ func TestInitialized(t *testing.T) {
 					CommandShowSchemas,
 					CommandShowConnections,
 					CommandSwitchDatabase,
+					CommandSwitchSchema,
 					CommandSwitchConnection,
 					CommandShowTables,
 				},

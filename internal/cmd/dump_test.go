@@ -9,6 +9,9 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/urfave/cli/v2"
+
+	"github.com/raikhan/sqlh/internal/config"
+	"github.com/raikhan/sqlh/internal/database"
 )
 
 // dumpEnv: a SQLite database, a config with connections "lite" and "lite2"
@@ -187,5 +190,40 @@ func TestDumpSeveralFiles(t *testing.T) {
 		if err := e.run(args...); err == nil {
 			t.Errorf("%v: want a usage error", args)
 		}
+	}
+}
+
+func TestDumpConnectionSchema(t *testing.T) {
+	cfg := &config.Config{Connections: []*database.DBConfig{
+		{Alias: "ora", Driver: "oracle", Schemas: []string{"CADE", "CADE500"}},
+		{Alias: "lite", Driver: "sqlite3"},
+	}}
+	dir := t.TempDir()
+	write := func(name, text string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(text), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	f := write("a.sql", "-- sqlh: conn=ora schema=cade500\nselect 1 from dual;\n")
+	if c, err := dumpConnection(cfg, f, "", ""); err != nil || c.Schema != "CADE500" || c.CurrentSchema() != "CADE500" {
+		t.Errorf("header schema: %+v %v", c, err)
+	}
+	if c, err := dumpConnection(cfg, f, "", "cade"); err != nil || c.CurrentSchema() != "CADE" {
+		t.Errorf("--schema: %+v %v", c, err)
+	}
+	if cfg.Connections[0].Schema != "" {
+		t.Error("the loaded configuration was mutated")
+	}
+	if _, err := dumpConnection(cfg, f, "", "other"); err == nil || !strings.Contains(err.Error(), "not in connection ora's schemas") {
+		t.Errorf("schema outside the list: %v", err)
+	}
+	// another connection than the header's: the header's schema doesn't apply
+	if c, err := dumpConnection(cfg, f, "lite", ""); err != nil || c.Schema != "" {
+		t.Errorf("--conn: %+v %v", c, err)
+	}
+	if _, err := dumpConnection(cfg, write("b.sql", "-- sqlh: conn=lite schema=main\nselect 1;\n"), "", ""); err == nil {
+		t.Error("schema on SQLite accepted")
 	}
 }

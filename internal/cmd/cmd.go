@@ -39,6 +39,7 @@ func Commands() []*cli.Command {
 		&cli.StringFlag{Name: "out", Aliases: []string{"o"}, Usage: "write the CSV to `PATH` instead of the results directory"},
 		&cli.BoolFlag{Name: "table", Aliases: []string{"t"}, Usage: "print a text table instead of writing CSV"},
 		&cli.StringFlag{Name: "conn", Usage: "run standalone on connection `ALIAS` (does not change the editor's connection)"},
+		&cli.StringFlag{Name: "schema", Usage: "run standalone with current schema `NAME`, one of the connection's schemas: (the editor's: sqlh schema)"},
 		&cli.BoolFlag{Name: "standalone", Usage: "do not use a running server"},
 		&cli.BoolFlag{Name: "open", Usage: "open the CSV in results.viewer when done"},
 		&cli.BoolFlag{Name: "bg", Usage: "return at once; the query continues in a detached process (reports in the editor)"},
@@ -280,7 +281,7 @@ func runCmd(c *cli.Context, all bool) error {
 		return detach(c, drop, extra...)
 	}
 	var res *control.RunResult
-	if c.Bool("standalone") || c.String("conn") != "" {
+	if c.Bool("standalone") || c.String("conn") != "" || c.String("schema") != "" {
 		res, err = runStandalone(c, p)
 	} else {
 		cl, _, serr := server(c)
@@ -465,8 +466,12 @@ func statusCmd(c *cli.Context) error {
 	if job == "" {
 		job = "(idle)"
 	}
-	fmt.Printf("workspace:  %s\nconnection: %s\nquery:      %s\nresults:    %s\nserver:     pid %d, %s\n",
-		st.Workspace, conn, job, st.ResultsDir, st.PID, st.Socket)
+	schema := st.Schema
+	if schema == "" {
+		schema = "-"
+	}
+	fmt.Printf("workspace:  %s\nconnection: %s\nschema:     %s\nquery:      %s\nresults:    %s\nserver:     pid %d, %s\n",
+		st.Workspace, conn, schema, job, st.ResultsDir, st.PID, st.Socket)
 	return nil
 }
 
