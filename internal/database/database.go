@@ -407,6 +407,37 @@ func (dc *DBCache) TableDoc(tableName string, cols []*ColumnDesc) string {
 	return buf.String()
 }
 
+// maxDocOrigins caps the base columns listed for a view column.
+const maxDocOrigins = 5
+
+// ColumnDoc documents a column; a view's column says where its values come
+// from (several base columns for a UNION).
+func (dc *DBCache) ColumnDoc(tableName string, col *ColumnDesc) string {
+	doc := ColumnDoc(tableName, col)
+	if dc == nil {
+		return doc
+	}
+	o := dc.Relations.ColumnOrigins(tableName, col.Name)
+	if len(o) == 0 {
+		return doc
+	}
+	return doc + "\nfrom " + OriginList(o) + "\n"
+}
+
+// OriginList renders base columns ("table.col") as inline code, capped:
+// `a.x`, `b.x`, … (9).
+func OriginList(origins []string) string {
+	parts := make([]string, 0, maxDocOrigins+1)
+	for i, o := range origins {
+		if i == maxDocOrigins {
+			parts = append(parts, fmt.Sprintf("… (%d)", len(origins)))
+			break
+		}
+		parts = append(parts, "`"+o+"`")
+	}
+	return strings.Join(parts, ", ")
+}
+
 func joinCapped(names []string, n int) string {
 	if len(names) <= n {
 		return strings.Join(names, ", ")

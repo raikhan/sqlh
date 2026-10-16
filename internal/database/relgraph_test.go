@@ -208,3 +208,114 @@ func TestStemsAndTypes(t *testing.T) {
 		t.Error("type families")
 	}
 }
+
+// unionGraph: customer ← orders, customer ← customer_detail, a composite key
+// part(a, b) ← stock(pa, pb) and ← request(ra, rb); views from cases.
+func unionGraph(tviews ...tview) *RelGraph {
+	cols := map[string][]*ColumnDesc{
+		"customer":        {tcol("customer", "id", "integer", "NO", "YES"), tcol("customer", "name", "text", "YES", "NO")},
+		"orders":          {tcol("orders", "id", "integer", "NO", "YES"), tcol("orders", "customer_id", "integer", "NO", "NO"), tcol("orders", "total", "numeric", "YES", "NO")},
+		"customer_detail": {tcol("customer_detail", "customer_id", "integer", "NO", "YES"), tcol("customer_detail", "note", "text", "YES", "NO")},
+		"part":            {tcol("part", "a", "integer", "NO", "YES"), tcol("part", "b", "integer", "NO", "YES")},
+		"stock":           {tcol("stock", "pa", "integer", "NO", "NO"), tcol("stock", "pb", "integer", "NO", "NO")},
+		"request":         {tcol("request", "ra", "integer", "NO", "NO"), tcol("request", "rb", "integer", "NO", "NO")},
+		"region":          {tcol("region", "id", "integer", "NO", "YES")},
+		"shop":            {tcol("shop", "id", "integer", "NO", "YES"), tcol("shop", "customer_id", "integer", "YES", "NO")}, // guess only
+	}
+	two := func(from, f1, f2, to, t1, t2 string) *ForeignKey {
+		return &ForeignKey{
+			{{Schema: "s", Table: from, Name: f1}, {Schema: "s", Table: to, Name: t1}},
+			{{Schema: "s", Table: from, Name: f2}, {Schema: "s", Table: to, Name: t2}},
+		}
+	}
+	var views []*ViewDef
+	for _, v := range tviews {
+		var vc []*ColumnDesc
+		for _, n := range strings.Split(v.cols, ",") {
+			vc = append(vc, tcol(v.name, n, "integer", "YES", "NO"))
+		}
+		cols[v.name] = vc
+		views = append(views, &ViewDef{Name: v.name, Query: v.query})
+	}
+	var tables []string
+	for t := range cols {
+		tables = append(tables, t)
+	}
+	sort.Strings(tables)
+	return BuildRelGraph(RelGraphInput{
+		Schema:  "s",
+		Tables:  tables,
+		Columns: func(t string) []*ColumnDesc { return cols[t] },
+		ForeignKeys: []*ForeignKey{
+			fkey("orders", "customer_id", "customer", "id"),
+			fkey("customer_detail", "customer_id", "customer", "id"),
+			two("stock", "pa", "pb", "part", "a", "b"),
+			two("request", "ra", "rb", "part", "a", "b"),
+		},
+		Views: views,
+	})
+}
+
+// tview: a view of the test graph, its columns comma-separated.
+type tview struct{ name, cols, query string }
+
+func uview(name, cols, query string) tview { return tview{name, cols, query} }
+
+func TestRelGraphUnionViews(t *testing.T) {
+	g := unionGraph(
+		// the same column in every branch: full lineage
+		uview("v_same", "id,customer_id", "select id, customer_id from orders where total > 10 union all select id, customer_id from orders where total <= 10"),
+		// different columns referencing the same table
+		uview("v_cust", "cust", "select o.customer_id as cust from orders o union all select d.customer_id from customer_detail d"),
+		// different targets: nothing
+		uview("v_mixed", "x", "select customer_id from orders union all select id from region"),
+		// composite key, each branch from one table reference
+		uview("v_part", "pa,pb", "select pa, pb from stock union select ra, rb from request"),
+		// composite key split over two references in a branch: nothing
+		uview("v_split", "pa,rb", "select s.pa, r.rb from stock s join request r on true union select ra, rb from request"),
+		// a view on a UNION view
+		uview("v_on", "cust", "select cust from v_cust"),
+		// a UNION in a derived table
+		uview("v_derived", "cust", "select u.c as cust from (select customer_id as c from orders union all select customer_id from customer_detail) u"),
+		// a branch with a guess only: maybe
+		uview("v_guess", "customer_id", "select customer_id from orders union all select customer_id from shop"),
+	)
+	check(t, g, "v_same",
+		"→ customer view customer_id=id [via orders]",
+		"→ orders view id=id [via orders]",
+		"◇ orders uses")
+	check(t, g, "v_cust",
+		"→ customer view cust=id [via 2 tables]",
+		"◇ customer_detail uses", "◇ orders uses", "◇ v_on uses")
+	check(t, g, "v_mixed", "◇ orders uses", "◇ region uses")
+	check(t, g, "v_part", "→ part view pa=a,pb=b [via 2 tables]", "◇ request uses", "◇ stock uses")
+	check(t, g, "v_split", "◇ request uses", "◇ stock uses")
+	check(t, g, "v_on", "→ customer view cust=id [via 2 tables]", "◇ v_cust uses")
+	check(t, g, "v_derived", "→ customer view cust=id [via 2 tables]", "◇ customer_detail uses", "◇ orders uses")
+	check(t, g, "v_guess", "→ customer view customer_id=id [via 2 tables, maybe, nullable]", "◇ orders uses", "◇ shop uses")
+
+	if got := strings.Join(g.ColumnOrigins("v_cust", "CUST"), ","); got != "orders.customer_id,customer_detail.customer_id" {
+		t.Errorf("origins of v_cust.cust: %s", got)
+	}
+	if got := strings.Join(g.ColumnOrigins("v_same", "id"), ","); got != "orders.id" {
+		t.Errorf("origins of v_same.id: %s", got)
+	}
+	// the loose edge is listed for the view only
+	for _, r := range g.Related("customer", true) {
+		if r.Other == "v_cust" {
+			t.Errorf("customer lists %s", r.Other)
+		}
+	}
+}
+
+func TestColumnDocOrigins(t *testing.T) {
+	g := unionGraph(uview("v_cust", "cust", "select o.customer_id as cust from orders o union all select d.customer_id from customer_detail d"))
+	dc := &DBCache{Relations: g}
+	doc := dc.ColumnDoc("v_cust", tcol("v_cust", "cust", "integer", "YES", "NO"))
+	if !strings.Contains(doc, "from `orders.customer_id`, `customer_detail.customer_id`") {
+		t.Errorf("doc:\n%s", doc)
+	}
+	if got := OriginList([]string{"a.x", "b.x", "c.x", "d.x", "e.x", "f.x", "g.x"}); got != "`a.x`, `b.x`, `c.x`, `d.x`, `e.x`, … (7)" {
+		t.Errorf("capped: %s", got)
+	}
+}

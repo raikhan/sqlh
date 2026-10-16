@@ -95,7 +95,7 @@ func refDoc(r ddl.Ref, cache *database.DBCache) string {
 		cols, _ := columnsOf(cache, *r.Table)
 		for _, c := range cols {
 			if strings.EqualFold(c.Name, r.Name.Name) {
-				return database.ColumnDoc(r.Table.Name, c)
+				return cache.ColumnDoc(r.Table.Name, c)
 			}
 		}
 	default:

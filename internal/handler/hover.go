@@ -241,7 +241,7 @@ func hoverContentFromIdent(ctx *hoverContext, identName string, dbCache *databas
 			if ok {
 				hoverContents = append(
 					hoverContents,
-					columnHoverInfo(table.Name, columnName, colDesc),
+					columnHoverInfo(dbCache, table.Name, columnName, colDesc),
 				)
 			}
 		}
@@ -319,7 +319,7 @@ func hoverContentFromChildIdent(ctx *hoverContext, identName string, dbCache *da
 			tableName = realName
 		}
 		if colDesc, ok := dbCache.Column(tableName, identName); ok {
-			return columnHoverInfo(tableName, identName, colDesc)
+			return columnHoverInfo(dbCache, tableName, identName, colDesc)
 		}
 		return nil
 	case parentTypeSubQuery:
@@ -332,10 +332,10 @@ func hoverContentFromChildIdent(ctx *hoverContext, identName string, dbCache *da
 	return nil
 }
 
-func columnHoverInfo(tableName, colName string, colDesc *database.ColumnDesc) *lsp.MarkupContent {
+func columnHoverInfo(dbCache *database.DBCache, tableName, colName string, colDesc *database.ColumnDesc) *lsp.MarkupContent {
 	return &lsp.MarkupContent{
 		Kind:  lsp.Markdown,
-		Value: database.ColumnDoc(tableName, colDesc),
+		Value: dbCache.ColumnDoc(tableName, colDesc),
 	}
 }
 

@@ -773,15 +773,46 @@ func mergeBranches(first []selectItem, others [][]selectItem) []selectItem {
 				}
 			}
 		}
+		origins := branchOrigins(it, others, k, aligned)
 		if !same {
 			it = selectItem{cols: withoutOrigin(it.cols), star: it.star}
 			if it.star {
 				aligned = false
 			}
 		}
+		if origins != nil {
+			cp := *it.cols[0]
+			cp.Origins = origins
+			it = selectItem{cols: []*SubQueryColumn{&cp}}
+		}
 		out[k] = it
 	}
 	return out
+}
+
+// branchOrigins: the origins of column k in every branch (the first, then
+// others), for a single, non-star column whose position is known in all of
+// them; nil when one is unknown.
+func branchOrigins(first selectItem, others [][]selectItem, k int, aligned bool) []*SubQueryColumn {
+	if !aligned || first.star || len(first.cols) != 1 {
+		return nil
+	}
+	all := first.cols[0].origins()
+	if all == nil {
+		return nil
+	}
+	all = append([]*SubQueryColumn(nil), all...)
+	for _, o := range others {
+		if k >= len(o) || o[k].star || len(o[k].cols) != 1 {
+			return nil
+		}
+		og := o[k].cols[0].origins()
+		if og == nil {
+			return nil
+		}
+		all = append(all, og...)
+	}
+	return all
 }
 
 // sameItem: both items take their values from the same table column (or are
@@ -895,7 +926,7 @@ func (s *queryScope) resolveColumn(parent, name string) *SubQueryColumn {
 // originOf: a column taken from a derived table/CTE keeps the origin of the
 // source column (for documentation), under the name it is referenced by.
 func originOf(src *SubQueryColumn, parent, name string) *SubQueryColumn {
-	c := &SubQueryColumn{ParentName: parent, ColumnName: name, ParentTable: src.ParentTable}
+	c := &SubQueryColumn{ParentName: parent, ColumnName: name, ParentTable: src.ParentTable, Origins: src.Origins}
 	if src.ParentTable != nil && src.ColumnName != "" && !strings.EqualFold(src.ColumnName, name) {
 		// referenced under the derived name, defined as another column
 		c.ColumnName = src.ColumnName

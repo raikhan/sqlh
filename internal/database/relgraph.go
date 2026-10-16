@@ -7,7 +7,10 @@ package database
 //   - view lineage (EdgeViaView): a view column that is a plain reference to a
 //     base table column inherits that column's foreign keys, so a view exposing
 //     orders.customer_id joins customer like orders does (views built on views
-//     are followed down to the base tables);
+//     are followed down to the base tables). A column of a UNION takes its
+//     values from one column per branch: the same column everywhere is lineage
+//     as above; different ones still join a table every one of them
+//     references ("via N tables");
 //   - guesses from column names (EdgeInferred, shown as "maybe"): orders.customer_id
 //     → customer.id, only when exactly one table matches and the types agree;
 //   - view dependencies (EdgeUses): the tables and views a view reads; they
@@ -17,6 +20,7 @@ package database
 // default) are included.
 
 import (
+	"fmt"
 	"log"
 	"sort"
 	"strings"
@@ -59,6 +63,9 @@ type Edge struct {
 	Unique bool
 	// Via: EdgeViaView, the base table whose relationship the view exposes.
 	Via string
+	// ViaTables: EdgeViaView through a UNION, the base tables whose
+	// relationships (to the same target) it exposes; Via is set when one.
+	ViaTables []string
 	// Inferred: guessed (EdgeInferred, or a view exposing a guessed one).
 	Inferred bool
 	// ViewOnly: listed only for the view end (EdgeViaView). Otherwise a table
@@ -75,6 +82,15 @@ func (g *RelGraph) viewEnd(e *Edge) string {
 		return e.From
 	}
 	return e.To
+}
+
+// ViaText names the base table(s) a view edge comes from: "orders",
+// "3 tables".
+func (e *Edge) ViaText() string {
+	if len(e.ViaTables) > 1 {
+		return fmt.Sprintf("%d tables", len(e.ViaTables))
+	}
+	return e.Via
 }
 
 // Joinable reports whether the edge has join columns.
@@ -140,6 +156,18 @@ type RelGraph struct {
 
 	joinKeys map[string]map[string][]*ForeignKey
 	fkEdge   map[*ForeignKey]*Edge
+	// origins: UPPER view → UPPER column → the base table columns its values
+	// come from ("table.col"; several for a UNION)
+	origins map[string]map[string][]string
+}
+
+// ColumnOrigins returns the base table columns ("table.col") a view column's
+// values come from; nil when unknown or not a view.
+func (g *RelGraph) ColumnOrigins(view, col string) []string {
+	if g == nil {
+		return nil
+	}
+	return g.origins[strings.ToUpper(view)][strings.ToUpper(col)]
 }
 
 // RelGraphInput is what a graph is built from.
@@ -267,6 +295,7 @@ func BuildRelGraph(in RelGraphInput) *RelGraph {
 		ViewsLoaded: in.Views != nil,
 		joinKeys:    map[string]map[string][]*ForeignKey{},
 		fkEdge:      map[*ForeignKey]*Edge{},
+		origins:     map[string]map[string][]string{},
 	}
 	for _, t := range in.Tables {
 		g.names[strings.ToUpper(t)] = t
@@ -384,7 +413,8 @@ type graphBuilder struct {
 	g    *RelGraph
 	cols func(string) []*ColumnDesc
 	seen map[string]*Edge
-	// compound: views with set operators (UNION, …): no guesses for their columns
+	// compound: views with set operators (UNION, …): no name guesses for
+	// their columns
 	compound map[string]bool
 }
 
@@ -543,15 +573,44 @@ func sameTypeFamily(a, b string) bool {
 
 // ---- views ------------------------------------------------------------------
 
-// baseCol is the base table column a view column comes from. inst tells apart
-// two references to the same table in a view (aliases).
+// baseCol is a base table column a view column comes from. inst tells apart
+// two references to the same table in a view (aliases; for set operations the
+// branch too, "0:O").
 type baseCol struct{ table, col, inst string }
 
 type viewInfo struct {
-	def  *ViewDef
-	out  map[string]*baseCol // UPPER output column → origin (nil: unknown)
-	cols []string            // output column names in order (resolved ones)
+	def *ViewDef
+	// out: UPPER output column → where its values come from, one per branch
+	// adding rows (one without set operators); nil: unknown
+	out  map[string][]*baseCol
+	cols []string // output column names in order (resolved ones)
 	uses []string
+}
+
+// strictOf: the single base column of a set (every branch the same table
+// column), nil when they differ.
+func strictOf(set []*baseCol) *baseCol {
+	if len(set) == 0 {
+		return nil
+	}
+	insts := make([]string, len(set))
+	for i, bc := range set {
+		if !strings.EqualFold(bc.table, set[0].table) || !strings.EqualFold(bc.col, set[0].col) {
+			return nil
+		}
+		insts[i] = bc.inst
+	}
+	if len(set) == 1 {
+		return set[0]
+	}
+	return &baseCol{table: set[0].table, col: set[0].col, inst: strings.Join(insts, "|")}
+}
+
+// looseCol: a view column of a set operation taking its values from
+// different base columns.
+type looseCol struct {
+	name string
+	set  []*baseCol
 }
 
 func (b *graphBuilder) viewEdges(views []*ViewDef) {
@@ -573,24 +632,31 @@ func (b *graphBuilder) viewEdges(views []*ViewDef) {
 	}
 
 	// resolve view columns down to base tables (views on views)
-	var resolve func(view, col string, depth int) *baseCol
-	resolve = func(view, col string, depth int) *baseCol {
+	var resolve func(view, col string, depth int) []*baseCol
+	resolve = func(view, col string, depth int) []*baseCol {
 		vi := infos[strings.ToUpper(view)]
 		if vi == nil || depth > 16 {
 			return nil
 		}
-		bc := vi.out[strings.ToUpper(col)]
-		if bc == nil {
+		set := vi.out[strings.ToUpper(col)]
+		if len(set) == 0 {
 			return nil
 		}
-		if infos[strings.ToUpper(bc.table)] != nil {
+		var out []*baseCol
+		for _, bc := range set {
+			if infos[strings.ToUpper(bc.table)] == nil {
+				out = append(out, bc)
+				continue
+			}
 			inner := resolve(bc.table, bc.col, depth+1)
 			if inner == nil {
 				return nil
 			}
-			return &baseCol{table: inner.table, col: inner.col, inst: bc.inst + "/" + inner.inst}
+			for _, ib := range inner {
+				out = append(out, &baseCol{table: ib.table, col: ib.col, inst: bc.inst + "/" + ib.inst})
+			}
 		}
-		return bc
+		return out
 	}
 
 	// the relationships between base tables, which views inherit
@@ -610,8 +676,17 @@ func (b *graphBuilder) viewEdges(views []*ViewDef) {
 		view, _ := g.Canonical(v.Name)
 		// base table → instance → base column → view column
 		exposed := map[string]map[string]map[string]string{}
+		var loose []looseCol
 		for _, oc := range vi.cols {
-			bc := resolve(v.Name, oc, 0)
+			set := resolve(v.Name, oc, 0)
+			if set == nil {
+				continue
+			}
+			b.recordOrigins(view, oc, set)
+			if len(set) > 1 {
+				loose = append(loose, looseCol{oc, set})
+			}
+			bc := strictOf(set)
 			if bc == nil {
 				continue
 			}
@@ -669,6 +744,134 @@ func (b *graphBuilder) viewEdges(views []*ViewDef) {
 				}
 			}
 		}
+		b.looseEdges(view, loose, byTable)
+	}
+}
+
+// recordOrigins keeps where a view column's values come from (hover).
+func (b *graphBuilder) recordOrigins(view, col string, set []*baseCol) {
+	var names []string
+	seen := map[string]bool{}
+	for _, bc := range set {
+		n := bc.table + "." + bc.col
+		if !seen[strings.ToUpper(n)] {
+			seen[strings.ToUpper(n)] = true
+			names = append(names, n)
+		}
+	}
+	vu := strings.ToUpper(view)
+	if b.g.origins[vu] == nil {
+		b.g.origins[vu] = map[string][]string{}
+	}
+	b.g.origins[vu][strings.ToUpper(col)] = names
+}
+
+// looseEdges: the columns of a set operation that come from different base
+// columns join a table when, in every branch, the base columns reference it
+// (single- or multi-column, the columns of a branch from one table
+// reference). Only outgoing relationships: a table referencing one branch's
+// rows doesn't reference the others'. Columns are compared by branch: those
+// with the same number of origins (normally one UNION).
+func (b *graphBuilder) looseEdges(view string, cols []looseCol, byTable map[string][]*Edge) {
+	byLen := map[int][]looseCol{}
+	var lens []int
+	for _, c := range cols {
+		if byLen[len(c.set)] == nil {
+			lens = append(lens, len(c.set))
+		}
+		byLen[len(c.set)] = append(byLen[len(c.set)], c)
+	}
+	sort.Ints(lens)
+	type cand struct {
+		to                 string
+		pairs              []ColPair
+		inferred, nullable bool
+		from               map[string]string // UPPER → base table
+	}
+	for _, n := range lens {
+		group := byLen[n]
+		var common map[string]*cand
+		for i := 0; i < n; i++ {
+			// branch i: base table → instance → base column → view column
+			exposed := map[string]map[string]map[string]string{}
+			for _, c := range group {
+				bc := c.set[i]
+				tu := strings.ToUpper(bc.table)
+				if exposed[tu] == nil {
+					exposed[tu] = map[string]map[string]string{}
+				}
+				if exposed[tu][bc.inst] == nil {
+					exposed[tu][bc.inst] = map[string]string{}
+				}
+				if _, dup := exposed[tu][bc.inst][strings.ToUpper(bc.col)]; !dup {
+					exposed[tu][bc.inst][strings.ToUpper(bc.col)] = c.name
+				}
+			}
+			cur := map[string]*cand{}
+			for tu, insts := range exposed {
+				for _, m := range insts {
+					for _, e := range byTable[tu] {
+						if !strings.EqualFold(e.From, tu) {
+							continue
+						}
+						pairs, ok := mapCols(e.Cols, m, true)
+						if !ok {
+							continue
+						}
+						k := strings.ToUpper(e.To)
+						for _, p := range pairs {
+							k += "\x00" + strings.ToUpper(p.From) + "=" + strings.ToUpper(p.To)
+						}
+						c := cur[k]
+						if c == nil {
+							c = &cand{to: e.To, pairs: pairs, inferred: true, from: map[string]string{}}
+							cur[k] = c
+						}
+						// declared beats guessed within a branch
+						c.inferred = c.inferred && e.Inferred
+						c.nullable = c.nullable || e.Nullable
+						c.from[strings.ToUpper(e.From)] = e.From
+					}
+				}
+			}
+			if common == nil {
+				common = cur
+			} else {
+				for k, c := range common {
+					o := cur[k]
+					if o == nil {
+						delete(common, k)
+						continue
+					}
+					c.inferred = c.inferred || o.inferred
+					c.nullable = c.nullable || o.nullable
+					for u, t := range o.from {
+						c.from[u] = t
+					}
+				}
+			}
+			if len(common) == 0 {
+				break
+			}
+		}
+		keys := make([]string, 0, len(common))
+		for k := range common {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			c := common[k]
+			e := &Edge{From: view, To: c.to, Kind: EdgeViaView, Cols: c.pairs,
+				Inferred: c.inferred, Nullable: c.nullable, ViewOnly: true}
+			for _, t := range c.from {
+				e.ViaTables = append(e.ViaTables, t)
+			}
+			sort.Strings(e.ViaTables)
+			if len(e.ViaTables) == 1 {
+				e.Via = e.ViaTables[0]
+			}
+			b.add(e)
+		}
 	}
 }
 
@@ -695,10 +898,10 @@ func mapCols(cols []ColPair, exposed map[string]string, fromSide bool) ([]ColPai
 }
 
 // analyseView parses a view's query: its dependencies (when the database gave
-// none) and where each output column comes from. A view with set operators
-// (UNION, …) gets no lineage: its rows may come from other tables.
+// none) and where each output column comes from — with set operators (UNION,
+// …) one base column per branch adding rows.
 func (b *graphBuilder) analyseView(v *ViewDef) (vi *viewInfo) {
-	vi = &viewInfo{def: v, out: map[string]*baseCol{}, uses: v.Uses}
+	vi = &viewInfo{def: v, out: map[string][]*baseCol{}, uses: v.Uses}
 	if strings.TrimSpace(v.Query) == "" {
 		return vi
 	}
@@ -721,14 +924,13 @@ func (b *graphBuilder) analyseView(v *ViewDef) (vi *viewInfo) {
 	}
 	if lin.Compound {
 		b.compound[strings.ToUpper(v.Name)] = true
-		return vi
 	}
 	// the view's own column names (the catalog's spelling)
 	viewCols := map[string]string{}
 	for _, c := range b.cols(v.Name) {
 		viewCols[strings.ToUpper(c.Name)] = c.Name
 	}
-	set := func(name string, bc *baseCol) {
+	set := func(name string, bcs []*baseCol) {
 		u := strings.ToUpper(name)
 		real, ok := viewCols[u]
 		if !ok {
@@ -741,41 +943,59 @@ func (b *graphBuilder) analyseView(v *ViewDef) (vi *viewInfo) {
 			vi.out[u] = nil // the same name twice: ambiguous
 			return
 		}
-		vi.out[u] = bc
-		if bc != nil {
+		vi.out[u] = bcs
+		if bcs != nil {
 			vi.cols = append(vi.cols, real)
 		}
 	}
-	for _, c := range lin.Columns {
-		t := c.ParentTable
-		if t == nil {
-			set(c.DisplayName(), nil)
-			continue
-		}
-		if t.DatabaseSchema != "" && !strings.EqualFold(unquote(t.DatabaseSchema), b.g.schema) {
-			set(c.DisplayName(), nil)
-			continue
+	// base resolves a column of a table of the query to the schema's spelling
+	base := func(t *parseutil.TableInfo) (string, string, bool) {
+		if t == nil || t.DatabaseSchema != "" && !strings.EqualFold(unquote(t.DatabaseSchema), b.g.schema) {
+			return "", "", false
 		}
 		table, ok := b.g.Canonical(t.Name)
 		if !ok {
-			set(c.DisplayName(), nil)
-			continue
+			return "", "", false
 		}
 		inst := strings.ToUpper(t.Alias)
 		if inst == "" {
 			inst = strings.ToUpper(t.Name)
 		}
+		return table, inst, true
+	}
+	for _, c := range lin.Columns {
 		if c.ColumnName == "*" {
+			table, inst, ok := base(c.ParentTable)
+			if !ok {
+				set(c.DisplayName(), nil)
+				continue
+			}
 			for _, tc := range b.cols(table) {
 				if c.NameOnly { // a UNION branch's star: the names, not the values
 					set(tc.Name, nil)
 					continue
 				}
-				set(tc.Name, &baseCol{table: table, col: tc.Name, inst: inst})
+				set(tc.Name, []*baseCol{{table: table, col: tc.Name, inst: inst}})
 			}
 			continue
 		}
-		set(c.DisplayName(), &baseCol{table: table, col: c.ColumnName, inst: inst})
+		origins := c.Origins
+		if origins == nil && c.ParentTable != nil {
+			origins = []*parseutil.SubQueryColumn{c}
+		}
+		var bcs []*baseCol
+		for i, o := range origins {
+			table, inst, ok := base(o.ParentTable)
+			if !ok {
+				bcs = nil
+				break
+			}
+			if c.Origins != nil {
+				inst = fmt.Sprintf("%d:%s", i, inst) // instances of different branches differ
+			}
+			bcs = append(bcs, &baseCol{table: table, col: o.ColumnName, inst: inst})
+		}
+		set(c.DisplayName(), bcs)
 	}
 	// drop names that turned out ambiguous
 	cols := vi.cols[:0]
@@ -886,7 +1106,7 @@ func (r Related) Note() string {
 		}
 		return "view reads this"
 	case EdgeViaView:
-		notes = append(notes, "via "+e.Via)
+		notes = append(notes, "via "+e.ViaText())
 	case EdgeFK, EdgeInferred:
 	}
 	if e.Inferred {

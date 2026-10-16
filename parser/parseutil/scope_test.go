@@ -35,6 +35,13 @@ func renderCols(cols []*SubQueryColumn) string {
 				s += "<-" + c.ParentTable.Name + "." + c.ColumnName
 			}
 		}
+		if c.Origins != nil && c.ParentTable == nil {
+			var os []string
+			for _, o := range c.Origins {
+				os = append(os, o.ParentTable.Name+"."+o.ColumnName)
+			}
+			s += "{" + strings.Join(os, "|") + "}"
+		}
 		parts = append(parts, s)
 	}
 	return strings.Join(parts, ",")
@@ -125,17 +132,17 @@ func TestScope(t *testing.T) {
 		{
 			name:  "derived UNION: origin only where every branch agrees",
 			input: "select | from (select a.id, a.name, 1 as n from a union all select a.id, b.name, 2 from a join b on true) u",
-			rels:  "u(sub)[id<-a.id,name,n]",
+			rels:  "u(sub)[id<-a.id,name{a.name|b.name},n]",
 		},
 		{
 			name:  "derived UNION: matched by position, not by name",
 			input: "select | from (select id, code from a union select code, id from a) u",
-			rels:  "u(sub)[id,code]",
+			rels:  "u(sub)[id{a.id|a.code},code{a.code|a.id}]",
 		},
 		{
 			name:  "derived UNION: an unnamed expression keeps its position",
 			input: "select | from (select a.x as c1, a.y as c2 from a union select upper(z), a.x from a) u",
-			rels:  "u(sub)[c1,c2]",
+			rels:  "u(sub)[c1,c2{a.y|a.x}]",
 		},
 		{
 			name:  "derived UNION: stars of the same table line up",
@@ -155,7 +162,22 @@ func TestScope(t *testing.T) {
 		{
 			name:  "derived INTERSECT: every branch must agree",
 			input: "select | from (select id from a intersect select id from b) u",
+			rels:  "u(sub)[id{a.id|b.id}]",
+		},
+		{
+			name:  "nested UNION: origins flattened",
+			input: "select | from (select bu_id from a union all select x.bu_id from (select bu_id from b union all select bu_id from c) x) u",
+			rels:  "u(sub)[bu_id{a.bu_id|b.bu_id|c.bu_id}]",
+		},
+		{
+			name:  "a branch with an expression: no origins",
+			input: "select | from (select a.id from a union select 1 as id) u",
 			rels:  "u(sub)[id]",
+		},
+		{
+			name:  "EXCEPT: the subtracted branch is no origin",
+			input: "select | from (select id from a union select id from b except select id from c) u",
+			rels:  "u(sub)[id{a.id|b.id}]",
 		},
 		{
 			name:  "parenthesised branches",
@@ -165,7 +187,7 @@ func TestScope(t *testing.T) {
 		{
 			name:  "CTE with UNION",
 			input: "with x as (select id from a union select id from b) select x.| from x",
-			rels:  "x(cte)[id]",
+			rels:  "x(cte)[id{a.id|b.id}]",
 		},
 		{
 			name:  "CTE column list: positions, unnamed expressions included",

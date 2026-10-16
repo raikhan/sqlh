@@ -60,6 +60,25 @@ type SubQueryColumn struct {
 	// other branches don't take the same columns: ParentTable gives the names,
 	// not where the values come from.
 	NameOnly bool
+	// Origins: a column of a set operation, the column each branch adding
+	// rows takes it from (flattened through nested set operations), in branch
+	// order; nil when a branch's is unknown. ParentTable is set as well when
+	// they are all the same table column.
+	Origins []*SubQueryColumn
+}
+
+// origins is where a column's values come from: its Origins, else itself
+// when it is a table column; nil when unknown.
+func (sc *SubQueryColumn) origins() []*SubQueryColumn {
+	switch {
+	case sc == nil:
+		return nil
+	case sc.Origins != nil:
+		return sc.Origins
+	case sc.ParentTable != nil && !sc.NameOnly && sc.ColumnName != "*" && sc.ColumnName != "":
+		return []*SubQueryColumn{sc}
+	}
+	return nil
 }
 
 func (sc *SubQueryColumn) DisplayName() string {

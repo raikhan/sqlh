@@ -14,6 +14,9 @@ type RelationColumn struct {
 	Name        string
 	OriginTable string      // table the column is taken from, "" for expressions
 	Origin      *ColumnDesc // nil when unknown
+	// Origins: a UNION's column taken from different columns, "table.col"
+	// per branch (distinct)
+	Origins []string
 }
 
 // RelationColumns lists the columns of a derived table/CTE, expanding star
@@ -46,6 +49,16 @@ func RelationColumns(info *parseutil.SubQueryInfo, dbCache *DBCache) []*Relation
 				continue
 			}
 			rc := &RelationColumn{Name: sc.DisplayName()}
+			if sc.ParentTable == nil && sc.Origins != nil {
+				seen := map[string]bool{}
+				for _, o := range sc.Origins {
+					n := o.ParentTable.Name + "." + o.ColumnName
+					if !seen[strings.ToUpper(n)] {
+						seen[strings.ToUpper(n)] = true
+						rc.Origins = append(rc.Origins, n)
+					}
+				}
+			}
 			if sc.ParentTable != nil {
 				rc.OriginTable = sc.ParentTable.Name
 				if dbCache != nil {
@@ -104,11 +117,14 @@ func RelationDoc(info *parseutil.SubQueryInfo, dbCache *DBCache) string {
 	rows := make([][]string, 0, len(cols))
 	for _, c := range cols {
 		typ, from := "-", "-"
-		if c.Origin != nil {
+		switch {
+		case c.Origin != nil:
 			typ = c.Origin.Type
 			from = c.OriginTable + "." + c.Origin.Name
-		} else if c.OriginTable != "" {
+		case c.OriginTable != "":
 			from = c.OriginTable
+		case len(c.Origins) > 0:
+			from = strings.Join(c.Origins, " | ")
 		}
 		rows = append(rows, []string{c.Name, typ, from})
 	}
@@ -129,6 +145,8 @@ func RelationColumnDoc(info *parseutil.SubQueryInfo, col *RelationColumn) string
 		fmt.Fprintf(buf, "from `%s`.`%s`\n", col.OriginTable, col.Origin.Name)
 	case col.OriginTable != "":
 		fmt.Fprintf(buf, "from `%s`\n", col.OriginTable)
+	case len(col.Origins) > 0:
+		fmt.Fprintf(buf, "from %s\n", OriginList(col.Origins))
 	default:
 		fmt.Fprintln(buf, "expression")
 	}

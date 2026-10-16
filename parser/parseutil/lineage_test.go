@@ -42,7 +42,7 @@ func TestExtractQueryLineage(t *testing.T) {
 		{
 			name:     "union: compound, tables of every branch",
 			query:    "select id from a union all select id from b",
-			cols:     "id",
+			cols:     "id{a.id|b.id}",
 			tables:   "a, b",
 			compound: true,
 		},
@@ -63,7 +63,7 @@ func TestExtractQueryLineage(t *testing.T) {
 		{
 			name:   "UNION in a derived table",
 			query:  "select u.id from (select id from a union all select id from b) u",
-			cols:   "id",
+			cols:   "id{a.id|b.id}",
 			tables: "a, b",
 		},
 		{

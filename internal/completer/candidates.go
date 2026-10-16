@@ -332,7 +332,7 @@ func describeJoinEdge(item *lsp.CompletionItem, e *database.Edge) {
 		item.Detail = "Join generator: maybe (guessed from column names)"
 		item.SortText = "00~~" // after the snippets of foreign keys ("00")
 	case e.Kind == database.EdgeViaView:
-		item.Detail = "Join generator: view column from " + e.Via
+		item.Detail = "Join generator: view column from " + e.ViaText()
 		item.SortText = "00~"
 	}
 }
