@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -45,7 +47,11 @@ func tuiCmd(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	be := &tuiBackend{cfg: cfg}
+	defer logAway(c)()
+	be := &tuiBackend{cfg: cfg, cfgPath: c.String("config")}
+	if be.cfgPath == "" {
+		be.cfgPath = config.YamlConfigPath
+	}
 	be.panelBackend = &panelBackend{ws: ws, events: make(chan control.Event, 64)}
 	if hd, err := herdr.FromEnv(); err == nil {
 		be.hd = hd
@@ -63,22 +69,38 @@ func tuiCmd(c *cli.Context) error {
 	be.insertKeys = st.Panel.InsertKeys
 	go be.watch()
 	p := tui.NewPanel(be, be.events, tui.Options{
-		Icons: st.Panel.Icons, BackToEditorKey: st.Panel.BackToEditor, Workspace: ws, Standalone: true,
+		Icons: st.Panel.Icons, Keys: st.Panel.Keys, Workspace: ws, Standalone: true,
 	})
 	_, err = tea.NewProgram(p, tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
 	return err
 }
 
-// tuiBackend is the panel's backend plus query files, an editor opened on
-// demand and a headless server.
+// logAway sends the log to a file (--log, else {cache}/sqlh/tui.log) while
+// a Bubble Tea program owns the terminal: a line on stderr would be drawn
+// over the screen. It returns the cleanup.
+func logAway(c *cli.Context) func() {
+	path := c.String("log")
+	if path == "" {
+		path = filepath.Join(control.Dir(), "tui.log")
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		log.SetOutput(io.Discard)
+		return func() {}
+	}
+	log.SetOutput(f)
+	return func() { log.SetOutput(os.Stderr); f.Close() }
+}
+
+// tuiBackend is the panel's backend plus an editor opened on demand (and
+// detached when it exits) and a headless server.
 type tuiBackend struct {
 	*panelBackend
-	cfg      *config.Config
-	settings control.PanelSettings
+	cfg     *config.Config
+	cfgPath string // the config file (--config, else the default)
 
 	hmu      sync.Mutex
 	headless *handler.Server
-	file     string // the file last opened in the editor (under hmu)
 }
 
 func (b *tuiBackend) startHeadless() error {
@@ -90,7 +112,12 @@ func (b *tuiBackend) startHeadless() error {
 	if b.headless != nil {
 		_ = b.headless.Stop()
 	}
-	s, err := handler.RunHeadless(b.cfg, b.ws)
+	// the config as the file has it now (the app may have edited it)
+	cfg := b.cfg
+	if fresh, err := config.GetConfig(b.cfgPath); err == nil {
+		cfg = fresh
+	}
+	s, err := handler.RunHeadless(cfg, b.cfgPath, b.ws)
 	if err != nil {
 		return err
 	}
@@ -117,37 +144,16 @@ func (b *tuiBackend) EditorAlive() bool {
 	return true
 }
 
-func (b *tuiBackend) setFile(f string) {
-	b.hmu.Lock()
-	b.file = f
-	b.hmu.Unlock()
+// Act: without an editor the panel copies instead (it doesn't get here).
+func (b *tuiBackend) Act(a control.PanelAction) error {
+	if pane, _ := b.editor(); pane == "" {
+		return errors.New("no editor: open a query (4) or create one (n)")
+	}
+	return b.panelBackend.Act(a)
 }
 
-func (b *tuiBackend) Editor() string {
-	pane, _ := b.editor()
-	if pane == "" {
-		return ""
-	}
-	b.hmu.Lock()
-	defer b.hmu.Unlock()
-	if b.file != "" {
-		return shortName(b.file)
-	}
-	return pane
-}
-
-func shortName(p string) string { return filepath.Base(p) }
-
-func (b *tuiBackend) queriesDir() string {
-	if b.settings.QueriesDir != "" {
-		return b.settings.QueriesDir
-	}
-	return b.cfg.TUI.QueriesDirIn(b.ws)
-}
-
-// QueryFiles lists the query folder's .sql files, newest first.
-func (b *tuiBackend) QueryFiles() ([]string, error) {
-	dir := b.queriesDir()
+// queryFiles lists a folder's .sql files, newest first.
+func queryFiles(dir string) ([]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -195,19 +201,15 @@ func nextQueryNumber(dir string) int {
 	return n + 1
 }
 
-// NewQuery creates the next query_<N>.sql: the connection header, then body.
-func (b *tuiBackend) NewQuery(body string) (string, error) {
-	dir := b.queriesDir()
+// newQueryFile creates the next query_<N>.sql of dir: the connection
+// header, then body.
+func newQueryFile(dir, alias, body string) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	st, err := serverStatus(b.client())
-	if err != nil {
-		return "", err
-	}
 	head := ""
-	if st.Connection != nil && st.Connection.Alias != "" {
-		head = "-- sqlh: conn=" + st.Connection.Alias + "\n\n"
+	if alias != "" {
+		head = "-- sqlh: conn=" + alias + "\n\n"
 	}
 	for tries := 0; tries < 10; tries++ {
 		path := filepath.Join(dir, fmt.Sprintf("query_%d.sql", nextQueryNumber(dir)))
@@ -234,18 +236,7 @@ func (b *tuiBackend) OpenFile(path string) error {
 		return errors.New("opening files needs Herdr: open " + path + " in your editor")
 	}
 	if pane, _ := b.editor(); pane != "" && b.editorRuns() {
-		cmd := "open " + helixQuote(path)
-		if err := b.hd.SendKeys(pane, "esc", ":"); err != nil {
-			return err
-		}
-		if err := b.hd.SendText(pane, cmd); err != nil {
-			return err
-		}
-		if err := b.hd.SendKeys(pane, "enter"); err != nil {
-			return err
-		}
-		b.setFile(path)
-		return b.hd.Focus(pane)
+		return b.panelBackend.OpenFile(path)
 	}
 	self := herdr.CurrentPane()
 	if self == "" {
@@ -255,7 +246,7 @@ func (b *tuiBackend) OpenFile(path string) error {
 	if len(b.settings.Editor) == 0 {
 		argv = append(b.cfg.TUI.EditorOrDefault(), path)
 	}
-	pane, err := splitEditor(b.hd, self, b.settings.Placement, b.ws, argv)
+	pane, err := splitEditor(b.hd, self, b.settings.Placement, b.ws, argv, self)
 	if err != nil {
 		return err
 	}
@@ -276,7 +267,7 @@ func (b *tuiBackend) OpenFile(path string) error {
 
 // splitEditor opens an editor pane next to the app, on the side opposite
 // the panel's placement (half of the app's pane).
-func splitEditor(hd *herdr.Client, self, placement, cwd string, argv []string) (string, error) {
+func splitEditor(hd *herdr.Client, self, placement, cwd string, argv []string, origin string) (string, error) {
 	dir, swap := "right", true // the panel on the right: the editor left of it
 	switch placement {
 	case "left":
@@ -291,7 +282,8 @@ func splitEditor(hd *herdr.Client, self, placement, cwd string, argv []string) (
 		return "", err
 	}
 	pane, err := hd.Split(herdr.SplitOptions{Target: self, Direction: dir, Ratio: 0.5, Cwd: cwd, Focus: true,
-		Env: map[string]string{"HELIX_HELPER_ARGV": string(argvJSON)}})
+		// the startup hook needs both (HELIX_ORIGIN_PANE_ID: the pane it came from)
+		Env: map[string]string{"HELIX_HELPER_ARGV": string(argvJSON), "HELIX_ORIGIN_PANE_ID": origin}})
 	if err != nil {
 		return "", err
 	}
@@ -318,4 +310,4 @@ func waitProcess(hd *herdr.Client, pane, name string, d time.Duration) bool {
 // helixQuote quotes a path for Helix's command line (single quotes doubled).
 func helixQuote(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
 
-var _ tui.Workspace = (*tuiBackend)(nil)
+var _ tui.Backend = (*tuiBackend)(nil)

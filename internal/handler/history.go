@@ -24,6 +24,16 @@ func (s *Server) controlHistory(p control.HistoryParams) (*control.HistoryResult
 	if limit <= 0 {
 		limit = 50
 	}
+	if p.Lineage != "" {
+		entries, err := history.Find(s.workspace, history.Query{Lineage: p.Lineage})
+		if err != nil {
+			return nil, err
+		}
+		for _, v := range history.Versions(entries) {
+			res.Versions = append(res.Versions, v...)
+		}
+		return res, nil
+	}
 	if p.File != "" && p.Line > 0 {
 		if st, _, err := s.statementAt(p.File, p.Line, p.Col); err == nil {
 			res.Statement = strings.TrimSpace(st.SQL)

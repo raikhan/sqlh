@@ -255,7 +255,7 @@ func TestHeadlessGivesWay(t *testing.T) {
 	c.Close()
 	cfg := &config.Config{Connections: []*database.DBConfig{{Alias: "lite", Driver: "sqlite3", DataSourceName: "file:" + db}}}
 
-	h, err := RunHeadless(cfg, ws)
+	h, err := RunHeadless(cfg, "", ws)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -282,7 +282,7 @@ func TestHeadlessGivesWay(t *testing.T) {
 		t.Errorf("servers %+v", s)
 	}
 	// a second headless server doesn't take over
-	if h2, err := RunHeadless(cfg, ws); err == nil {
+	if h2, err := RunHeadless(cfg, "", ws); err == nil {
 		h2.Stop()
 		t.Error("second headless server started")
 	}

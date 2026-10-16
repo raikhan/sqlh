@@ -20,18 +20,17 @@ runs standalone, on the connection in the file's header (see [Query files](#quer
 | `sqlh open [CSV…]` | open the newest result CSV (or the given ones) in `results.viewer`, see [Viewer](#viewer) |
 | `sqlh tables [-s SCHEMA] [--all]` | tables/views as you'd type them (default schema unqualified, others `schema.table`, quoted when needed); `-p` picks one (preview: `describe`); with `--file F --line L --col C` the tables related to the statement's come first and after `JOIN` it inserts the join clause, see [Table picker](#table-picker) |
 | `sqlh describe TABLE` | columns (foreign keys marked), relationships, a view's definition (`--json`) |
-| `sqlh ddl TABLE` | a table's or view's CREATE statement(s), as go to definition shows it (`schema.table`, synonyms; `--json`; standalone with `--conn`/`--schema`) |
+| `sqlh ddl TABLE` | a table's or view's CREATE statement(s), as go to definition shows it (`schema.table`, synonyms; `--json`; standalone with `--conn`) |
 | `sqlh relations TABLE` | the tables and views related to TABLE, grouped (`--long`, `--json`; `-p` picks one) |
 | `sqlh columns [TABLE] [--prefix p.] [--sep ", "]` | a table's columns; `-p` multi-picks (Tab, Ctrl-A all) → `p.a, p.b`; no TABLE with `-p`: pick the table first |
-| `sqlh schemas [--all]` / `sqlh databases` | lists; `-p` picks one |
-| `sqlh db [NAME]` | switch the editor's connection to another database (PostgreSQL; no NAME: pick); `--file F` as for `connect` |
-| `sqlh schema [NAME]` | switch the editor's current schema among the connection's `schemas:` (Oracle, PostgreSQL; no NAME: pick, `*` = current); `--file F` as for `connect`. See [Current schema](#current-schema) |
-| `sqlh panel` | open (or focus) the side panel of this Helix pane: the object tree, previews, Enter inserts at Helix's cursor (Herdr); see [Panel](#panel) |
+| `sqlh schemas [--all]` / `sqlh databases` | lists (`-p` picks one): the connection's schemas, the server's databases |
+| `sqlh panel` | open (or focus) the side panel of this Helix pane: connections, objects, the statement at the cursor, queries, history; Ctrl-Y inserts at Helix's cursor (Herdr); see [Panel](#panel) |
 | `sqlh panel take` | print what the panel chose, for the cursor (the hidden Helix binding `space i P`) |
-| `sqlh tui` | the panel as an app, for the workspace around the current directory (`-C DIR`): query files, `n` new query opened in Helix next to it; see [sqlh tui](#sqlh-tui) |
+| `sqlh tui` | the panel as an app, for the workspace around the current directory (`-C DIR`): `n` new query opened in Helix next to it; see [sqlh tui](#sqlh-tui) |
 
-`run`/`export --schema NAME` and `dump --schema NAME` run standalone with another current
-schema (one of the connection's `schemas:`); they don't change the editor's.
+A connection is one database and schema: to work in another, add a connection for it (the
+panel duplicates and edits connections). There is no switching of databases or schemas
+within a connection, and a header with `db=`/`schema=` is an error.
 
 ## Current schema
 
@@ -48,13 +47,12 @@ work in that schema (other schemas of the allow-list: tables and columns, `schem
   connecting (extensions in `public` keep working). Set after connecting because PgBouncer
   refuses `search_path` as a startup parameter before PostgreSQL 18; fine with PgBouncer in
   session mode.
-- `sqlh schema` / `space i S` switch it: the connection is reopened (a running query is
-  stopped, an open transaction lost) and the schema cache rebuilt. Not remembered: the editor
-  starts on the connection's default; a file's header (`schema=`) says where it ran.
+- The other schemas of `schemas:` are metadata: completion and the panel list their tables
+  (`schema.table`). To work *in* another schema, make a connection for it.
 
 ## Pickers
 
-`-p` (and `connect`/`db`/`schema` without a name, `run --limit ask`) opens sqlh's own picker:
+`-p` (and `connect` without a name, `run --limit ask`) opens sqlh's own picker:
 it draws on `/dev/tty` below the cursor (no alternate screen; the kitty keyboard protocol is
 switched off around it) and prints the choice **without a trailing newline** when stdout is
 not a terminal, so it can be inserted directly from Helix:
@@ -66,7 +64,10 @@ not a terminal, so it can be inserted directly from Helix:
 
 Typing filters (fuzzy, ranked by match quality; the input order holds while the query is
 empty); ↑/↓ or Ctrl-P/Ctrl-N move, Enter accepts, Esc/Ctrl-C prints nothing (exit 0); in
-multi-pick lists Tab marks and Ctrl-A marks all; Shift-↑/↓ scroll the preview. Without `-p`
+multi-pick lists Tab marks and Ctrl-A marks all; Shift-↑/↓ scroll the preview. The keys are
+`picker.keys.<action>` in the config (`accept`, `cancel`, `up`, `down`, `pageUp`, `pageDown`,
+`previewUp`, `previewDown`, `toggleDown`, `toggleUp`, `toggleAll`, `clearQuery`, `deleteWord`;
+the table picker's `nameOnly` Ctrl-T, `relations` Ctrl-R, `back` Ctrl-O). Without `-p`
 the commands print one insertable name per line (`--long` for details, `--json` structured),
 e.g. to feed another tool. `SQLH_PICK=<query>` picks without a UI (the best match; all
 matches in multi-pick lists) — for scripts and tests.
@@ -125,65 +126,100 @@ the background load a few seconds later (`(views are still loading)` until then)
 in [Herdr](https://herdr.dev), half of that pane, on the side `panel.placement` says
 (`right`, `left`, `up`, `down`) — or focuses it when it is already open. It belongs to that
 Helix: it closes when Helix exits. Set the cursor in Helix, go to the panel, pick an object,
-press Enter: it is inserted at Helix's cursor and the focus goes back to Helix.
+press **Ctrl-Y**: it is inserted at Helix's cursor and the focus goes back to Helix.
 
 ```
-⛁ pg_local › sales  dev
-▾ ✎ In this statement  q.sql:3 · after JOIN
-  ▸ ▦ orders o
-  ▸ → customer  o.customer_id
-  ▸ ← order_line  o.id
-▾ ⛁ pg_local
-  ▾ ◈ sales  current
-    ▾ Tables  4
-      ▸ ▦ customer  3 cols
-    ▸ Views  1
-  ▸ ◈ audit
-▸ ⛁ Connections
-─ Describe │ DDL ─────────────────
+⛁ pg_local › sdsai › cadetst  dev
+ 1 Connections  2 Objects  3 Statement  4 Queries  5 History
+ q.sql:7 · after JOIN
+▾ ▦ sds_data_raw sds
+  ▾ Relations  4
+    ▸ → ai_extraction_process  sds.ai_extraction_id
+    ▸ ← batch_document  sds.id
+  ▸ Indexes  1
+    · id  bigint  PK
+─ Describe │ DDL │ Sample ─────────────────
 ```
 
-- **In this statement** follows the cursor: the tables of the statement you are editing
-  (from your edits and from the requests Helix sends — completion, hover, …; `space i t`
-  syncs it explicitly) and the tables related to them, as in the
-  [table picker](#table-picker).
-- **History** (open when the statement at the cursor has earlier versions): **This
-  statement** lists the versions of the statement you are editing — earlier runs of a similar
-  query in the same file — newest first, the current text marked; the preview shows the run
-  (when, connection, rows, time, error, result file) and the diff Enter would apply. **Enter
-  replaces the statement in the buffer with that version** (one undo step). **Recent runs**
-  lists the workspace's last runs (Enter inserts the query). `o` opens a run's result in
-  `results.viewer` (it must open its own window or pane, like the Herdr pane script), `y`
-  copies the SQL.
-- **The tree**: the current connection's schemas; tables, views, materialized views,
-  sequences, types. A table opens to its relations (which open further: Enter on a table
-  reached through relations inserts the whole join chain after `JOIN`), the views using it,
-  its indexes, constraints and triggers, and its columns. **Connections** lists the others.
-- **Enter** inserts: a table (after `JOIN` with the alias and `ON` condition, or the chain),
-  a column (`alias.col` when its table is in the statement; Space marks several:
-  `o.id, o.total`), an object's name. With the cursor on a table name it is copied to the
-  clipboard instead. On a connection Enter switches to it; `u` on a schema uses it.
-- `/` searches every object (fuzzy); Enter inserts, Tab shows it in the tree. `.` (or `a`)
-  opens the actions of the highlighted object: insert the name / a join / `SELECT * FROM` /
-  all columns, copy, show the DDL. Tab switches the preview between **Describe** (columns,
-  relationships, a view's definition), **DDL** (as go to definition shows it) and **Sample**;
-  J/K scroll it. `y` copies the name, `r` refreshes the schema cache, `?` lists the keys, `q`
-  quits.
-- **Sample** shows what the data looks like: up to 50 rows of the table, as the distinct
-  values of each column (`v`: one row at a time, `n`/`p` next/previous). On a column, `s`
-  counts its most common values. Samples run on a pooled session of their own (never the
-  editor's: they neither wait for nor block a running query), with a 10 s timeout, long
-  cells cut; they are dropped after a query runs. Per connection `sample: auto | manual |
-  off`; the default follows `environment`: automatic for tables on `dev`/`test` (once the
-  selection rests; views only on request, they may be expensive queries), on request (`s`)
-  on `prod`.
-- **Back to Helix**: `panel.keys.backToEditor` (default Backspace) focuses the panel's Helix
-  pane, e.g. after arriving from another pane (Herdr's `prefix space o` goes to the previous
-  pane).
-- The header shows the connection, current schema and its `environment` (`dev`, `test`,
-  `prod`; a connection setting, default `dev`).
+Five tabs, `1`–`5` (it starts on **Statement**; `sqlh tui` on **Objects**):
 
-How Enter reaches Helix (which has no API for it): the panel stores the choice in the server
+1. **Connections** — the configured connections, `alias  database › schema  env`, the
+   current one marked `●`; connections with a `group:` sit in a folder of that name. The
+   preview shows a connection field by field (host, port, database, schema, user, password
+   masked, options; connection strings taken apart). Enter connects (and shows its objects).
+   `C` new, `E` edit, `D` duplicate, `X` delete (asks first; not the current one): a form
+   that writes the connection to the config file the server reads — only that connection's
+   lines change, comments and the rest stay — checked first; Ctrl-T tests the connection,
+   Ctrl-S saves, Esc cancels. Environment, sample policy and driver are ←/→ choices. The
+   server re-reads the file (as any server does when its config file changes); editing the
+   current connection reconnects.
+2. **Objects** — the current connection's schema: tables, views, materialized views,
+   sequences, types; the other schemas of its `schemas:` list as folders below. A table opens
+   to its relations (which open further: Ctrl-Y on a table reached through relations inserts
+   the whole join chain after `JOIN`), the views using it, its indexes, constraints and
+   triggers, and its columns.
+3. **Statement** — follows the cursor: the tables of the statement you are editing (from your
+   edits and from the requests Helix sends — completion, hover, …; `space i t` syncs it), open,
+   their relationships first, written as the statement refers to them (`sds.input_id`).
+4. **Queries** — the files of `tui.queriesDir` (default `queries`), newest first; Enter opens
+   one in Helix, `n` creates the next `query_<N>.sql` (a `SELECT * FROM` of the highlighted
+   table, if any).
+5. **History** — **This statement**: the versions of the statement you are editing (earlier
+   runs of a similar query in the same file), newest first, the current text marked; then the
+   workspace's recent queries, each opening (Enter) to its versions. The preview shows the
+   run (when, connection, rows, time, error, result file) and, for a version, the diff
+   against the statement at the cursor; `.` `r` **replaces the statement in the buffer**
+   with it (one undo step). `o` opens a run's result in `results.viewer` (it must open its own
+   window or pane, like the Herdr pane script), `e` its file.
+
+Keys (all configurable, see below):
+
+- **Enter** navigates: opens and closes, connects, opens a file. It never inserts.
+- **Ctrl-Y** inserts: a table (after `JOIN` with the alias and `ON` condition, or the
+  chain), a column (`alias.col` when its table is in the statement; Space marks several:
+  `o.id, o.total`), an object's name, a query. With the cursor on a table name it is copied to
+  the clipboard instead. Without an editor (`sqlh tui` alone) it copies, and says so.
+- `.` (or `a`) — the actions of the selection: insert the name / a join / `SELECT * FROM` /
+  all columns, copy, a new query file, the DDL, a sample; for connections connect, edit,
+  duplicate, delete; for runs replace, insert, copy, open.
+- `/` — search, like an omni bar: it finds what the tab lists (connections in Connections,
+  queries in Queries, runs in History, else tables and views — all of them for an empty
+  query); a first character picks another kind: `:` tables and views, `.` columns (`.cust`,
+  or `.orders.tot` for table.column), `#` indexes and constraints, `~` sequences,
+  `@` connections, `*` everything. Enter goes to the result (in its tab), Ctrl-Y inserts it.
+- Tab / Shift-Tab switch the preview: **Describe** (columns, relationships, a view's
+  definition), **DDL** (as go to definition shows it), **Sample**; J/K scroll it.
+- **Sample** shows one row of the table as `column  value`, wrapped to fit; `]`/`[` the
+  next/previous of up to 50 fetched. On a column, `s` counts its most common values. Samples
+  run on a pooled session of their own (never the editor's: they neither wait for nor block a
+  running query), with a 10 s timeout, long cells cut; they are dropped after a query runs.
+  Per connection `sample: auto | manual | off`; the default follows `environment`: automatic
+  for tables on `dev`/`test` (once the selection rests; views only on request, they may be
+  expensive queries), on request (`s`) on `prod`.
+- `y` copies the name, `r` refreshes the schema cache, `?` lists the keys, `q` quits;
+  Backspace (`backToEditor`) focuses the panel's Helix pane (Herdr's `prefix space o` goes to
+  the previous pane).
+
+`panel.keys.<action>: key` (or a list) in the config replaces an action's keys:
+
+| actions | default |
+|---|---|
+| `up` `down` `top` `bottom` `pageUp` `pageDown` | `k ↑ ctrl+p`, `j ↓ ctrl+n`, `g home`, `G end`, `ctrl+u pgup`, `ctrl+d pgdown` |
+| `expand` `collapse` `open` `mark` | `l →`, `h ←`, `enter`, `space` |
+| `insert` `copy` `actions` `search` | `ctrl+y`, `y`, `. a`, `/` |
+| `previewNext` `previewPrev` `previewDown` `previewUp` | `tab`, `shift+tab`, `J`, `K` |
+| `sample` `nextRow` `prevRow` | `s`, `]`, `[` |
+| `newQuery` `openResult` `editFile` | `n`, `o`, `e` |
+| `newConnection` `editConnection` `duplicateConnection` `deleteConnection` | `C`, `E`, `D`, `X` |
+| `refresh` `help` `quit` `backToEditor` | `r`, `?`, `q`, `backspace` |
+| `tab1` … `tab9` | `1` … `9` |
+| `searchUp` `searchDown` `searchOpen` `searchInsert` `searchCancel` | `↑ ctrl+p ctrl+k`, `↓ ctrl+n ctrl+j`, `enter`, `ctrl+y`, `esc` |
+| `formSave` `formTest` `formCancel` `formNext` `formPrev` | `ctrl+s`, `ctrl+t`, `esc`, `tab ↓`, `shift+tab ↑` |
+
+Key names are Bubble Tea's (`ctrl+y`, `shift+tab`, `backspace`, `space`, `G`, `]`). A key
+on two actions of the same scope is a config error.
+
+How Ctrl-Y reaches Helix (which has no API for it): the panel stores the choice in the server
 and sends Helix `panel.insertKeys` (default `esc space i P`); that binding runs
 `:insert-output sqlh panel take …`, which turns the choice into text for Helix's cursor *at
 that moment* (one undo step). Each Helix pane has its own panel and its own pending choice.
@@ -191,21 +227,21 @@ that moment* (one undo step). Each Helix pane has its own panel and its own pend
 The panel pane is started through the shell startup hook of `~/.config/helix`
 (`HELIX_HELPER_ARGV` and `HELIX_ORIGIN_PANE_ID` in the new pane's environment); without that
 hook `exec sqlh panel run …` is typed into the new shell. `SQLH_NO_FOCUS=1` keeps the focus
-where it is (scripted tests).
+where it is (scripted tests). While the panel (or `sqlh tui`) runs, the log goes to
+`--log FILE`, else `tui.log` in sqlh's cache directory: nothing is written over the screen.
 
 ## sqlh tui
 
 `sqlh tui` is the [panel](#panel) as an app, started from a shell (in Herdr) rather than from
-Helix. It adds **Query files** — the `.sql` files of `tui.queriesDir` (default `queries`, relative
-to the workspace or absolute), newest first — and:
+Helix; it starts on **Objects**.
 
-- `n` creates the next `query_<N>.sql` there (N = the highest existing number + 1, from 1;
-  renamed or moved files are yours) with the connection header, and a `SELECT * FROM` of the
-  highlighted table, if any; it opens in Helix (`tui.editor`, default `hx`) in a new pane next to
-  the app (half of it, opposite `panel.placement`), and the app becomes that Helix's panel:
-  Enter inserts at its cursor, `space i t` there focuses the app.
+- `n` creates the next `query_<N>.sql` in `tui.queriesDir` (N = the highest existing number + 1,
+  from 1; renamed or moved files are yours) with the connection header, and a `SELECT * FROM`
+  of the highlighted table, if any; it opens in Helix (`tui.editor`, default `hx`) in a new
+  pane next to the app (half of it, opposite `panel.placement`), and the app becomes that
+  Helix's panel: Ctrl-Y inserts at its cursor, `space i t` there focuses the app.
 - Enter on a query file (or `e` on a run in History) opens it in that Helix, or in a new one.
-- When that Helix exits the app stays, without an editor.
+- When that Helix exits the app stays, without an editor (Ctrl-Y then copies).
 
 Without an editor's server for the workspace the app runs one itself (headless: no editor,
 the same catalog, runs and history); when Helix starts there, its server takes over the socket
@@ -285,29 +321,29 @@ current directory for scratch buffers.
 A query file says which connection it runs on in a header among its leading comments:
 
 ```sql
--- sqlh: conn=pg_local db=reports schema=sales
+-- sqlh: conn=pg_local
 
 select …
 ```
 
 - **The editor keeps it up to date.** Whenever a statement of an open file runs in the
   editor's server (code actions, `space i r/e/d`, `sqlh run --file`), and when you switch
-  connection, database or schema from it (`space i C/D/S`, `sqlh connect/db/schema --file F`),
-  the server rewrites the header — or inserts it at the top — in the **buffer**
-  (`workspace/applyEdit`; the buffer becomes modified, save it for the CLI to see it). `db=`
-  and `schema=` only appear after a database / schema switch (a `schema=` naming the
-  connection's default counts as none). Files that aren't open are never edited.
+  connection from it (`space i C`, `sqlh connect --file F`), the server rewrites the header —
+  or inserts it at the top — in the **buffer** (`workspace/applyEdit`; the buffer becomes
+  modified, save it for the CLI to see it). Files that aren't open are never edited.
+- `db=` and `schema=` (from earlier versions) are an **error**: a connection is one database
+  and schema, so make a connection for it and name it with `conn=`. Such a file doesn't run
+  (editor or `dump`) and its header isn't rewritten until it is fixed.
 - Edit it by hand to point the file somewhere else; other `key=value` pairs are kept.
 - **When the header and the editor differ** (you switched from another buffer, or opened a
   file last run elsewhere), the header line gets an information diagnostic — "this file
   targets oracle_dev, the editor is on pg_local" — and the code actions (`space a`; first when
-  the cursor is on the header) offer **Switch the editor to oracle_dev** (connection, database
-  and schema; `sqlh.useHeader`) and **Point the file's header at pg_local** (rewrites it without
+  the cursor is on the header) offer **Switch the editor to oracle_dev** (`sqlh.useHeader`) and **Point the file's header at pg_local** (rewrites it without
   running; `sqlh.stampHeader`). A connection that isn't configured is a warning. These checks
   stay on with `diagnostics: false`.
 - Session state set by statements (`SET search_path`, `ALTER SESSION`, temp tables, an open
-  transaction) is not carried over to `dump`: put what the query needs in the file, or use
-  `schema=` for the current schema.
+  transaction) is not carried over to `dump`: put what the query needs in the file, or use a
+  connection set to that schema (`schema:`).
 
 `sqlh dump FILE… [-d DIR | -o FILE] [--line L [--col C]] [--conn ALIAS]` runs each file on its
 header's connection (`--conn` overrides; neither → that file fails) on a new connection and
@@ -371,8 +407,6 @@ P = ":insert-output sqlh panel take --editor -f r##'%{buffer_name}'## -l %{curso
 T = [":insert-output sqlh tables -p --editor -f r##'%{buffer_name}'## -l %{cursor_line} --col %{cursor_column}", ":redraw"]
 f = ":format"
 C = [":pipe-to sqlh connect --editor -f r##'%{buffer_name}'##", ":redraw"]
-D = [":pipe-to sqlh db --editor -f r##'%{buffer_name}'##", ":redraw"]
-S = [":pipe-to sqlh schema --editor -f r##'%{buffer_name}'##", ":redraw"]
 s = ":sh sqlh status -f r##'%{buffer_name}'##"
 X = ":lsp-workspace-command sqlh.cancel"
 U = ":lsp-workspace-command sqlh.refresh"
@@ -391,7 +425,7 @@ path survives); with the default `sh`, write `'%{buffer_name}'`. `r`/`e` open th
 | `space i P` | (pressed by the panel) insert what the panel chose at the cursor |
 | `space i T` | insert a table with the inline picker (related first; after `JOIN` the join clause), see [Table picker](#table-picker) |
 | `space i f` | format the file (`:format`) |
-| `space i C` / `D` / `S` | switch connection / database / schema (picker); the buffer's connection header follows |
+| `space i C` | switch connection (picker); the buffer's connection header follows |
 | `space i s` | status: connection, schema, running query, results directory (popup, Esc closes) |
 | `space i X` | cancel the running query (`:lsp-workspace-command sqlh.cancel`) |
 | `space i U` | reload schema metadata (`:lsp-workspace-command sqlh.refresh`; runs that execute DDL reload it themselves) |

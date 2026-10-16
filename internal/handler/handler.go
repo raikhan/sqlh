@@ -29,15 +29,15 @@ type Server struct {
 	SpecificFileCfg *config.Config
 	DefaultFileCfg  *config.Config
 	WSCfg           *config.Config
+	// ConfigPath: the file SpecificFileCfg (else DefaultFileCfg) was read
+	// from; re-read when it changes (the panel edits connections).
+	ConfigPath string
+	configMod  time.Time
 
 	dbConn *database.DBConnection
 
 	curDBCfg           *database.DBConfig
-	curDBName          string
 	curConnectionIndex int
-	// curSchema: the current schema when switched away from the connection's
-	// default ("" = the default, see DBConfig.CurrentSchema).
-	curSchema string
 	// noMetadataDDL: connection \t target keys where Oracle refused
 	// DBMS_METADATA (go to definition generates the DDL instead)
 	noMetadataDDL sync.Map
@@ -256,8 +256,6 @@ func (s *Server) handleInitialize(ctx context.Context, conn *jsonrpc2.Conn, req 
 					CommandShowDatabases,
 					CommandShowSchemas,
 					CommandShowConnections,
-					CommandSwitchDatabase,
-					CommandSwitchSchema,
 					CommandSwitchConnection,
 					CommandShowTables,
 				},
@@ -484,9 +482,7 @@ func (s *Server) reconnectionDB(ctx context.Context) error {
 	s.jsonKeys.Clear()
 	s.closeSession()
 	s.dbConn, s.curDBCfg = dbConn, cfg
-	if s.curSchema == "" {
-		s.defaultSchema = s.currentSchema()
-	}
+	s.defaultSchema = s.currentSchema()
 	if prevConn != nil {
 		if err := prevConn.Close(); err != nil {
 			log.Println("close previous connection:", err)
@@ -502,17 +498,6 @@ func (s *Server) newDBConnection(ctx context.Context) (*database.DBConnection, *
 	connCfg, err := s.configuredConnection()
 	if err != nil {
 		return nil, nil, err
-	}
-	if s.curDBName != "" || s.curSchema != "" {
-		// copy: don't mutate the loaded configuration
-		c := *connCfg
-		if s.curDBName != "" {
-			c.DBName = s.curDBName
-		}
-		if s.curSchema != "" {
-			c.Schema = s.curSchema
-		}
-		connCfg = &c
 	}
 
 	conn, err := database.Open(connCfg)

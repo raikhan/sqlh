@@ -44,7 +44,7 @@ func (s *Server) scheduleLint(uri string) {
 	executedKeyPrefix := ""
 	if enabled {
 		d = sqlsplit.DialectOf(string(s.curDBCfg.Driver))
-		executedKeyPrefix = connAlias(s.curDBCfg) + "\t" + s.targetKey() + "\t"
+		executedKeyPrefix = connAlias(s.curDBCfg) + "\t\t"
 	}
 
 	l := &s.lint

@@ -22,70 +22,35 @@ const (
 	CommandStampHeader = "sqlh.stampHeader"
 )
 
-// headerTarget is where a document's header points, or where the editor is:
-// a connection alias, a database and a schema override ("" = the
-// connection's own).
-type headerTarget struct{ conn, db, schema string }
-
-func (t headerTarget) String() string {
-	var sw []string
-	if t.db != "" {
-		sw = append(sw, "database "+t.db)
-	}
-	if t.schema != "" {
-		sw = append(sw, "schema "+t.schema)
-	}
-	if len(sw) > 0 {
-		return t.conn + " (" + strings.Join(sw, ", ") + ")"
-	}
-	return t.conn
-}
-
 // headerState is what header diagnostics are checked against, snapshot
 // under s.mu (they are published from a timer).
 type headerState struct {
-	editor  headerTarget // conn "" when not connected or unnamed
-	aliases []string     // configured connection aliases
-	// schemas: a connection's default schema, which a header needn't name
-	schemas map[string]string
+	editor  string   // the editor's connection; "" when not connected or unnamed
+	aliases []string // configured connection aliases
 }
 
 func (s *Server) headerState() headerState {
-	st := headerState{schemas: map[string]string{}}
+	var st headerState
 	if cfg := s.getConfig(); cfg != nil {
 		for _, c := range cfg.Connections {
 			if c.Alias != "" {
 				st.aliases = append(st.aliases, c.Alias)
-				st.schemas[c.Alias] = c.CurrentSchema()
 			}
 		}
 	}
 	if s.dbConn != nil && s.curDBCfg != nil {
-		st.editor = headerTarget{s.curDBCfg.Alias, s.curDBName, s.curSchema}
-		if s.defaultSchema != "" {
-			st.schemas[s.curDBCfg.Alias] = s.defaultSchema
-		}
+		st.editor = s.curDBCfg.Alias
 	}
 	return st
 }
 
-// target is where a header points; a schema= naming the connection's
-// default schema counts as none.
-func (st headerState) target(h header.Header) headerTarget {
-	t := headerTarget{h.Conn, h.DB, h.Schema}
-	if d := st.schemas[h.Conn]; t.schema != "" && strings.EqualFold(t.schema, d) {
-		t.schema = ""
-	}
-	return t
-}
-
-// headerDiagnostics flags a header naming a connection that isn't
-// configured (warning) or another target than the editor's (information:
-// running the file from the editor would move the header; `sqlh dump` from
-// the terminal still uses it).
+// headerDiagnostics flags a header with db=/schema= (error: no longer
+// supported), naming a connection that isn't configured (warning) or another
+// connection than the editor's (information: running the file from the
+// editor would move the header; `sqlh dump` from the terminal still uses it).
 func headerDiagnostics(text string, st headerState) []lsp.Diagnostic {
 	h := header.Parse(text)
-	if h.Line < 0 || h.Conn == "" {
+	if h.Line < 0 || (h.Conn == "" && h.ErrSwitch() == nil) {
 		return nil
 	}
 	start, end := h.Span()
@@ -96,14 +61,16 @@ func headerDiagnostics(text string, st headerState) []lsp.Diagnostic {
 		},
 		Source: &diagnosticSource,
 	}
-	file := st.target(h)
 	switch {
+	case h.ErrSwitch() != nil:
+		d.Severity = lsp.SeverityError
+		d.Message = h.ErrSwitch().Error()
 	case !contains(st.aliases, h.Conn):
 		d.Severity = lsp.SeverityWarning
 		d.Message = fmt.Sprintf("unknown connection %q; configured: %s", h.Conn, strings.Join(st.aliases, ", "))
-	case st.editor.conn != "" && file != st.editor:
+	case st.editor != "" && h.Conn != st.editor:
 		d.Severity = lsp.SeverityInformation
-		d.Message = fmt.Sprintf("this file targets %s, the editor is on %s; running it here moves the header (code action: switch the editor)", file, st.editor)
+		d.Message = fmt.Sprintf("this file targets %s, the editor is on %s; running it here moves the header (code action: switch the editor)", h.Conn, st.editor)
 	default:
 		return nil
 	}
@@ -127,74 +94,51 @@ func (s *Server) headerActions(uri string, rng lsp.Range) (actions []lsp.Command
 		return nil, false
 	}
 	h := header.Parse(f.Text)
-	if h.Line < 0 || h.Conn == "" {
+	if h.Line < 0 || h.Conn == "" || h.ErrSwitch() != nil {
 		return nil, false
 	}
 	st := s.headerState()
-	file := st.target(h)
-	if st.editor.conn == "" || file == st.editor {
+	if st.editor == "" || h.Conn == st.editor {
 		return nil, false
 	}
 	if contains(st.aliases, h.Conn) {
 		actions = append(actions, lsp.Command{
-			Title: "Switch the editor to " + file.String() + " (the file's header)", Command: CommandUseHeader,
+			Title: "Switch the editor to " + h.Conn + " (the file's header)", Command: CommandUseHeader,
 			Arguments: []interface{}{uri},
 		})
 	}
 	actions = append(actions, lsp.Command{
-		Title: "Point the file's header at " + st.editor.String(), Command: CommandStampHeader,
+		Title: "Point the file's header at " + st.editor, Command: CommandStampHeader,
 		Arguments: []interface{}{uri},
 	})
 	return actions, rng.Start.Line <= h.Line && h.Line <= rng.End.Line
 }
 
-// useHeader switches the editor to the connection, database and schema of a
-// document's header.
+// headerError: the db=/schema= error of an open document's header, if any.
+func (s *Server) headerError(uri string) error {
+	if f, ok := s.files[uri]; ok {
+		return header.Parse(f.Text).ErrSwitch()
+	}
+	return nil
+}
+
+// useHeader switches the editor to the connection of a document's header.
 func (s *Server) useHeader(ctx context.Context, uri string) (string, error) {
 	f, ok := s.files[uri]
 	if !ok {
 		return "", fmt.Errorf("document not open: %s", uri)
 	}
 	h := header.Parse(f.Text)
+	if err := h.ErrSwitch(); err != nil {
+		return "", err
+	}
 	if h.Line < 0 || h.Conn == "" {
 		return "", errors.New("the file has no connection header")
 	}
-	var msgs []string
-	if s.dbConn == nil || s.curDBCfg == nil || s.curDBCfg.Alias != h.Conn {
-		m, err := s.switchTo(ctx, h.Conn) // also back to its own database
-		if err != nil {
-			return "", err
-		}
-		msgs = append(msgs, m)
+	if s.dbConn != nil && s.curDBCfg != nil && s.curDBCfg.Alias == h.Conn {
+		return "already on " + h.Conn, nil
 	}
-	if h.DB != s.curDBName {
-		var m string
-		var err error
-		if h.DB == "" {
-			m, err = s.switchTo(ctx, h.Conn) // reconnect to the connection's own database
-		} else {
-			m, err = s.useDatabase(ctx, h.DB)
-		}
-		if err != nil {
-			return "", err
-		}
-		msgs = append(msgs, m)
-	}
-	if want := s.headerState().target(h); want.schema != s.curSchema {
-		target := want.schema
-		if target == "" {
-			target = s.defaultSchema // back to the connection's own
-		}
-		m, err := s.useSchema(ctx, target)
-		if err != nil {
-			return "", err
-		}
-		msgs = append(msgs, m)
-	}
-	if len(msgs) == 0 {
-		return "already on " + s.headerState().target(h).String(), nil
-	}
-	return strings.Join(msgs, "; "), nil
+	return s.switchTo(ctx, h.Conn)
 }
 
 // relintOpen re-checks every open document; s.mu must be held (relintAll
@@ -205,8 +149,8 @@ func (s *Server) relintOpen() {
 	}
 }
 
-// stampHeader points the "-- sqlh: conn=… db=… schema=…" header of an open
-// document at the current connection, database and schema, inserting it if missing, so that
+// stampHeader points the "-- sqlh: conn=…" header of an open document at
+// the current connection, inserting it if missing, so that
 // `sqlh dump` runs the file where it last ran in the editor. The client
 // applies the edit (the buffer becomes modified; the CLI reads it once
 // saved); files that aren't open are never touched. Call with s.mu held.
@@ -219,7 +163,10 @@ func (s *Server) stampHeader(uri string) {
 		log.Println("connection header: the connection has no alias to name it by")
 		return
 	}
-	e, changed := header.Stamp(f.Text, s.curDBCfg.Alias, s.curDBName, s.curSchema)
+	if header.Parse(f.Text).ErrSwitch() != nil {
+		return // the user fixes it (the diagnostic says how)
+	}
+	e, changed := header.Stamp(f.Text, s.curDBCfg.Alias, "", "")
 	if !changed {
 		return
 	}

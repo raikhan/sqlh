@@ -28,13 +28,28 @@ func fit(s string, w int) string {
 // wide: tree and preview side by side.
 func (p *Panel) wide() bool { return p.width >= 110 }
 
-func (p *Panel) bodyHeight() int { return max(p.height-2, 3) }
+// subtitle: a line above the tree about the tab's content ("" = none).
+func (p *Panel) subtitle() string {
+	switch p.cur {
+	case tabStmt:
+		return statementTitle(p.ctx, p.cursor)
+	case tabQueries:
+		return "n: new query"
+	}
+	return ""
+}
+
+func (p *Panel) bodyHeight() int { return max(p.height-3, 3) }
 
 func (p *Panel) treeHeight() int {
-	if p.wide() {
-		return p.bodyHeight()
+	h := p.bodyHeight()
+	if !p.wide() {
+		h = max(h*55/100, 3)
 	}
-	return max(p.bodyHeight()*55/100, 3)
+	if p.subtitle() != "" {
+		h--
+	}
+	return max(h, 1)
 }
 
 // View renders the panel.
@@ -44,31 +59,45 @@ func (p *Panel) View() string {
 		// taller than the pane scrolls it and leaves stale rows behind
 		return ""
 	}
-	var lines []string
-	lines = append(lines, p.viewHeader())
+	lines := []string{p.viewHeader(), p.viewTabBar()}
 	bodyH := p.bodyHeight()
 	var body []string
+	tree := func(w, h int) []string {
+		var out []string
+		if sub := p.subtitle(); sub != "" && !p.search {
+			out = append(out, fit(stDim.Render(" "+sub), w))
+			h--
+		}
+		return append(out, p.viewTree(w, h)...)
+	}
 	if p.wide() {
 		tw := p.width * 45 / 100
 		pw := p.width - tw - 1
-		tree := p.viewTree(tw, bodyH)
-		prev := p.viewPreview(pw, bodyH-1)
-		prev = append([]string{p.viewTabs(pw)}, prev...)
+		left := tree(tw, bodyH)
+		prev := append([]string{p.viewPreviewTabs(pw)}, p.viewPreview(pw, bodyH-1)...)
 		for i := 0; i < bodyH; i++ {
-			body = append(body, tree[i]+stBorder.Render("│")+prev[i])
+			body = append(body, left[i]+stBorder.Render("│")+prev[i])
 		}
 	} else {
-		th := p.treeHeight()
+		th := max(bodyH*55/100, 3)
 		ph := bodyH - th - 1
-		body = append(body, p.viewTree(p.width, th)...)
-		body = append(body, p.viewTabs(p.width))
+		body = append(body, tree(p.width, th)...)
+		body = append(body, p.viewPreviewTabs(p.width))
 		body = append(body, p.viewPreview(p.width, ph)...)
 	}
 	switch {
+	case p.form != nil:
+		body = overlay(body, p.viewForm(p.width, bodyH), p.width)
 	case p.help:
 		body = overlay(body, p.viewHelp(), p.width)
 	case p.menu != nil:
 		body = overlay(body, p.viewMenu(), p.width)
+	case p.confirm != nil:
+		body = overlay(body, strings.Split(stPopup.Render(p.confirm.question), "\n"), p.width)
+	}
+	if p.popup != "" {
+		box := strings.Split(stPopup.Render(ansi.Truncate(p.popup, max(p.width-8, 10), "…")), "\n")
+		body = overlayAt(body, box, p.width, max(len(body)-len(box)-1, 0))
 	}
 	lines = append(lines, body...)
 	lines = append(lines, p.viewFooter())
@@ -79,8 +108,12 @@ func (p *Panel) viewHeader() string {
 	var left string
 	if p.cat != nil {
 		title := p.cat.Connection
-		if p.cat.Schema != "" {
-			title += " › " + p.cat.Schema
+		for _, c := range p.conns {
+			if c.Current {
+				if t := connTarget(c); t != "" {
+					title += " › " + t
+				}
+			}
 		}
 		left = stTitle.Render(p.ic.connection+" "+title) + " " + envStyle(p.cat.Environment).Render(p.cat.Environment)
 		if !p.cat.ViewsLoaded {
@@ -92,20 +125,60 @@ func (p *Panel) viewHeader() string {
 	if p.disconnected {
 		left += "  " + stErr.Render("server gone")
 	}
-	if p.workspace() != nil {
+	if p.opt.Standalone {
 		if p.editor != "" {
 			left += stDim.Render("  editor: " + p.editor)
 		} else {
-			left += stDim.Render("  no editor · n: new query")
+			left += stDim.Render("  no editor")
 		}
 	}
 	return fit(left, p.width)
 }
 
-func (p *Panel) viewTabs(w int) string {
+// tabBarLabels: the main tabs' labels, short when the full ones don't fit.
+func (p *Panel) tabBarLabels() []string {
+	labels := func(names []string) []string {
+		out := make([]string, len(names))
+		for i, n := range names {
+			out[i] = " " + p.km.label(fmt.Sprintf("tab%d", i+1)) + " " + n + " "
+		}
+		return out
+	}
+	full := labels(mainTabNames)
+	if lipgloss.Width(strings.Join(full, "")) <= p.width {
+		return full
+	}
+	return labels(mainTabShort)
+}
+
+// tabBarRanges: the columns of each tab label (mouse).
+func (p *Panel) tabBarRanges() [][2]int {
+	var out [][2]int
+	x := 0
+	for _, l := range p.tabBarLabels() {
+		w := lipgloss.Width(l)
+		out = append(out, [2]int{x, x + w})
+		x += w
+	}
+	return out
+}
+
+func (p *Panel) viewTabBar() string {
+	var b strings.Builder
+	for i, l := range p.tabBarLabels() {
+		if i == p.cur {
+			b.WriteString(stMainTabOn.Render(l))
+		} else {
+			b.WriteString(stMainTabOff.Render(l))
+		}
+	}
+	return fit(b.String(), p.width)
+}
+
+func (p *Panel) viewPreviewTabs(w int) string {
 	var parts []string
-	for i, name := range tabNames {
-		if i == p.tab {
+	for i, name := range previewTabNames {
+		if i == p.ptab {
 			parts = append(parts, stTabOn.Render(name))
 		} else {
 			parts = append(parts, stTabOff.Render(name))
@@ -123,17 +196,18 @@ func (p *Panel) viewTree(w, h int) []string {
 		return p.viewSearch(w, h)
 	}
 	rows := p.rows()
-	p.sel = clamp(p.sel, 0, len(rows)-1)
-	if p.sel < p.top {
-		p.top = p.sel
+	t := p.tab()
+	t.sel = clamp(t.sel, 0, len(rows)-1)
+	if t.sel < t.top {
+		t.top = t.sel
 	}
-	if p.sel >= p.top+h {
-		p.top = p.sel - h + 1
+	if t.sel >= t.top+h {
+		t.top = t.sel - h + 1
 	}
-	p.top = clamp(p.top, 0, max(len(rows)-h, 0))
+	t.top = clamp(t.top, 0, max(len(rows)-h, 0))
 	out := make([]string, 0, h)
-	for i := p.top; i < len(rows) && len(out) < h; i++ {
-		out = append(out, p.viewRow(rows[i], i == p.sel, w))
+	for i := t.top; i < len(rows) && len(out) < h; i++ {
+		out = append(out, p.viewRow(rows[i], i == t.sel, w))
 	}
 	for len(out) < h {
 		out = append(out, strings.Repeat(" ", w))
@@ -158,10 +232,18 @@ func (p *Panel) viewRow(n *node, sel bool, w int) string {
 	if n.kind == nColumn && p.marked[n.id] {
 		label = "✓ " + label
 	}
+	env := ""
+	if n.kind == nConnItem && n.conn.Environment != "" {
+		env = " " + envStyle(n.conn.Environment).Render(n.conn.Environment)
+	}
 	if sel {
 		text := indent + arrow + " " + icon + label
 		if n.detail != "" {
 			text += "  " + n.detail
+		}
+		if env != "" {
+			tw := lipgloss.Width(text) + 1
+			return fit(stSel.Render(text+" ")+env+stSel.Render(strings.Repeat(" ", max(w-tw-lipgloss.Width(env), 0))), w)
 		}
 		return stSel.Render(fit(text, w))
 	}
@@ -171,7 +253,9 @@ func (p *Panel) viewRow(n *node, sel bool, w int) string {
 		styled = stDim.Render(label)
 	case n.kind == nColumn && p.marked[n.id]:
 		styled = stMarked.Render(label)
-	case n.kind == nStatement || n.kind == nConnection || n.kind == nConnections:
+	case n.kind == nConnGroup || n.kind == nSchema:
+		styled = stBold.Render(label)
+	case n.kind == nConnItem && n.conn.Current:
 		styled = stBold.Render(label)
 	case n.kind == nRelation:
 		styled = stRelTable.Render(label)
@@ -182,12 +266,14 @@ func (p *Panel) viewRow(n *node, sel bool, w int) string {
 	if n.detail != "" {
 		text += "  " + stDim.Render(n.detail)
 	}
-	return fit(text, w)
+	return fit(text+env, w)
 }
 
 func (p *Panel) viewSearch(w, h int) []string {
-	out := []string{fit(stKey.Render("/ ")+p.query+stAccent.Render("▏")+stDim.Render(fmt.Sprintf("  %d", len(p.results))), w)}
-	lh := h - 1
+	kind := searchKindNames[p.skind]
+	prompt := stKey.Render("/ ") + p.query + stAccent.Render("▏") + stDim.Render(fmt.Sprintf("  %s · %d", kind, len(p.results)))
+	out := []string{fit(prompt, w)}
+	lh := h - 2
 	p.rsel = clamp(p.rsel, 0, len(p.results)-1)
 	if p.rsel < p.rtop {
 		p.rtop = p.rsel
@@ -195,27 +281,35 @@ func (p *Panel) viewSearch(w, h int) []string {
 	if p.rsel >= p.rtop+lh {
 		p.rtop = p.rsel - lh + 1
 	}
-	for i := p.rtop; i < len(p.results) && len(out) < h; i++ {
+	for i := p.rtop; i < len(p.results) && len(out) < h-1; i++ {
 		m := p.results[i]
 		it := p.items[m.index]
-		icon := p.ic.kind(it.obj.Kind) + " "
-		detail := it.detail
-		if it.schema != "" {
-			detail = it.schema + " · " + detail
+		icon := it.icon + " "
+		text := it.text
+		pos := m.pos
+		if it.kind == skColumn {
+			// matched against table.column when the query has a dot
+			if _, q := parseSearch(p.query, p.cur); strings.Contains(q, ".") {
+				prefix := unquote(lastPart(it.col.TableInsert)) + "."
+				text = prefix + it.col.Name
+			}
 		}
 		if i == p.rsel {
-			out = append(out, stSel.Render(fit(" "+icon+it.text+"  "+detail, w)))
+			out = append(out, stSel.Render(fit(" "+icon+text+"  "+it.detail, w)))
 			continue
 		}
-		out = append(out, fit(" "+stAccent.Render(icon)+highlight(it.text, m.pos)+"  "+stDim.Render(detail), w))
+		out = append(out, fit(" "+stAccent.Render(icon)+highlight(text, pos)+"  "+stDim.Render(it.detail), w))
 	}
-	if len(p.results) == 0 {
+	switch {
+	case len(p.results) == 0 && p.allColsLoading:
+		out = append(out, fit(stDim.Render(" loading the columns…"), w))
+	case len(p.results) == 0:
 		out = append(out, fit(stDim.Render(" no match"), w))
 	}
-	for len(out) < h {
+	for len(out) < h-1 {
 		out = append(out, strings.Repeat(" ", w))
 	}
-	return out
+	return append(out, fit(stDim.Render(" : tables  . columns  # indexes  ~ sequences  @ connections  * all"), w))
 }
 
 // highlight marks matched runes.
@@ -259,7 +353,18 @@ func (p *Panel) previewNode() *node {
 		if it == nil {
 			return nil
 		}
-		if isTableKind(it.obj.Kind) {
+		switch it.kind {
+		case skColumn:
+			return &node{kind: nColumn, table: it.col.TableInsert, label: it.col.Insert,
+				col: control.ColumnItem{Name: it.col.Name, Insert: it.col.Insert, Type: it.col.Type}}
+		case skConn:
+			return &node{kind: nConnItem, label: it.conn.Alias, conn: it.conn}
+		case skFile:
+			return &node{kind: nQueryFile, label: it.text, file: it.file}
+		case skRun:
+			return &node{kind: nHistory, label: it.detail, run: it.run}
+		}
+		if isTableKind(it.obj.Kind) && it.obj.Table == "" {
 			return &node{kind: nTable, table: it.obj.Insert, label: it.obj.Name, tableKind: it.obj.Kind, schema: it.schema, obj: it.obj}
 		}
 		return &node{kind: nObject, label: it.obj.Name, detail: it.obj.Detail, obj: it.obj, schema: it.schema}
@@ -272,13 +377,19 @@ func (p *Panel) previewLines(w int) []string {
 	if n == nil {
 		return nil
 	}
-	if n.kind == nHistory { // the same on every tab
+	switch n.kind { // the same on every preview tab
+	case nHistory:
 		return p.historyLines(n, w)
+	case nConnItem:
+		return p.connectionLines(n.conn, w)
+	case nQueryFile:
+		return []string{stBold.Render(shortPath(n.file)), stDim.Render(n.file), "",
+			stDim.Render("enter: open in the editor · n: new query")}
 	}
-	switch p.tab {
-	case tabDDL:
+	switch p.ptab {
+	case ptDDL:
 		return p.ddlLines(n, w)
-	case tabSample:
+	case ptSample:
 		return p.sampleLines(n, w)
 	}
 	switch n.kind {
@@ -297,15 +408,6 @@ func (p *Panel) previewLines(w int) []string {
 			lines = append(lines, "", "on "+n.obj.Table)
 		}
 		return lines
-	case nConnItem:
-		c := n.conn
-		lines := []string{stBold.Render(c.Alias) + "  " + envStyle(c.Environment).Render(c.Environment), "", c.Driver + "  " + c.Desc}
-		if c.Current {
-			lines = append(lines, "", stDim.Render("current connection"))
-		} else {
-			lines = append(lines, "", stDim.Render("enter / u: connect"))
-		}
-		return lines
 	case nSchema:
 		lines := []string{stBold.Render(n.schema) + "  " + stDim.Render("schema")}
 		for _, c := range n.children {
@@ -313,33 +415,56 @@ func (p *Panel) previewLines(w int) []string {
 				lines = append(lines, "  "+c.label+"  "+stDim.Render(c.detail))
 			}
 		}
-		if n.detail != "current" {
-			lines = append(lines, "", stDim.Render("u: use this schema (one of the connection's schemas:)"))
-		}
 		return lines
-	case nStatement:
-		if p.cursor == nil {
-			return []string{stDim.Render("no cursor yet")}
-		}
-		lines := []string{stBold.Render(shortPath(p.cursor.File)) + fmt.Sprintf(":%d:%d", p.cursor.Line, p.cursor.Col)}
-		if p.ctx != nil {
-			if p.ctx.InJoin {
-				lines = append(lines, stDim.Render("after JOIN: Enter on a related table inserts the join"))
-			}
-			for _, t := range p.ctx.Tables {
-				lines = append(lines, "  "+t.Ref+"  "+stDim.Render(t.Name))
+	case nConnGroup:
+		lines := []string{stBold.Render(n.label) + "  " + stDim.Render("group")}
+		for _, c := range n.children {
+			if c.kind == nConnItem {
+				lines = append(lines, "  "+c.label+"  "+stDim.Render(connTarget(c.conn)))
 			}
 		}
 		return lines
-	case nQueryFile:
-		return []string{stBold.Render(shortPath(n.file)), stDim.Render(n.file), "", stDim.Render("enter: open in the editor")}
-	case nConnection:
-		if p.cat != nil {
-			return []string{stBold.Render(p.cat.Connection) + "  " + envStyle(p.cat.Environment).Render(p.cat.Environment),
-				"", p.cat.Driver, stDim.Render("current schema: ") + p.cat.Schema}
-		}
 	}
 	return nil
+}
+
+// connectionLines: a connection as a form, field by field.
+func (p *Panel) connectionLines(c control.Connection, w int) []string {
+	head := stBold.Render(c.Alias)
+	if c.Environment != "" {
+		head += "  " + envStyle(c.Environment).Render(c.Environment)
+	}
+	if c.Current {
+		head += "  " + stAccent.Render("● current")
+	}
+	lines := []string{head, ""}
+	fields := append([]control.Field(nil), c.Fields...)
+	if c.Group != "" {
+		fields = append(fields, control.Field{Label: "Group", Value: c.Group})
+	}
+	if c.Sample != "" {
+		fields = append(fields, control.Field{Label: "Sample rows", Value: c.Sample})
+	}
+	labelW := 8
+	for _, f := range fields {
+		labelW = max(labelW, lipgloss.Width(f.Label))
+	}
+	labelW = min(labelW, max(w/3, 8))
+	for _, f := range fields {
+		wrapped := strings.Split(ansi.Wrap(f.Value, max(w-labelW-3, 10), " ,&"), "\n")
+		lines = append(lines, "  "+stLabel.Render(fit(f.Label, labelW))+" "+wrapped[0])
+		for _, more := range wrapped[1:] {
+			lines = append(lines, strings.Repeat(" ", labelW+3)+more)
+		}
+	}
+	hint := p.km.label("open") + ": connect · " + p.km.label("editConnection") + ": edit · " +
+		p.km.label("duplicateConnection") + ": duplicate · " + p.km.label("deleteConnection") + ": delete · " +
+		p.km.label("newConnection") + ": new"
+	if c.Current {
+		hint = p.km.label("editConnection") + ": edit · " + p.km.label("duplicateConnection") + ": duplicate · " +
+			p.km.label("newConnection") + ": new"
+	}
+	return append(lines, "", stDim.Render(hint))
 }
 
 func (p *Panel) describeLines(n *node, table string, w int) []string {
@@ -497,10 +622,11 @@ func (p *Panel) sampleLines(n *node, w int) []string {
 	if n.kind == nColumn {
 		lines = append(lines, p.topValueLines(table, n.col.Insert, w)...)
 	}
+	sk := p.km.label("sample")
 	e, ok := p.samples[sampleKey(table, "")]
 	switch {
 	case !ok:
-		why := "s: load sample rows"
+		why := sk + ": load a sample row"
 		switch {
 		case policy == "manual" && p.cat != nil && p.cat.Environment == "prod":
 			why += " (on request on prod)"
@@ -516,73 +642,35 @@ func (p *Panel) sampleLines(n *node, w int) []string {
 		return append(lines, stErr.Render(e.err.Error()))
 	}
 	r := e.res
+	if len(r.Rows) == 0 {
+		return append(lines, stBold.Render(table)+"  "+stDim.Render("(no rows)"))
+	}
+	p.row = clamp(p.row, 0, len(r.Rows)-1)
 	more := ""
 	if r.Truncated {
 		more = "+"
 	}
-	head := stBold.Render(table) + "  " + stDim.Render(fmt.Sprintf("%d%s rows · %d ms", len(r.Rows), more, r.ElapsedMS))
-	lines = append(lines, head)
-	if len(r.Rows) == 0 {
-		return append(lines, "", stDim.Render("(no rows)"))
-	}
-	if p.record {
-		p.recordRow = clamp(p.recordRow, 0, len(r.Rows)-1)
-		lines = append(lines, stDim.Render(fmt.Sprintf("row %d/%d  n/p: next/previous · v: by column", p.recordRow+1, len(r.Rows))), "")
-		nameW := 4
-		for _, c := range r.Columns {
-			nameW = max(nameW, lipgloss.Width(c))
-		}
-		nameW = min(nameW, max(w/3, 8))
-		for i, c := range r.Columns {
-			v := stDim.Render("NULL")
-			if cell := r.Rows[p.recordRow][i]; cell != nil {
-				v = *cell
-			}
-			name := fit(c, nameW)
-			if n.kind == nColumn && strings.EqualFold(c, unquote(n.col.Insert)) {
-				name = stMatch.Render(name)
-			}
-			wrapped := strings.Split(ansi.Wrap(v, max(w-nameW-3, 10), " "), "\n")
-			lines = append(lines, "  "+name+" "+wrapped[0])
-			for _, more := range wrapped[1:] {
-				lines = append(lines, strings.Repeat(" ", nameW+3)+more)
-			}
-		}
-		return lines
-	}
-	lines = append(lines, stDim.Render("distinct values per column · v: by row"), "")
+	lines = append(lines, stBold.Render(table)+"  "+stDim.Render(fmt.Sprintf("row %d of %d%s · %s/%s: next/previous",
+		p.row+1, len(r.Rows), more, p.km.label("nextRow"), p.km.label("prevRow"))), "")
 	nameW := 4
 	for _, c := range r.Columns {
 		nameW = max(nameW, lipgloss.Width(c))
 	}
 	nameW = min(nameW, max(w/3, 8))
 	for i, c := range r.Columns {
-		seen := map[string]bool{}
-		var vals []string
-		nulls := 0
-		for _, row := range r.Rows {
-			if row[i] == nil {
-				nulls++
-				continue
-			}
-			v := strings.ReplaceAll(*row[i], "\n", "⏎")
-			if !seen[v] {
-				seen[v] = true
-				vals = append(vals, v)
-			}
+		v := stDim.Render("NULL")
+		if cell := r.Rows[p.row][i]; cell != nil {
+			v = *cell
 		}
-		text := strings.Join(vals, stDim.Render(" · "))
-		if nulls > 0 {
-			if text != "" {
-				text += stDim.Render(" · ")
-			}
-			text += stDim.Render(fmt.Sprintf("NULL×%d", nulls))
-		}
-		name := fit(c, nameW)
+		name := stLabel.Render(fit(c, nameW))
 		if n.kind == nColumn && strings.EqualFold(c, unquote(n.col.Insert)) {
-			name = stMatch.Render(name)
+			name = stMatch.Render(fit(c, nameW))
 		}
-		lines = append(lines, "  "+name+" "+text)
+		wrapped := strings.Split(ansi.Wrap(v, max(w-nameW-3, 10), " "), "\n")
+		lines = append(lines, "  "+name+" "+wrapped[0])
+		for _, more := range wrapped[1:] {
+			lines = append(lines, strings.Repeat(" ", nameW+3)+more)
+		}
 	}
 	return lines
 }
@@ -622,11 +710,11 @@ func (p *Panel) historyLines(n *node, w int) []string {
 		}
 	}
 	if e.Result != "" {
-		lines = append(lines, stDim.Render("o: open "+shortPath(e.Result)))
+		lines = append(lines, stDim.Render(p.km.label("openResult")+": open "+shortPath(e.Result)))
 	}
 	lines = append(lines, "")
 	if n.version && p.hist != nil && p.hist.Statement != "" && e.SQL != p.hist.Statement {
-		lines = append(lines, stBold.Render("Enter replaces the statement:"))
+		lines = append(lines, stBold.Render("against the statement at the cursor")+stDim.Render(" (. r: replace it)"))
 		for _, d := range lineDiff(p.hist.Statement, e.SQL) {
 			switch d[0] {
 			case '-':
@@ -716,37 +804,44 @@ func (p *Panel) viewFooter() string {
 		}
 		return fit(stAccent.Render(p.msg), p.width)
 	}
+	k := p.km.label
 	var hints [][2]string
 	switch {
+	case p.form != nil:
+		hints = [][2]string{{k("formSave"), "save"}, {k("formTest"), "test"}, {k("formCancel"), "cancel"}}
+	case p.confirm != nil:
+		hints = [][2]string{{"y", "yes"}, {"n", "no"}}
 	case p.help:
 		hints = [][2]string{{"any key", "close"}}
 	case p.menu != nil:
 		hints = [][2]string{{"enter", "run"}, {"esc", "close"}}
 	case p.search:
-		hints = [][2]string{{"enter", "insert"}, {"tab", "show in tree"}, {"esc", "back"}}
+		hints = [][2]string{{k("searchOpen"), "go to"}, {k("searchInsert"), "insert"}, {k("searchCancel"), "back"}}
 	default:
 		n := p.selected()
 		switch {
 		case n == nil:
-		case n.kind == nTable || n.kind == nRelation:
-			hints = append(hints, [2]string{"enter", "insert"}, [2]string{"l", "open"})
+		case n.kind == nTable || n.kind == nRelation || n.kind == nStmtTable:
+			hints = append(hints, [2]string{k("insert"), "insert"}, [2]string{k("open"), "open"})
 		case n.kind == nColumn:
-			hints = append(hints, [2]string{"enter", "insert"}, [2]string{"space", "mark"})
+			hints = append(hints, [2]string{k("insert"), "insert"}, [2]string{k("mark"), "mark"})
 		case n.kind == nConnItem:
-			hints = append(hints, [2]string{"enter", "connect"})
-		case n.kind == nSchema:
-			hints = append(hints, [2]string{"u", "use"})
+			hints = append(hints, [2]string{k("open"), "connect"}, [2]string{k("editConnection"), "edit"})
 		case n.kind == nQueryFile:
-			hints = append(hints, [2]string{"enter", "edit"}, [2]string{"n", "new query"})
-		case n.kind == nHistory && n.version:
-			hints = append(hints, [2]string{"enter", "replace"}, [2]string{"o", "result"})
+			hints = append(hints, [2]string{k("open"), "edit"}, [2]string{k("newQuery"), "new query"})
+		case n.kind == nHistory && n.head:
+			hints = append(hints, [2]string{k("open"), "versions"}, [2]string{k("insert"), "insert"})
 		case n.kind == nHistory:
-			hints = append(hints, [2]string{"enter", "insert"}, [2]string{"o", "result"})
+			hints = append(hints, [2]string{k("insert"), "insert"}, [2]string{k("openResult"), "result"})
 		case n.expandable():
-			hints = append(hints, [2]string{"enter", "open"})
+			hints = append(hints, [2]string{k("open"), "open"})
 		}
-		hints = append(hints, [2]string{"/", "search"}, [2]string{".", "actions"}, [2]string{"tab", tabNames[(p.tab+1)%numTabs]},
-			[2]string{keyLabel(p.opt.BackToEditorKey), "editor"}, [2]string{"?", "help"})
+		hints = append(hints, [2]string{k("search"), "search"}, [2]string{k("actions"), "actions"},
+			[2]string{k("previewNext"), previewTabNames[(p.ptab+1)%numPreviewTabs]})
+		if !p.opt.Standalone || p.editor != "" {
+			hints = append(hints, [2]string{k("backToEditor"), "editor"})
+		}
+		hints = append(hints, [2]string{k("help"), "help"})
 	}
 	var parts []string
 	for _, h := range hints {
@@ -760,13 +855,6 @@ func plural(n int64, what string) string {
 		return "1 " + what
 	}
 	return fmt.Sprintf("%d %ss", n, what)
-}
-
-func keyLabel(k string) string {
-	if k == "backspace" {
-		return "⌫"
-	}
-	return k
 }
 
 func (p *Panel) viewMenu() []string {
@@ -783,30 +871,55 @@ func (p *Panel) viewMenu() []string {
 	return strings.Split(stMenuBox.Render(title+"\n"+strings.Join(rows, "\n")), "\n")
 }
 
+// helpRows: the help screen, from the keymap.
+var helpRows = [][2]string{
+	{"tab1 tab2 tab3 tab4 tab5", "Connections · Objects · Statement · Queries · History"},
+	{"up down", "move"}, {"collapse expand", "close / open"},
+	{"open", "open, connect, open the file (navigation)"},
+	{"insert", "insert at the editor's cursor (no editor: copy)"},
+	{"copy", "copy the name"}, {"mark", "mark columns (insert them together)"},
+	{"actions", "everything for the selection"},
+	{"search", "search (:tables .columns #indexes ~sequences @connections *all)"},
+	{"previewNext previewPrev", "Describe / DDL / Sample"}, {"previewDown previewUp", "scroll the preview"},
+	{"sample", "sample row (a column: most common values)"}, {"nextRow prevRow", "Sample: next / previous row"},
+	{"newQuery", "new query file (SELECT of the table)"}, {"editFile", "History: open the run's file"},
+	{"openResult", "History: open the run's result"},
+	{"newConnection editConnection duplicateConnection deleteConnection", "connections: new, edit, duplicate, delete"},
+	{"refresh", "refresh the schema cache"}, {"backToEditor", "back to the editor"}, {"quit", "quit"},
+}
+
 func (p *Panel) viewHelp() []string {
-	keys := [][2]string{
-		{"j/k ↑/↓", "move"}, {"h/l ←/→", "close / open"}, {"enter", "insert at the editor's cursor (or open)"},
-		{"space", "mark columns (enter inserts them)"}, {"/", "search all objects"}, {". a", "actions"},
-		{"tab", "Describe / DDL / Sample"}, {"s", "sample rows (a column: most common values)"},
-		{"v n p", "Sample: by row, next, previous"}, {"J/K", "scroll the preview"}, {"y", "copy the name"}, {"u", "use schema / connect"},
-		{"r", "refresh the schema cache"}, {"o", "History: open the run's result"},
-		{"n", "sqlh tui: new query file (a SELECT of the table)"}, {"e", "sqlh tui: open a run's file"}, {keyLabel(p.opt.BackToEditorKey), "back to the editor"}, {"q", "quit"},
-	}
 	rows := []string{stTitle.Render("sqlh panel")}
-	for _, k := range keys {
-		rows = append(rows, stKey.Render(fit(k[0], 9))+" "+k[1])
+	keyW := 0
+	var keys []string
+	for _, h := range helpRows {
+		var ks []string
+		for _, a := range strings.Fields(h[0]) {
+			ks = append(ks, p.km.label(a))
+		}
+		s := strings.Join(ks, " ")
+		keys = append(keys, s)
+		keyW = max(keyW, lipgloss.Width(s))
+	}
+	keyW = min(keyW, 12)
+	for i, h := range helpRows {
+		rows = append(rows, stKey.Render(fit(keys[i], keyW))+" "+h[1])
 	}
 	return strings.Split(stMenuBox.Render(strings.Join(rows, "\n")), "\n")
 }
 
 // overlay draws box centred over body.
 func overlay(body, box []string, w int) []string {
+	return overlayAt(body, box, w, max((len(body)-len(box))/2, 0))
+}
+
+// overlayAt draws box centred horizontally at row top.
+func overlayAt(body, box []string, w, top int) []string {
 	bw := 0
 	for _, l := range box {
 		bw = max(bw, lipgloss.Width(l))
 	}
 	left := max((w-bw)/2, 0)
-	top := max((len(body)-len(box))/2, 0)
 	out := append([]string(nil), body...)
 	for i, l := range box {
 		if top+i >= len(out) {
@@ -822,5 +935,3 @@ func overlay(body, box []string, w int) []string {
 	}
 	return out
 }
-
-var _ = control.Event{}

@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -32,11 +33,6 @@ const (
 	MethodTables      = "sqlh/tables"
 	MethodColumns     = "sqlh/columns"
 	MethodDatabases   = "sqlh/databases"
-	MethodUseDatabase = "sqlh/useDatabase"
-	// MethodSchemaChoices lists the schemas `sqlh schema` can switch to
-	// ([]SchemaItem, Default = current); MethodUseSchema switches.
-	MethodSchemaChoices = "sqlh/schemaChoices"
-	MethodUseSchema     = "sqlh/useSchema"
 	// MethodDDL: a table's or view's CREATE statement(s) (DDLParams → DDLResult)
 	MethodDDL       = "sqlh/ddl"
 	MethodNotify    = "sqlh/notify"
@@ -70,6 +66,11 @@ const (
 	// MethodReplaceStatement replaces the statement at a cursor in the
 	// editor's buffer (ReplaceParams; a workspace edit, one undo step).
 	MethodReplaceStatement = "sqlh/replaceStatement"
+	// MethodAllColumns lists every column of the catalog ([]ColumnRef): the
+	// panel's column search.
+	MethodAllColumns = "sqlh/allColumns"
+	// MethodReloadConfig re-reads the config file (the panel edited it).
+	MethodReloadConfig = "sqlh/reloadConfig"
 
 	// EventNotification is the server → subscriber notification (Event).
 	EventNotification = "sqlh/event"
@@ -78,7 +79,8 @@ const (
 // Event kinds.
 const (
 	EventCache      = "cache"      // the schema cache changed (background load, refresh)
-	EventConnection = "connection" // connection, database or schema switched
+	EventConnection = "connection" // connection switched
+	EventConfig     = "config"     // the config file changed (connections)
 	EventCursor     = "cursor"     // the editor's cursor moved (an edit or a request)
 	EventFocus      = "focus"      // `sqlh panel` asked this panel to show a cursor and focus itself
 	EventRun        = "run"        // a query finished
@@ -181,10 +183,12 @@ type PanelTakeResult struct {
 // HistoryParams: with File and Line, the versions of the statement there
 // (and that file's other runs); without, the workspace's recent runs.
 type HistoryParams struct {
-	File  string `json:"file,omitempty"`
-	Line  int    `json:"line,omitempty"`
-	Col   int    `json:"col,omitempty"`
-	Limit int    `json:"limit,omitempty"` // recent runs (default 50)
+	// Lineage: the versions of this lineage instead of the cursor's statement.
+	Lineage string `json:"lineage,omitempty"`
+	File    string `json:"file,omitempty"`
+	Line    int    `json:"line,omitempty"`
+	Col     int    `json:"col,omitempty"`
+	Limit   int    `json:"limit,omitempty"` // recent runs (default 50)
 }
 
 // HistoryResult: Statement is the text at the cursor; Versions its earlier
@@ -401,6 +405,31 @@ type Connection struct {
 	Current bool   `json:"current"`
 	// Environment: dev, test or prod.
 	Environment string `json:"environment,omitempty"`
+	// Group: the connection's folder in the panel ("" = top level).
+	Group string `json:"group,omitempty"`
+	// Database and Schema the connection works in ("" = the login's).
+	Database string `json:"database,omitempty"`
+	Schema   string `json:"schema,omitempty"`
+	// Fields: the connection part by part, passwords masked.
+	Fields []Field `json:"fields,omitempty"`
+	// Sample: the connection's sample policy (auto, manual, off).
+	Sample string `json:"sample,omitempty"`
+}
+
+// Field is a labelled value.
+type Field struct {
+	Label string `json:"label"`
+	Value string `json:"value"`
+}
+
+// ColumnRef is a column of the catalog, for search.
+type ColumnRef struct {
+	Schema      string `json:"schema"`
+	Table       string `json:"table"`
+	TableInsert string `json:"tableInsert"`
+	Name        string `json:"name"`
+	Insert      string `json:"insert"`
+	Type        string `json:"type"`
 }
 
 // Status describes a server.
@@ -423,12 +452,15 @@ type Status struct {
 
 // PanelSettings are the panel's settings from the server's configuration.
 type PanelSettings struct {
-	Placement    string   `json:"placement"`
-	InsertKeys   []string `json:"insertKeys"`
-	BackToEditor string   `json:"backToEditor"`
-	Icons        string   `json:"icons"`
-	QueriesDir   string   `json:"queriesDir"` // resolved
-	Editor       []string `json:"editor"`     // tui.editor
+	Placement  string              `json:"placement"`
+	InsertKeys []string            `json:"insertKeys"`
+	Keys       map[string][]string `json:"keys"` // the panel's keymap (defaults merged)
+	Icons      string              `json:"icons"`
+	QueriesDir string              `json:"queriesDir"` // resolved
+	Editor     []string            `json:"editor"`     // tui.editor
+	// ConfigPath: the config file the server reads ("" = not from a file):
+	// the panel edits connections there.
+	ConfigPath string `json:"configPath,omitempty"`
 }
 
 type ConnectParams struct {
@@ -703,7 +735,8 @@ func DialEvents(ctx context.Context, sock string, onEvent func(Event)) (*Client,
 				}
 			}
 			return nil, nil
-		}))
+		}),
+		jsonrpc2.SetLogger(log.Default())) // not straight to stderr: the panel owns the terminal
 	return &Client{conn: conn}, nil
 }
 

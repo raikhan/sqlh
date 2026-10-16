@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"strings"
 
 	"github.com/sourcegraph/jsonrpc2"
 
@@ -69,7 +70,10 @@ func (s *Server) startControl() {
 			// kill). Every control method takes s.mu itself.
 			conn := jsonrpc2.NewConn(context.Background(),
 				jsonrpc2.NewBufferedStream(nc, jsonrpc2.VSCodeObjectCodec{}),
-				jsonrpc2.AsyncHandler(jsonrpc2.HandlerWithError(s.handleControl)))
+				jsonrpc2.AsyncHandler(jsonrpc2.HandlerWithError(s.handleControl)),
+				// its own logger writes to stderr: follow the log package's
+				// output (sqlh tui sends it to a file)
+				jsonrpc2.SetLogger(log.Default()))
 			s.trackControlConn(conn)
 		}
 	}()
@@ -167,7 +171,12 @@ func (s *Server) handleControl(ctx context.Context, conn *jsonrpc2.Conn, req *js
 	case control.MethodStatus:
 		return s.controlStatus(), nil
 	case control.MethodConnections:
+		s.reloadConfigIfChanged(ctx)
 		return s.controlConnections(), nil
+	case control.MethodReloadConfig:
+		return s.reloadConfigIfChanged(ctx)
+	case control.MethodAllColumns:
+		return s.allColumns()
 	case control.MethodCatalog:
 		return s.controlCatalog()
 	case control.MethodHistory:
@@ -274,32 +283,6 @@ func (s *Server) handleControl(ctx context.Context, conn *jsonrpc2.Conn, req *js
 			return nil, err
 		}
 		return repo.Databases(ctx)
-	case control.MethodSchemaChoices:
-		return s.schemaChoices()
-	case control.MethodUseSchema:
-		var p control.DatabaseParams
-		if err := unmarshal(req, &p); err != nil {
-			return nil, err
-		}
-		msg, err := s.useSchema(ctx, p.Name)
-		if err != nil {
-			return nil, err
-		}
-		s.stampFile(p.File)
-		s.notifyEditor(msg)
-		return msg, nil
-	case control.MethodUseDatabase:
-		var p control.DatabaseParams
-		if err := unmarshal(req, &p); err != nil {
-			return nil, err
-		}
-		msg, err := s.useDatabase(ctx, p.Name)
-		if err != nil {
-			return nil, err
-		}
-		s.stampFile(p.File)
-		s.notifyEditor(msg)
-		return msg, nil
 	}
 	return nil, &jsonrpc2.Error{Code: jsonrpc2.CodeMethodNotFound, Message: "unknown method " + req.Method}
 }
@@ -307,9 +290,11 @@ func (s *Server) handleControl(ctx context.Context, conn *jsonrpc2.Conn, req *js
 // RunHeadless starts a server without an editor for a workspace (`sqlh tui`):
 // connected, serving the control socket until an editor's server takes it
 // (MethodRelease) or Stop.
-func RunHeadless(cfg *config.Config, workspace string) (*Server, error) {
+func RunHeadless(cfg *config.Config, configPath, workspace string) (*Server, error) {
 	s := NewServer()
 	s.SpecificFileCfg = cfg
+	s.ConfigPath = configPath
+	s.NoteConfigRead()
 	s.workspace = workspace
 	s.headless = true
 	s.mu.Lock()
@@ -433,12 +418,13 @@ func (s *Server) controlStatus() control.Status {
 	if cfg := s.getConfig(); cfg != nil {
 		st.Viewer = cfg.Results.Viewer
 		st.Panel = &control.PanelSettings{
-			Placement:    cfg.Panel.PlacementOrDefault(),
-			InsertKeys:   cfg.Panel.InsertKeysOrDefault(),
-			BackToEditor: cfg.Panel.BackToEditorKey(),
-			Icons:        cfg.Panel.Icons,
-			QueriesDir:   cfg.TUI.QueriesDirIn(s.workspace),
-			Editor:       cfg.TUI.EditorOrDefault(),
+			Placement:  cfg.Panel.PlacementOrDefault(),
+			InsertKeys: cfg.Panel.InsertKeysOrDefault(),
+			Keys:       cfg.Panel.KeyMap(),
+			Icons:      cfg.Panel.Icons,
+			QueriesDir: cfg.TUI.QueriesDirIn(s.workspace),
+			Editor:     cfg.TUI.EditorOrDefault(),
+			ConfigPath: s.editableConfigPath(),
 		}
 	}
 	return st
@@ -451,9 +437,15 @@ func (s *Server) controlConnections() []control.Connection {
 		return out
 	}
 	for i, c := range cfg.Connections {
+		db, schema := c.Target()
+		var fields []control.Field
+		for _, f := range c.Fields() {
+			fields = append(fields, control.Field{Label: f.Label, Value: f.Value})
+		}
 		out = append(out, control.Connection{
 			Index: i + 1, Alias: c.Alias, Driver: string(c.Driver), Desc: database.DescribeConnection(c),
 			Current: i == s.curConnectionIndex && s.dbConn != nil, Environment: c.Env(),
+			Group: strings.TrimSpace(c.Group), Database: db, Schema: schema, Fields: fields, Sample: c.SamplePolicy(),
 		})
 	}
 	return out

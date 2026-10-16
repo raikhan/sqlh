@@ -37,7 +37,6 @@ once and lets the query finish in a detached process.`,
 			&cli.IntFlag{Name: "line", Aliases: []string{"l"}, Usage: "only the statement at this 1-based line (one FILE only)"},
 			&cli.IntFlag{Name: "col", Usage: "1-based column, with --line"},
 			&cli.StringFlag{Name: "conn", Usage: "run on connection `ALIAS` instead of the header's"},
-			&cli.StringFlag{Name: "schema", Usage: "current schema `NAME` (one of the connection's schemas:) instead of the header's"},
 			editorFlag("run in the editor's server (live buffer, its connection; header updated); errors in its status line"),
 			&cli.BoolFlag{Name: "bg", Usage: "return at once; the query continues in a detached process (reports in the editor)"},
 			&cli.BoolFlag{Name: "fresh", Usage: "with --editor: always run, never copy an earlier result"},
@@ -143,7 +142,7 @@ func dumpFile(c *cli.Context, file, outDir, wd string, cfg **config.Config) (*co
 			return nil, err
 		}
 	}
-	conn, err := dumpConnection(*cfg, abs, c.String("conn"), c.String("schema"))
+	conn, err := dumpConnection(*cfg, abs, c.String("conn"))
 	if err != nil {
 		return nil, err
 	}
@@ -154,32 +153,27 @@ func dumpFile(c *cli.Context, file, outDir, wd string, cfg **config.Config) (*co
 	return execStandalone(*cfg, workspaceRoot(filepath.Dir(abs)), wd, conn, stmts, p)
 }
 
-// dumpConnection: --conn, else the file's header; the header's db= and
-// schema= apply to the header's connection; --schema overrides.
-func dumpConnection(cfg *config.Config, file, override, schema string) (*database.DBConfig, error) {
+// dumpConnection: --conn, else the file's header (db=/schema= in it are an
+// error: a connection is the target).
+func dumpConnection(cfg *config.Config, file, override string) (*database.DBConfig, error) {
 	b, err := os.ReadFile(file)
 	if err != nil {
 		return nil, err
 	}
 	h := header.Parse(string(b))
-	name, db, sch := override, "", ""
-	if name == "" || name == h.Conn {
-		name, db, sch = h.Conn, h.DB, h.Schema
+	if err := h.ErrSwitch(); err != nil {
+		return nil, fmt.Errorf("%s: %w", file, err)
 	}
-	if schema != "" {
-		sch = schema
+	name := override
+	if name == "" {
+		name = h.Conn
 	}
 	if name == "" {
 		return nil, errors.New(`no connection: add "-- sqlh: conn=ALIAS" at the top of the file (running it in the editor does), or pass --conn`)
 	}
 	for _, cn := range cfg.Connections {
 		if cn.Alias == name {
-			if db != "" {
-				cp := *cn // don't mutate the loaded configuration
-				cp.DBName = db
-				cn = &cp
-			}
-			return withSchema(cn, sch)
+			return cn, nil
 		}
 	}
 	var names []string

@@ -60,7 +60,6 @@ func relationCommands() []*cli.Command {
 				&cli.StringFlag{Name: "dir", Aliases: []string{"C"}, Usage: "find the workspace from `DIR`"},
 				&cli.StringFlag{Name: "file", Aliases: []string{"f"}, Usage: "the SQL file being edited: finds the workspace"},
 				&cli.StringFlag{Name: "conn", Usage: "standalone: use connection `ALIAS`"},
-				&cli.StringFlag{Name: "schema", Usage: "standalone: current schema `NAME` (one of the connection's schemas:)"},
 				&cli.BoolFlag{Name: "standalone", Usage: "do not use a running server"},
 			},
 			Action: ddlCmd,
@@ -310,16 +309,16 @@ func (st *navState) header() string {
 		enter = "copy name"
 	case st.inJoin():
 		if st.Ctx.Insert == "name" {
-			enter, other = "name", "Ctrl-T: JOIN"
+			enter, other = "name", pickKeyLabel("nameOnly")+": JOIN"
 		} else {
-			enter, other = "JOIN", "Ctrl-T: name"
+			enter, other = "JOIN", pickKeyLabel("nameOnly")+": name"
 		}
 	}
-	parts := []string{"Enter: " + enter}
+	parts := []string{pickKeyLabel("accept") + ": " + enter}
 	if other != "" {
 		parts = append(parts, other)
 	}
-	return strings.Join(append(parts, "Ctrl-R: relations", "Ctrl-O: back"), " · ")
+	return strings.Join(append(parts, pickKeyLabel("relations")+": relations", pickKeyLabel("back")+": back"), " · ")
 }
 
 // navEntry is a picker line before rendering.
@@ -545,6 +544,7 @@ func runTablePicker(c *cli.Context, api catalogAPI, st *navState) error {
 		return &tui.PickReload{Items: its, Prompt: st.prompt(), Header: st.header()}, nil
 	}
 	res, ok, err := tui.Pick(items, tui.PickOptions{
+		Keys:   pickerKeymap(),
 		Prompt: st.prompt(),
 		Header: st.header(),
 		Preview: func(it tui.PickItem) string {
@@ -558,9 +558,9 @@ func runTablePicker(c *cli.Context, api catalogAPI, st *navState) error {
 			}
 			return text
 		},
-		Expect: []string{"ctrl+t"},
-		Bind: map[string]func(*tui.PickItem) (*tui.PickReload, error){
-			"ctrl+r": func(it *tui.PickItem) (*tui.PickReload, error) {
+		Expect: pickKeys("nameOnly"),
+		Bind: bindKeys(map[string]func(*tui.PickItem) (*tui.PickReload, error){
+			"relations": func(it *tui.PickItem) (*tui.PickReload, error) {
 				item, ok := entryOf(it)
 				if !ok {
 					return nil, nil
@@ -568,14 +568,14 @@ func runTablePicker(c *cli.Context, api catalogAPI, st *navState) error {
 				st.Path = append(st.Path, item)
 				return reload()
 			},
-			"ctrl+o": func(*tui.PickItem) (*tui.PickReload, error) {
+			"back": func(*tui.PickItem) (*tui.PickReload, error) {
 				if len(st.Path) == 0 {
 					return nil, nil
 				}
 				st.Path = st.Path[:len(st.Path)-1]
 				return reload()
 			},
-		},
+		}),
 	})
 	if err != nil || !ok || len(res.Values) == 0 {
 		return err
@@ -591,7 +591,7 @@ func runTablePicker(c *cli.Context, api catalogAPI, st *navState) error {
 		api.notify("copied " + item.Table + " to the clipboard")
 		return nil
 	}
-	emit([]string{chooseInsert(st, item, res.Key == "ctrl+t")}, "")
+	emit([]string{chooseInsert(st, item, res.Key != "")}, "")
 	return nil
 }
 
@@ -662,7 +662,7 @@ func ddlCmd(c *cli.Context) error {
 	}
 	var res *control.DDLResult
 	var err error
-	if c.Bool("standalone") || c.String("conn") != "" || c.String("schema") != "" {
+	if c.Bool("standalone") || c.String("conn") != "" {
 		res, err = ddlStandalone(c, name)
 	} else {
 		cl, _, serr := server(c)
@@ -712,9 +712,6 @@ func ddlStandalone(c *cli.Context, name string) (*control.DDLResult, error) {
 	}
 	_, conn, err := chooseConnection(cfg, workspaceRoot(startDir(c)), c.String("conn"))
 	if err != nil {
-		return nil, err
-	}
-	if conn, err = withSchema(conn, c.String("schema")); err != nil {
 		return nil, err
 	}
 	dbc, err := database.Open(conn)

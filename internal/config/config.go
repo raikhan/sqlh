@@ -41,6 +41,8 @@ type Config struct {
 	Relations RelationsConfig `json:"relations" yaml:"relations"`
 	// Panel: the side panel next to the editor (`sqlh panel`, `sqlh tui`).
 	Panel PanelConfig `json:"panel" yaml:"panel"`
+	// Picker: the inline picker.
+	Picker PickerConfig `json:"picker" yaml:"picker"`
 	// TUI: the standalone app (`sqlh tui`).
 	TUI TUIConfig `json:"tui" yaml:"tui"`
 }
@@ -54,17 +56,16 @@ type PanelConfig struct {
 	// must run `:insert-output sqlh panel take …` (see doc/cli.md).
 	// Herdr key names. Default: esc, space, i, P.
 	InsertKeys []string `json:"insertKeys" yaml:"insertKeys"`
-	// Keys: the panel's configurable keys.
-	Keys PanelKeys `json:"keys" yaml:"keys"`
+	// Keys: action → key or keys, replacing the defaults (DefaultPanelKeys).
+	Keys map[string]KeyList `json:"keys" yaml:"keys"`
 	// Icons: unicode (the default), nerd (Nerd Font) or ascii.
 	Icons string `json:"icons" yaml:"icons"`
 }
 
-// PanelKeys are configurable panel keys (Bubble Tea key names: backspace,
-// ctrl+o, …).
-type PanelKeys struct {
-	// BackToEditor focuses the panel's editor pane. Default: backspace.
-	BackToEditor string `json:"backToEditor" yaml:"backToEditor"`
+// PickerConfig controls the inline picker (`tables -p`, `connect`, …).
+type PickerConfig struct {
+	// Keys: action → key or keys, replacing the defaults (DefaultPickerKeys).
+	Keys map[string]KeyList `json:"keys" yaml:"keys"`
 }
 
 // Placements of the panel.
@@ -87,14 +88,6 @@ func (p PanelConfig) InsertKeysOrDefault() []string {
 		return p.InsertKeys
 	}
 	return DefaultInsertKeys
-}
-
-// BackToEditorKey is panel.keys.backToEditor, default backspace.
-func (p PanelConfig) BackToEditorKey() string {
-	if k := strings.TrimSpace(p.Keys.BackToEditor); k != "" {
-		return k
-	}
-	return "backspace"
 }
 
 // TUIConfig controls `sqlh tui`.
@@ -225,12 +218,25 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("panel.icons: %q is not unicode, nerd or ascii", c.Panel.Icons)
 	}
+	if err := checkKeys("panel.keys", DefaultPanelKeys, c.Panel.Keys, PanelKeyScopes); err != nil {
+		return err
+	}
+	if err := checkKeys("picker.keys", DefaultPickerKeys, c.Picker.Keys, PickerKeyScopes); err != nil {
+		return err
+	}
 	if r := strings.TrimSpace(c.Results.ReuseFor); r != "" {
 		if d, err := parseDuration(r); err != nil || d < 0 {
 			return fmt.Errorf("results.reuseFor: %q is not a duration (e.g. 10m, 90s, 0)", r)
 		}
 	}
+	aliases := map[string]bool{}
 	for i, conn := range c.Connections {
+		if conn.Alias != "" {
+			if aliases[conn.Alias] {
+				return fmt.Errorf("connection %s: the alias is used twice", conn.Alias)
+			}
+			aliases[conn.Alias] = true
+		}
 		if err := conn.Validate(); err != nil {
 			name := conn.Alias
 			if name == "" {
@@ -284,14 +290,26 @@ func (c *Config) Load(fp string) error {
 		return fmt.Errorf("cannot read config, %w", err)
 	}
 
-	if err = yaml.Unmarshal(b, c); err != nil {
-		return fmt.Errorf("failed unmarshal yaml, %w, %s", err, string(b))
-	}
+	return c.parse(b)
+}
 
+func (c *Config) parse(b []byte) error {
+	if err := yaml.Unmarshal(b, c); err != nil {
+		return fmt.Errorf("failed unmarshal yaml, %w", err)
+	}
 	if err := c.Validate(); err != nil {
 		return fmt.Errorf("failed validation, %w", err)
 	}
 	return nil
+}
+
+// Parse reads a config from YAML text and validates it.
+func Parse(b []byte) (*Config, error) {
+	cfg := NewConfig()
+	if err := cfg.parse(b); err != nil {
+		return nil, err
+	}
+	return cfg, nil
 }
 
 func IsFileExist(fPath string) bool {

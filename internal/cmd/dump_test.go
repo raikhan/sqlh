@@ -156,8 +156,8 @@ func TestDumpConnectionRequired(t *testing.T) {
 	if got := e.read("plain.csv"); got != "1\n1\n" {
 		t.Errorf("plain.csv = %q", got)
 	}
-	// --conn overrides a header (and its db=)
-	e.write("h.sql", "-- sqlh: conn=lite db=ignored\nselect name from t where id = 1;\n")
+	// --conn overrides a header
+	e.write("h.sql", "-- sqlh: conn=lite\nselect name from t where id = 1;\n")
 	if err := e.run("--conn", "lite2", "h.sql"); err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestDumpSeveralFiles(t *testing.T) {
 	}
 }
 
-func TestDumpConnectionSchema(t *testing.T) {
+func TestDumpConnectionHeader(t *testing.T) {
 	cfg := &config.Config{Connections: []*database.DBConfig{
 		{Alias: "ora", Driver: "oracle", Schemas: []string{"CADE", "CADE500"}},
 		{Alias: "lite", Driver: "sqlite3"},
@@ -209,24 +209,16 @@ func TestDumpConnectionSchema(t *testing.T) {
 		}
 		return p
 	}
-	f := write("a.sql", "-- sqlh: conn=ora schema=cade500\nselect 1 from dual;\n")
-	if c, err := dumpConnection(cfg, f, "", ""); err != nil || c.Schema != "CADE500" || c.CurrentSchema() != "CADE500" {
-		t.Errorf("header schema: %+v %v", c, err)
+	if c, err := dumpConnection(cfg, write("a.sql", "-- sqlh: conn=ora\nselect 1 from dual;\n"), ""); err != nil || c.Alias != "ora" {
+		t.Errorf("header: %+v %v", c, err)
 	}
-	if c, err := dumpConnection(cfg, f, "", "cade"); err != nil || c.CurrentSchema() != "CADE" {
-		t.Errorf("--schema: %+v %v", c, err)
-	}
-	if cfg.Connections[0].Schema != "" {
-		t.Error("the loaded configuration was mutated")
-	}
-	if _, err := dumpConnection(cfg, f, "", "other"); err == nil || !strings.Contains(err.Error(), "not in connection ora's schemas") {
-		t.Errorf("schema outside the list: %v", err)
-	}
-	// another connection than the header's: the header's schema doesn't apply
-	if c, err := dumpConnection(cfg, f, "lite", ""); err != nil || c.Schema != "" {
+	if c, err := dumpConnection(cfg, write("a.sql", "-- sqlh: conn=ora\nselect 1 from dual;\n"), "lite"); err != nil || c.Alias != "lite" {
 		t.Errorf("--conn: %+v %v", c, err)
 	}
-	if _, err := dumpConnection(cfg, write("b.sql", "-- sqlh: conn=lite schema=main\nselect 1;\n"), "", ""); err == nil {
-		t.Error("schema on SQLite accepted")
+	// db=/schema= are an error now: a connection is the target
+	for _, text := range []string{"-- sqlh: conn=ora schema=cade500\nselect 1;\n", "-- sqlh: conn=lite db=x\nselect 1;\n"} {
+		if _, err := dumpConnection(cfg, write("b.sql", text), ""); err == nil || !strings.Contains(err.Error(), "no longer supported") {
+			t.Errorf("%q: %v", text, err)
+		}
 	}
 }

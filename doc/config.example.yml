@@ -34,9 +34,17 @@ panel:
   # keys sent to Helix to insert what the panel chose: they must run
   # `:insert-output sqlh panel take …` (the hidden binding space i P, see doc/cli.md)
   # insertKeys: [esc, space, i, P]
-  keys:
-    backToEditor: backspace   # focus the panel's Helix pane (Bubble Tea key names)
+  # keys by action (a key or a list; Bubble Tea key names; the rest keep their defaults,
+  # all listed in doc/cli.md#panel), e.g.:
+  # keys:
+  #   insert: ctrl+y          # insert at Helix's cursor (Enter navigates)
+  #   backToEditor: backspace # focus the panel's Helix pane
+  #   tab1: "1"               # Connections; tab2 Objects, tab3 Statement, tab4 Queries, tab5 History
   # icons: unicode            # unicode (default), nerd (Nerd Font) or ascii
+# the inline picker (tables -p, connect, …): keys by action, e.g.
+# picker:
+#   keys:
+#     nameOnly: ctrl+t        # the table picker: insert the other form (name / JOIN)
 tui:
   queriesDir: queries         # new query files: relative to the workspace, or absolute
   # editor: [hx]              # the editor `sqlh tui` opens query files in (file appended)
@@ -46,13 +54,14 @@ connections:
     driver: postgresql
     # search_path makes unqualified completion and FK join hints use your schema
     dataSourceName: host=localhost port=5432 user=admin password=${PG_LOCAL_PASSWORD} dbname=sdsai sslmode=disable options='-c search_path=cadetst,public'
-    # optional metadata allow-list (PostgreSQL: empty = all schemas); also the schemas
-    # `sqlh schema` switches between, the first being the current one on connect
-    # (SET search_path after connecting: works behind PgBouncer, which refuses it in the DSN)
+    # optional metadata allow-list (PostgreSQL: empty = all schemas); the first is the
+    # schema the connection works in (SET search_path after connecting: works behind
+    # PgBouncer, which refuses it in the DSN). Another schema: another connection
     # schemas: [cadetst, public]
     environment: dev          # dev (default), test or prod: shown in the panel and
                               # `sqlh status`; sample rows are automatic on dev/test only
     # sample: auto            # the panel's sample rows: auto, manual (on request) or off
+    # group: local            # a folder in the panel's connection list
 
   - alias: oracle_dev
     driver: oracle            # pure Go (go-ora): no Oracle Instant Client needed
@@ -63,11 +72,12 @@ connections:
     # password from the macOS keychain, created with:
     #   security add-generic-password -a cade -s sqlh-oracle_dev -w '<password>'
     passwdCmd: security find-generic-password -s sqlh-oracle_dev -w
-    # metadata allow-list (Oracle: empty = login schema only). The first is the current
-    # schema on connect (ALTER SESSION SET CURRENT_SCHEMA): unqualified names resolve in
-    # CADE even for another login; `sqlh schema` / space i S switch among them
+    # metadata allow-list (Oracle: empty = login schema only). The first is the schema
+    # the connection works in (ALTER SESSION SET CURRENT_SCHEMA): unqualified names
+    # resolve in CADE even for another login
     schemas: [CADE, CADE500]
-    # schema: CADE500         # start on another schema of the list
+    # schema: CADE500         # work in another schema of the list
+    group: CADE
     # params are go-ora URL options, e.g.:
     # params: { "SSL": "true", "TIMEOUT": "30" }
     # or a full go-ora URL / TNS descriptor:

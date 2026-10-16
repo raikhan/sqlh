@@ -417,7 +417,7 @@ func TestDumpViaServerNumbersAndKeepsLatest(t *testing.T) {
 }
 
 func TestHeaderDiagnostics(t *testing.T) {
-	st := headerState{editor: headerTarget{"pg", "", ""}, aliases: []string{"pg", "ora"}}
+	st := headerState{editor: "pg", aliases: []string{"pg", "ora"}}
 	cases := []struct {
 		name, text string
 		st         headerState
@@ -427,12 +427,13 @@ func TestHeaderDiagnostics(t *testing.T) {
 		{"no header", "select 1", st, 0, ""},
 		{"same", "-- sqlh: conn=pg\nselect 1", st, 0, ""},
 		{"other connection", "-- sqlh: conn=ora\nselect 1", st, lsp.SeverityInformation, "targets ora, the editor is on pg"},
-		{"other database", "-- sqlh: conn=pg db=rep\nselect 1", st, lsp.SeverityInformation, "targets pg (database rep), the editor is on pg"},
-		{"editor on a database", "-- sqlh: conn=pg\nselect 1", headerState{editor: headerTarget{"pg", "rep", ""}, aliases: st.aliases}, lsp.SeverityInformation, "the editor is on pg (database rep)"},
+		{"db= is an error", "-- sqlh: conn=pg db=rep\nselect 1", st, lsp.SeverityError, "db=/schema= are no longer supported"},
+		{"schema= is an error", "-- sqlh: conn=pg schema=x\nselect 1", st, lsp.SeverityError, "no longer supported"},
 		{"unknown", "-- sqlh: conn=nope\nselect 1", st, lsp.SeverityWarning, `unknown connection "nope"; configured: pg, ora`},
 		{"not connected: no comparison", "-- sqlh: conn=ora\nselect 1", headerState{aliases: st.aliases}, 0, ""},
 		{"not connected: unknown still", "-- sqlh: conn=nope", headerState{aliases: st.aliases}, lsp.SeverityWarning, "unknown"},
-		{"no conn key", "-- sqlh: db=x\nselect 1", st, 0, ""},
+		{"no conn key", "-- sqlh: note=x\nselect 1", st, 0, ""},
+		{"db= without conn", "-- sqlh: db=x\nselect 1", st, lsp.SeverityError, "no longer supported"},
 	}
 	for _, c := range cases {
 		ds := headerDiagnostics(c.text, c.st)

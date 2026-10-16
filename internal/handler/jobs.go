@@ -370,7 +370,7 @@ type runEnv struct {
 	dialect    sqlsplit.Dialect
 	resultsDir string
 	workspace  string
-	db         string // database and schema switches (targetKey), "" = the connection's own
+	db         string // reserved in result keys (was the database/schema switch): ""
 	limit      int
 	null       string
 	reuse      *resultRecord // dump: copy this result instead of running
@@ -395,6 +395,11 @@ func (s *Server) startRun(ctx context.Context, req runRequest) (*job, error) {
 	if err != nil {
 		return nil, err
 	}
+	if req.sql == "" && uri != "" {
+		if err := s.headerError(uri); err != nil {
+			return nil, err
+		}
+	}
 	if j := s.runningJob(); j != nil {
 		return nil, fmt.Errorf("a query is already running (%s); cancel it with %s", j.title, CommandCancel)
 	}
@@ -410,7 +415,6 @@ func (s *Server) startRun(ctx context.Context, req runRequest) (*job, error) {
 		alias:     connAlias(s.curDBCfg),
 		dialect:   sqlsplit.DialectOf(string(s.curDBCfg.Driver)),
 		workspace: s.workspace,
-		db:        s.targetKey(),
 		limit:     req.limit,
 		null:      cfg.Null,
 	}

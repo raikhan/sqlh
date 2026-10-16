@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -21,8 +22,12 @@ import (
 	"github.com/urfave/cli/v2"
 
 	"github.com/raikhan/sqlh/internal/catalog"
+	"github.com/raikhan/sqlh/internal/config"
+	"github.com/raikhan/sqlh/internal/connedit"
 	"github.com/raikhan/sqlh/internal/control"
+	"github.com/raikhan/sqlh/internal/database"
 	"github.com/raikhan/sqlh/internal/herdr"
+	"github.com/raikhan/sqlh/internal/history"
 	"github.com/raikhan/sqlh/internal/tui"
 )
 
@@ -35,7 +40,7 @@ func panelCommand() *cli.Command {
 	}
 	return &cli.Command{
 		Name:  "panel",
-		Usage: "open (or focus) the side panel of this Helix pane: object tree, previews; Enter inserts at the cursor",
+		Usage: "open (or focus) the side panel of this Helix pane: connections, objects, the statement, queries, history; Ctrl-Y inserts at the cursor",
 		Flags: append([]cli.Flag{dirFlag, editorFlag("")}, cursorFlags...),
 		Action: editorAction(func(c *cli.Context) error {
 			return panelOpenCmd(c)
@@ -79,7 +84,7 @@ func serverStatus(cl *control.Client) (*control.Status, error) {
 		return nil, err
 	}
 	if st.Panel == nil { // an older server
-		st.Panel = &control.PanelSettings{Placement: "right", InsertKeys: []string{"esc", "space", "i", "P"}, BackToEditor: "backspace"}
+		st.Panel = &control.PanelSettings{Placement: "right", InsertKeys: []string{"esc", "space", "i", "P"}}
 	}
 	return &st, nil
 }
@@ -434,10 +439,12 @@ func panelRunCmd(c *cli.Context) error {
 		return err
 	}
 	be.insertKeys = st.Panel.InsertKeys
+	be.settings = *st.Panel
 	go be.watch()
 	p := tui.NewPanel(be, be.events, tui.Options{
-		Icons: st.Panel.Icons, BackToEditorKey: st.Panel.BackToEditor, Cursor: res.Cursor, Workspace: ws,
+		Icons: st.Panel.Icons, Keys: st.Panel.Keys, Cursor: res.Cursor, Workspace: ws,
 	})
+	defer logAway(c)()
 	prog := tea.NewProgram(p, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	_, err = prog.Run()
 	return err
@@ -451,9 +458,11 @@ type panelBackend struct {
 	hd         *herdr.Client
 	insertKeys []string
 	events     chan control.Event
+	settings   control.PanelSettings
 
-	mu sync.Mutex
-	cl *control.Client
+	mu   sync.Mutex
+	cl   *control.Client
+	file string // the file last opened in the editor (under mu)
 	// startServer starts a server when there is none (sqlh tui: headless)
 	startServer func() error
 	connected   bool // connect succeeded once
@@ -625,11 +634,6 @@ func (b *panelBackend) Connect(alias string) error {
 	return call(b.client(), control.MethodConnect, control.ConnectParams{Alias: alias}, &st)
 }
 
-func (b *panelBackend) UseSchema(name string) error {
-	var msg string
-	return call(b.client(), control.MethodUseSchema, control.DatabaseParams{Name: name}, &msg)
-}
-
 func (b *panelBackend) Refresh() error {
 	var msg string
 	return call(b.client(), control.MethodRefresh, nil, &msg)
@@ -688,6 +692,178 @@ func (b *panelBackend) editorRuns() bool {
 		return !herdr.NotFound(err)
 	}
 	return info.HasProcess("hx", 0)
+}
+
+func (b *panelBackend) AllColumns() ([]control.ColumnRef, error) {
+	var res []control.ColumnRef
+	if err := call(b.client(), control.MethodAllColumns, nil, &res); err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+func (b *panelBackend) Versions(lineage string) ([]history.Entry, error) {
+	var res control.HistoryResult
+	if err := call(b.client(), control.MethodHistory, control.HistoryParams{Lineage: lineage}, &res); err != nil {
+		return nil, err
+	}
+	return res.Versions, nil
+}
+
+// Editor: the panel's editor (the file last opened in it, else its pane).
+func (b *panelBackend) Editor() string {
+	pane, _ := b.editor()
+	if pane == "" {
+		return ""
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.file != "" {
+		return filepath.Base(b.file)
+	}
+	return "helix"
+}
+
+func (b *panelBackend) setFile(f string) {
+	b.mu.Lock()
+	b.file = f
+	b.mu.Unlock()
+}
+
+func (b *panelBackend) queriesDir() string {
+	if b.settings.QueriesDir != "" {
+		return b.settings.QueriesDir
+	}
+	return filepath.Join(b.ws, "queries")
+}
+
+// QueryFiles lists the query folder's .sql files, newest first.
+func (b *panelBackend) QueryFiles() ([]string, error) { return queryFiles(b.queriesDir()) }
+
+// NewQuery creates the next query_<N>.sql: the connection header, then body.
+func (b *panelBackend) NewQuery(body string) (string, error) {
+	st, err := serverStatus(b.client())
+	if err != nil {
+		return "", err
+	}
+	alias := ""
+	if st.Connection != nil {
+		alias = st.Connection.Alias
+	}
+	return newQueryFile(b.queriesDir(), alias, body)
+}
+
+// OpenFile opens a file in the panel's editor.
+func (b *panelBackend) OpenFile(path string) error {
+	pane, _ := b.editor()
+	if b.hd == nil || pane == "" || !b.editorRuns() {
+		return errors.New("no editor to open " + filepath.Base(path) + " in")
+	}
+	if err := b.hd.SendKeys(pane, "esc", ":"); err != nil {
+		return err
+	}
+	if err := b.hd.SendText(pane, "open "+helixQuote(path)); err != nil {
+		return err
+	}
+	if err := b.hd.SendKeys(pane, "enter"); err != nil {
+		return err
+	}
+	b.setFile(path)
+	return b.hd.Focus(pane)
+}
+
+// ---- connections in the config file -------------------------------------------
+
+func (b *panelBackend) configPath() (string, error) {
+	if b.settings.ConfigPath == "" {
+		return "", errors.New("the server's config doesn't come from a file (the editor's initializationOptions): edit it there")
+	}
+	return b.settings.ConfigPath, nil
+}
+
+// readConfigFile parses a config file for editing (missing: empty).
+func readConfigFile(path string) (*connedit.File, error) {
+	text, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return nil, err
+	}
+	f, err := connedit.Parse(text)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
+	}
+	return f, nil
+}
+
+// editConfigFile edits a config file's connections: the result must be a
+// valid config before it is written.
+func editConfigFile(path string, edit func(*connedit.File) error) error {
+	f, err := readConfigFile(path)
+	if err != nil {
+		return err
+	}
+	if err := edit(f); err != nil {
+		return err
+	}
+	if _, err := config.Parse(f.Bytes()); err != nil {
+		return err
+	}
+	return connedit.WriteFile(path, f.Bytes())
+}
+
+func (b *panelBackend) ConnectionFields(alias string) (connedit.Fields, error) {
+	path, err := b.configPath()
+	if err != nil {
+		return nil, err
+	}
+	f, err := readConfigFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return f.Get(alias)
+}
+
+// editConfig edits the server's config file and has the server re-read it.
+func (b *panelBackend) editConfig(edit func(*connedit.File) error) error {
+	path, err := b.configPath()
+	if err != nil {
+		return err
+	}
+	if err := editConfigFile(path, edit); err != nil {
+		return err
+	}
+	var msg string
+	return call(b.client(), control.MethodReloadConfig, nil, &msg)
+}
+
+func (b *panelBackend) SaveConnection(old string, fields connedit.Fields, after string) error {
+	return b.editConfig(func(f *connedit.File) error { return f.Set(old, fields, after) })
+}
+
+func (b *panelBackend) DeleteConnection(alias string) error {
+	return b.editConfig(func(f *connedit.File) error { return f.Delete(alias) })
+}
+
+// TestConnection connects with the form's fields (and pings) on a
+// connection of its own.
+func (b *panelBackend) TestConnection(fields connedit.Fields) error { return testConnection(fields) }
+
+func testConnection(fields connedit.Fields) error {
+	f, _ := connedit.Parse(nil)
+	if err := f.Set("", fields, ""); err != nil {
+		return err
+	}
+	cfg, err := config.Parse(f.Bytes())
+	if err != nil {
+		return err
+	}
+	conn, err := database.Open(cfg.Connections[0])
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return conn.Conn.PingContext(ctx)
 }
 
 var _ tui.Backend = (*panelBackend)(nil)

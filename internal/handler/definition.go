@@ -51,7 +51,7 @@ func (s *Server) handleDefinition(ctx context.Context, conn *jsonrpc2.Conn, req 
 			deps.repo = repo
 		}
 	}
-	key := deps.conn + "\t" + s.targetKey()
+	key := deps.conn + "\t"
 	_, deps.skipMetadata = s.noMetadataDDL.Load(key)
 	deps.failed = func() { s.noMetadataDDL.Store(key, true) }
 	workspace := s.workspace

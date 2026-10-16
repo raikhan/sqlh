@@ -54,6 +54,8 @@ type DBConfig struct {
 	// Sample: the panel's sample rows: auto, manual (on request) or off.
 	// Default: auto on dev/test, manual on prod.
 	Sample string `json:"sample" yaml:"sample"`
+	// Group: a folder in the panel's connection list (one level).
+	Group string `json:"group" yaml:"group"`
 }
 
 // Sample policies.

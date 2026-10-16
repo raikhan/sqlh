@@ -116,7 +116,7 @@ func (l limitChoice) String() string {
 // as typed rather than the "100" it matches) or all. ok is false when
 // cancelled.
 func askLimit() (limitChoice, bool, error) {
-	res, ok, err := tui.Pick(items("100", "1000", "10000", "100000", "all"), tui.PickOptions{
+	res, ok, err := tui.Pick(items("100", "1000", "10000", "100000", "all"), tui.PickOptions{Keys: pickerKeymap(),
 		Prompt: "rows", Header: "Rows to fetch (type a number, or pick)", NoSort: true,
 		AcceptQuery: func(q string) bool {
 			q = strings.ReplaceAll(strings.TrimSpace(q), "_", "")

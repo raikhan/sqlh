@@ -63,6 +63,13 @@ type PickOptions struct {
 	AcceptQuery func(query string) bool
 	// Height: the share of the terminal's rows (default 0.8).
 	Height float64
+	// Keys: action → keys (picker.keys; the defaults for the rest).
+	Keys map[string][]string
+}
+
+// PickerKeys: the keys of a picker action (with the configured ones).
+func PickerKeys(set map[string][]string, action string) []string {
+	return pickerKeymap(set).keys[action]
 }
 
 // PickResult is what was chosen.
@@ -151,6 +158,7 @@ type picker struct {
 	sel     int
 	top     int
 	marked  map[string]bool
+	km      keymap
 	gen     int // list generation (previews are cached per list)
 	preview map[string]string
 	pscroll int
@@ -168,7 +176,7 @@ func newPicker(items []PickItem, opt PickOptions) *picker {
 		opt.Height = 0.8
 	}
 	p := &picker{opt: opt, items: items, prompt: opt.Prompt, header: opt.Header, marked: map[string]bool{},
-		preview: map[string]string{}} // no size until the terminal reports it
+		preview: map[string]string{}, km: pickerKeymap(opt.Keys)} // no size until the terminal reports it
 	p.filter()
 	return p
 }
@@ -283,55 +291,55 @@ func (p *picker) key(k tea.KeyMsg) tea.Cmd {
 			return p.finish(true, key)
 		}
 	}
-	switch key {
-	case "ctrl+c", "esc", "ctrl+g", "ctrl+q":
+	if key == "ctrl+c" {
 		return p.finish(false, "")
-	case "enter":
+	}
+	switch p.km.action(0, key) {
+	case "cancel":
+		return p.finish(false, "")
+	case "accept":
 		if p.opt.AcceptQuery != nil && p.opt.AcceptQuery(p.query) {
 			p.done, p.accepted, p.result = true, true, PickResult{Query: p.query}
 			return tea.Quit
 		}
 		return p.finish(true, "")
-	case "up", "ctrl+p", "ctrl+k":
+	case "up":
 		return p.move(-1)
-	case "down", "ctrl+n", "ctrl+j":
+	case "down":
 		return p.move(1)
-	case "pgup":
+	case "pageUp":
 		return p.move(-p.listHeight())
-	case "pgdown":
+	case "pageDown":
 		return p.move(p.listHeight())
-	case "shift+down":
+	case "previewDown":
 		p.pscroll++
-	case "shift+up":
+		return nil
+	case "previewUp":
 		p.pscroll = max(p.pscroll-1, 0)
-	case "tab", "shift+tab":
+		return nil
+	case "toggleDown", "toggleUp":
 		if p.opt.Multi {
 			if it := p.current(); it != nil {
 				p.marked[it.Value] = !p.marked[it.Value]
 			}
-			if key == "tab" {
+			if p.km.action(0, key) == "toggleDown" {
 				return p.move(1)
 			}
 			return p.move(-1)
 		}
-	case "ctrl+a":
+		return nil
+	case "toggleAll":
 		if p.opt.Multi {
 			for _, m := range p.results {
 				p.marked[p.items[m.index].Value] = true
 			}
 		}
-	case "backspace":
-		if r := []rune(p.query); len(r) > 0 {
-			p.query = string(r[:len(r)-1])
-			p.sel, p.top = 0, 0
-			p.filter()
-			return p.previewCmd()
-		}
-	case "ctrl+u":
+		return nil
+	case "clearQuery":
 		p.query, p.sel, p.top = "", 0, 0
 		p.filter()
 		return p.previewCmd()
-	case "ctrl+w":
+	case "deleteWord":
 		q := strings.TrimRight(p.query, " ")
 		if i := strings.LastIndexAny(q, " ._"); i >= 0 {
 			p.query = q[:i]
@@ -341,6 +349,15 @@ func (p *picker) key(k tea.KeyMsg) tea.Cmd {
 		p.sel, p.top = 0, 0
 		p.filter()
 		return p.previewCmd()
+	}
+	switch key {
+	case "backspace":
+		if r := []rune(p.query); len(r) > 0 {
+			p.query = string(r[:len(r)-1])
+			p.sel, p.top = 0, 0
+			p.filter()
+			return p.previewCmd()
+		}
 	default:
 		if k.Type == tea.KeyRunes || k.Type == tea.KeySpace {
 			p.query += string(k.Runes)

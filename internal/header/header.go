@@ -8,6 +8,7 @@
 package header
 
 import (
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -37,6 +38,16 @@ type Header struct {
 type pair struct{ key, value string }
 
 var headerRe = regexp.MustCompile(`(?i)^\s*--\s*sqlh\s*:(.*)$`)
+
+// ErrSwitch: the header names a database or schema of its own. A connection
+// is the target now (one database and schema); the user fixes the file.
+func (h Header) ErrSwitch() error {
+	if h.DB == "" && h.Schema == "" {
+		return nil
+	}
+	return fmt.Errorf("the header's db=/schema= are no longer supported: a connection is one database and schema; " +
+		"make a connection for it (sqlh tui: duplicate and edit one) and name it with conn=")
+}
 
 // Parse finds the header among the leading comments of text (before the
 // first line of SQL). A file without one gets Line -1.

@@ -8,76 +8,108 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/raikhan/sqlh/internal/control"
+	"github.com/raikhan/sqlh/internal/history"
 )
+
+// main tabs
+const (
+	tabConns = iota
+	tabObjects
+	tabStmt
+	tabQueries
+	tabHistory
+	numMainTabs
+)
+
+var mainTabNames = []string{"Connections", "Objects", "Statement", "Queries", "History"}
+var mainTabShort = []string{"Conns", "Objects", "Stmt", "Queries", "History"}
 
 // preview tabs
 const (
-	tabDescribe = iota
-	tabDDL
-	tabSample
-	numTabs
+	ptDescribe = iota
+	ptDDL
+	ptSample
+	numPreviewTabs
 )
 
-var tabNames = []string{"Describe", "DDL", "Sample"}
+var previewTabNames = []string{"Describe", "DDL", "Sample"}
 
-// Panel is the Bubble Tea model of the side panel.
+// tabState: a main tab's tree and position.
+type tabState struct {
+	roots []*node
+	sel   int
+	top   int
+	selID string
+}
+
+// Panel is the Bubble Tea model of the panel (and of sqlh tui).
 type Panel struct {
 	be     Backend
 	opt    Options
 	ic     icons
+	km     keymap
 	events <-chan control.Event
 
 	width, height int
 
-	cat    *control.CatalogResult
-	catErr error
-	objs   map[string][]control.CatalogObject
-	conns  []control.Connection
+	cat     *control.CatalogResult
+	catErr  error
+	objs    map[string][]control.CatalogObject
+	conns   []control.Connection
+	allCols []control.ColumnRef
+	// allColsLoading: the column search's list is on its way
+	allColsLoading bool
 
 	cursor   *control.Cursor
 	ctx      *control.ContextResult
 	hist     *control.HistoryResult
 	stmtRels map[string]*control.RelationsResult
+	files    []string
+	editor   string
 
 	// caches by table (as typed), cleared when the catalog changes
-	cols    map[string][]control.ColumnItem
-	rels    map[string]*control.RelationsResult
-	errs    map[string]error
-	loading map[string]bool
-	ddl     map[string]ddlEntry
-	samples map[string]sampleEntry // table, or table \x00 column (most common values)
+	cols     map[string][]control.ColumnItem
+	rels     map[string]*control.RelationsResult
+	errs     map[string]error
+	loading  map[string]bool
+	ddl      map[string]ddlEntry
+	samples  map[string]sampleEntry // table, or table \x00 column (most common values)
+	versions map[string][]history.Entry
 
-	record    bool // the Sample tab shows one row at a time
-	recordRow int
+	row       int // the Sample tab's row
 	sampleTok int // debounces automatic samples
 
-	roots    []*node
+	tabs     [numMainTabs]tabState
+	cur      int             // the main tab
 	expanded map[string]bool // ids of expanded nodes (kept across rebuilds)
 	marked   map[string]bool // ids of marked columns
-	sel      int
-	top      int
-	selID    string
 
-	tab     int
+	ptab    int // the preview tab
 	pscroll int
 
 	search  bool
 	query   string
+	skind   int
 	items   []searchItem
 	results []match
 	rsel    int
 	rtop    int
+	// pendingReveal: a search result to select once its table has loaded
+	pendingReveal func(*node) bool
 
-	menu *menu
-	help bool
+	menu    *menu
+	help    bool
+	form    *connForm
+	confirm *confirm
 
 	msg    string
 	msgErr bool
 	msgAt  time.Time
 
+	popup   string
+	popupAt time.Time
+
 	disconnected bool
-	files        []string // query files (sqlh tui)
-	editor       string   // the attached editor (sqlh tui)
 	reloadAt     time.Time
 	noTick       bool // tests: no lifetime checks
 }
@@ -94,25 +126,23 @@ type ddlEntry struct {
 	loading bool
 }
 
+// confirm asks yes/no before something destructive.
+type confirm struct {
+	question string
+	yes      func() tea.Cmd
+}
+
 // NewPanel makes the panel; events are the server's notifications (and the
 // backend's synthetic ones).
 func NewPanel(be Backend, events <-chan control.Event, opt Options) *Panel {
-	if opt.BackToEditorKey == "" {
-		opt.BackToEditorKey = "backspace"
-	}
-	p := &Panel{be: be, opt: opt, ic: iconSet(opt.Icons), events: events, cursor: opt.Cursor,
+	p := &Panel{be: be, opt: opt, ic: iconSet(opt.Icons), km: panelKeymap(opt.Keys), events: events, cursor: opt.Cursor,
 		expanded: map[string]bool{}, marked: map[string]bool{}} // no size until the terminal reports it
+	p.cur = tabStmt
+	if opt.Standalone {
+		p.cur = tabObjects
+	}
 	p.resetCaches()
 	return p
-}
-
-// workspace: the Workspace backend in `sqlh tui`, else nil.
-func (p *Panel) workspace() Workspace {
-	if !p.opt.Standalone {
-		return nil
-	}
-	ws, _ := p.be.(Workspace)
-	return ws
 }
 
 func (p *Panel) resetCaches() {
@@ -122,7 +152,11 @@ func (p *Panel) resetCaches() {
 	p.loading = map[string]bool{}
 	p.ddl = map[string]ddlEntry{}
 	p.samples = map[string]sampleEntry{}
+	p.versions = map[string][]history.Entry{}
+	p.allCols, p.allColsLoading = nil, false
 }
+
+func (p *Panel) tab() *tabState { return &p.tabs[p.cur] }
 
 // ---- messages ---------------------------------------------------------------
 
@@ -161,12 +195,19 @@ type historyMsg struct {
 	res *control.HistoryResult
 	err error
 }
+type versionsMsg struct {
+	lineage string
+	vs      []history.Entry
+	err     error
+}
 type eventMsg struct{ ev control.Event }
 type eventsClosedMsg struct{}
 type doneMsg struct {
 	text   string
 	err    error
 	reload bool
+	popup  bool // say it in a popup
+	tab    int  // switch to this tab + 1 (0: stay)
 }
 type tickMsg struct{}
 type aliveMsg struct {
@@ -175,6 +216,7 @@ type aliveMsg struct {
 	files  []string
 }
 type reloadMsg struct{}
+type popupDoneMsg struct{ at time.Time }
 
 // ---- commands ---------------------------------------------------------------
 
@@ -182,8 +224,13 @@ func (p *Panel) loadCatalog() tea.Cmd {
 	be := p.be
 	return tea.Batch(
 		func() tea.Msg { c, err := be.Catalog(); return catalogMsg{c, err} },
-		func() tea.Msg { c, err := be.Connections(); return connsMsg{c, err} },
+		p.loadConns(),
 	)
+}
+
+func (p *Panel) loadConns() tea.Cmd {
+	be := p.be
+	return func() tea.Msg { c, err := be.Connections(); return connsMsg{c, err} }
 }
 
 func (p *Panel) loadTable(table string) tea.Cmd {
@@ -298,52 +345,52 @@ func (p *Panel) tick() tea.Cmd {
 	return tea.Tick(time.Second, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
+func (p *Panel) poll() tea.Cmd {
+	be := p.be
+	return func() tea.Msg {
+		files, _ := be.QueryFiles()
+		return aliveMsg{alive: be.EditorAlive(), editor: be.Editor(), files: files}
+	}
+}
+
 // Init starts loading.
 func (p *Panel) Init() tea.Cmd {
-	cmds := []tea.Cmd{p.loadCatalog(), p.loadContext(), p.loadHistory(), p.waitEvent(), p.tick()}
-	if ws := p.workspace(); ws != nil {
-		cmds = append(cmds, func() tea.Msg {
-			files, _ := ws.QueryFiles()
-			return aliveMsg{alive: true, editor: ws.Editor(), files: files}
-		})
-	}
-	return tea.Batch(cmds...)
+	return tea.Batch(p.loadCatalog(), p.loadContext(), p.loadHistory(), p.waitEvent(), p.tick(), p.poll())
 }
 
 // ---- tree maintenance -------------------------------------------------------
 
-// rebuild makes the tree from the current data, keeping expansion and the
-// selection.
+// rebuild makes every tab's tree from the current data, keeping expansion
+// and the selections.
 func (p *Panel) rebuild() []tea.Cmd {
-	if cur := p.selected(); cur != nil {
-		p.selID = cur.id
+	for i := range p.tabs {
+		t := &p.tabs[i]
+		rows := visible(t.roots)
+		if t.sel >= 0 && t.sel < len(rows) {
+			t.selID = rows[t.sel].id
+		}
 	}
-	var roots []*node
-	if p.cursor != nil || p.ctx != nil {
-		roots = append(roots, buildStatement(p.ctx, p.stmtRels, p.cursor, p.ic))
-	}
-	if p.workspace() != nil {
-		roots = append(roots, buildQueryFiles(p.files, p.ic))
-	}
-	h := buildHistory(p.hist, p.ic)
-	// open when the statement at the cursor has earlier versions
-	h.expanded = p.hist != nil && len(p.hist.Versions) > 1
-	roots = append(roots, h)
+	p.tabs[tabConns].roots = buildConnections(p.conns, p.ic)
 	switch {
 	case p.cat != nil:
-		roots = append(roots, buildCatalog(p.cat, p.ic))
+		p.tabs[tabObjects].roots = buildObjects(p.cat, p.ic)
 	case p.catErr != nil:
-		roots = append(roots, &node{kind: nInfo, label: "not connected: " + p.catErr.Error(), id: "err"})
+		p.tabs[tabObjects].roots = []*node{top("obj", &node{kind: nInfo, label: "not connected: " + p.catErr.Error()})}
 	default:
-		roots = append(roots, &node{kind: nInfo, label: "loading…", id: "loading"})
+		p.tabs[tabObjects].roots = []*node{top("obj", &node{kind: nInfo, label: "loading…"})}
 	}
-	roots = append(roots, buildConnections(p.conns, p.ic))
-	p.roots = roots
+	p.tabs[tabStmt].roots = buildStatement(p.ctx, p.stmtRels, p.cursor, p.editor != "" || !p.opt.Standalone, p.ic)
+	p.tabs[tabQueries].roots = buildQueryFiles(p.files, p.ic)
+	p.tabs[tabHistory].roots = buildHistory(p.hist, p.ic)
 	var cmds []tea.Cmd
-	for _, r := range p.roots {
-		cmds = append(cmds, p.restore(r)...)
+	for i := range p.tabs {
+		t := &p.tabs[i]
+		for _, r := range t.roots {
+			cmds = append(cmds, p.restore(r)...)
+		}
+		restoreSelection(t)
 	}
-	p.restoreSelection()
+	p.tryPendingReveal()
 	return cmds
 }
 
@@ -366,16 +413,16 @@ func (p *Panel) restore(n *node) []tea.Cmd {
 	return cmds
 }
 
-func (p *Panel) restoreSelection() {
-	rows := visible(p.roots)
+func restoreSelection(t *tabState) {
+	rows := visible(t.roots)
 	for i, n := range rows {
-		if n.id == p.selID {
-			p.sel = i
+		if n.id == t.selID {
+			t.sel = i
 			return
 		}
 	}
 	// the nearest ancestor still visible
-	id := p.selID
+	id := t.selID
 	for id != "" {
 		k := strings.LastIndexByte(id, '/')
 		if k < 0 {
@@ -384,13 +431,13 @@ func (p *Panel) restoreSelection() {
 		id = id[:k]
 		for i, n := range rows {
 			if n.id == id {
-				p.sel = i
+				t.sel = i
 				return
 			}
 		}
 	}
-	if p.sel >= len(rows) {
-		p.sel = max(len(rows)-1, 0)
+	if t.sel >= len(rows) {
+		t.sel = max(len(rows)-1, 0)
 	}
 }
 
@@ -398,6 +445,21 @@ func (p *Panel) restoreSelection() {
 func (p *Panel) ensureChildren(n *node) tea.Cmd {
 	if !n.lazy || n.loaded {
 		return nil
+	}
+	if n.kind == nHistory {
+		if vs, ok := p.versions[n.run.Lineage]; ok {
+			fillVersions(n, vs, p.ic)
+			return nil
+		}
+		if len(n.children) == 0 {
+			n.add(&node{kind: nInfo, label: "loading…"})
+		}
+		if n.loading {
+			return nil
+		}
+		n.loading = true
+		lineage, be := n.run.Lineage, p.be
+		return func() tea.Msg { vs, err := be.Versions(lineage); return versionsMsg{lineage, vs, err} }
 	}
 	if cols, ok := p.cols[n.table]; ok {
 		fillTable(n, cols, p.rels[n.table], p.objsFor(n), p.ic)
@@ -436,23 +498,15 @@ func (p *Panel) objsFor(n *node) []control.CatalogObject {
 	return p.objs[strings.ToUpper(schema)+"\t"+strings.ToUpper(name)]
 }
 
-func lastPart(s string) string {
-	if i := strings.LastIndexByte(s, '.'); i >= 0 {
-		return s[i+1:]
-	}
-	return s
-}
-
-func unquote(s string) string { return strings.ReplaceAll(strings.Trim(s, `"`), `""`, `"`) }
-
-func (p *Panel) rows() []*node { return visible(p.roots) }
+func (p *Panel) rows() []*node { return visible(p.tab().roots) }
 
 func (p *Panel) selected() *node {
 	rows := p.rows()
-	if p.sel < 0 || p.sel >= len(rows) {
+	t := p.tab()
+	if t.sel < 0 || t.sel >= len(rows) {
 		return nil
 	}
-	return rows[p.sel]
+	return rows[t.sel]
 }
 
 func (p *Panel) setExpanded(n *node, e bool) tea.Cmd {
@@ -462,6 +516,14 @@ func (p *Panel) setExpanded(n *node, e bool) tea.Cmd {
 		return p.ensureChildren(n)
 	}
 	return nil
+}
+
+func (p *Panel) switchTab(i int) {
+	if i < 0 || i >= numMainTabs {
+		return
+	}
+	p.cur = i
+	p.pscroll = 0
 }
 
 // ---- Update -----------------------------------------------------------------
@@ -476,12 +538,13 @@ func (p *Panel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.cat, p.catErr = msg.cat, msg.err
 		if msg.err == nil {
 			p.objs = tableObjects(msg.cat)
-			p.items = searchItems(msg.cat)
-			if p.search {
-				p.runSearch()
-			}
 		}
-		return p, tea.Batch(append(p.rebuild(), p.previewCmd())...)
+		var cmds []tea.Cmd
+		if p.search {
+			cmds = append(cmds, p.runSearch())
+		}
+		cmds = append(cmds, p.rebuild()...)
+		return p, tea.Batch(append(cmds, p.previewCmd())...)
 	case connsMsg:
 		if msg.err == nil {
 			p.conns = msg.conns
@@ -502,6 +565,24 @@ func (p *Panel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			p.cols[msg.table], p.rels[msg.table] = msg.cols, msg.rel
 		}
 		return p, tea.Batch(p.rebuild()...)
+	case versionsMsg:
+		if msg.err != nil {
+			p.flash(msg.err.Error(), true)
+			msg.vs = nil
+		}
+		p.versions[msg.lineage] = msg.vs
+		return p, tea.Batch(p.rebuild()...)
+	case allColsMsg:
+		p.allColsLoading = false
+		if msg.err != nil {
+			p.flash(msg.err.Error(), true)
+			return p, nil
+		}
+		p.allCols = msg.cols
+		if p.search {
+			return p, p.runSearch()
+		}
+		return p, nil
 	case ddlMsg:
 		p.ddl[msg.table] = ddlEntry{res: msg.res, err: msg.err}
 		return p, nil
@@ -514,7 +595,7 @@ func (p *Panel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return p, tea.Batch(p.rebuild()...)
 	case sampleDueMsg:
-		if msg.tok != p.sampleTok || p.tab != tabSample {
+		if msg.tok != p.sampleTok || p.ptab != ptSample {
 			return p, nil
 		}
 		if n := p.previewNode(); n != nil && autoSample(n) {
@@ -530,31 +611,61 @@ func (p *Panel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return p, nil
 		}
 		return p, p.loadCatalog()
+	case formSavedMsg:
+		if p.form == nil {
+			return p, nil
+		}
+		p.form.busy = false
+		if msg.err != nil {
+			p.form.status, p.form.err = msg.err.Error(), true
+			return p, nil
+		}
+		p.form = nil
+		p.flash("saved "+msg.alias, false)
+		alias := msg.alias
+		p.switchTab(tabConns)
+		p.pendingReveal = func(n *node) bool { return n.kind == nConnItem && n.conn.Alias == alias }
+		return p, p.loadConns()
+	case formTestedMsg:
+		if p.form == nil {
+			return p, nil
+		}
+		p.form.busy = false
+		if msg.err != nil {
+			p.form.status, p.form.err = "connection failed: "+msg.err.Error(), true
+		} else {
+			p.form.status, p.form.err = "connected", false
+		}
+		return p, nil
 	case doneMsg:
 		if msg.err != nil {
 			p.flash(msg.err.Error(), true)
+		} else if msg.popup {
+			p.popup, p.popupAt = msg.text, time.Now()
+			at := p.popupAt
+			return p, tea.Tick(1500*time.Millisecond, func(time.Time) tea.Msg { return popupDoneMsg{at} })
 		} else if msg.text != "" {
 			p.flash(msg.text, false)
+		}
+		if msg.tab > 0 && msg.err == nil {
+			p.switchTab(msg.tab - 1)
 		}
 		if msg.reload {
 			return p, p.loadCatalog()
 		}
 		return p, nil
+	case popupDoneMsg:
+		if msg.at.Equal(p.popupAt) {
+			p.popup = ""
+		}
+		return p, nil
 	case tickMsg:
-		be, ws := p.be, p.workspace()
-		return p, tea.Batch(p.tick(), func() tea.Msg {
-			m := aliveMsg{alive: be.EditorAlive()}
-			if ws != nil {
-				m.editor = ws.Editor()
-				m.files, _ = ws.QueryFiles()
-			}
-			return m
-		})
+		return p, tea.Batch(p.tick(), p.poll())
 	case aliveMsg:
-		if !msg.alive {
+		if !msg.alive && !p.opt.Standalone {
 			return p, tea.Quit
 		}
-		if p.workspace() != nil && (msg.editor != p.editor || strings.Join(msg.files, "\n") != strings.Join(p.files, "\n")) {
+		if msg.editor != p.editor || strings.Join(msg.files, "\n") != strings.Join(p.files, "\n") {
 			p.editor, p.files = msg.editor, msg.files
 			return p, tea.Batch(p.rebuild()...)
 		}
@@ -562,7 +673,7 @@ func (p *Panel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.MouseMsg:
 		return p, p.onMouse(msg)
 	case tea.KeyMsg:
-		if msg.Type == tea.KeyRunes && len(msg.Runes) > 1 && !msg.Paste && !p.search {
+		if msg.Type == tea.KeyRunes && len(msg.Runes) > 1 && !msg.Paste && !p.search && p.form == nil {
 			// keys arriving together come as one message ("jj"): one at a time
 			var cmds []tea.Cmd
 			for _, r := range msg.Runes {
@@ -571,6 +682,13 @@ func (p *Panel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return p, tea.Batch(cmds...)
 		}
 		return p, p.onKey(msg)
+	}
+	if p.form != nil { // the text inputs' cursor blink
+		if f := p.form.focused(); f != nil && f.choices == nil {
+			var cmd tea.Cmd
+			f.input, cmd = f.input.Update(msg)
+			return p, cmd
+		}
 	}
 	return p, nil
 }
@@ -583,22 +701,32 @@ func (p *Panel) onEvent(ev control.Event) tea.Cmd {
 	switch ev.Kind {
 	case control.EventCache, control.EventConnection:
 		p.resetCaches()
-		walkAll(p.roots, func(n *node) {
-			if n.lazy {
-				n.loaded, n.loading = false, false
-			}
-		})
+		for i := range p.tabs {
+			walkAll(p.tabs[i].roots, func(n *node) {
+				if n.lazy && n.kind != nHistory {
+					n.loaded, n.loading = false, false
+				}
+			})
+		}
 		// the background load sends several events: reload once they settle
 		p.reloadAt = time.Now().Add(250 * time.Millisecond)
 		cmds := []tea.Cmd{func() tea.Msg { time.Sleep(300 * time.Millisecond); return reloadMsg{} }}
 		if ev.Kind == control.EventConnection {
-			cmds = append(cmds, p.loadContext())
+			cmds = append(cmds, p.loadContext(), p.loadConns())
 		}
 		return tea.Batch(cmds...)
+	case control.EventConfig:
+		return p.loadConns()
 	case control.EventRun: // a query may have changed the data
 		p.samples = map[string]sampleEntry{}
 		return nil
 	case control.EventHistory:
+		p.versions = map[string][]history.Entry{}
+		for _, n := range p.tabs[tabHistory].roots {
+			if n.lazy {
+				n.loaded, n.loading = false, false
+			}
+		}
 		return p.loadHistory()
 	case control.EventCursor, control.EventFocus:
 		if ev.Cursor != nil {
@@ -628,10 +756,10 @@ func (p *Panel) previewCmd() tea.Cmd {
 	if table == "" {
 		return nil
 	}
-	switch p.tab {
-	case tabDDL:
+	switch p.ptab {
+	case ptDDL:
 		return p.loadDDL(table)
-	case tabSample:
+	case ptSample:
 		cmds := []tea.Cmd{p.loadTable(table)}
 		if p.samplePolicy() == "auto" && autoSample(n) {
 			// once the selection rests: moving through the tree must not
@@ -681,6 +809,18 @@ func (p *Panel) onKey(k tea.KeyMsg) tea.Cmd {
 	if key == "ctrl+c" {
 		return tea.Quit
 	}
+	if p.form != nil {
+		return p.formKey(k)
+	}
+	if p.confirm != nil {
+		c := p.confirm
+		p.confirm = nil
+		if key == "y" || key == "Y" {
+			return c.yes()
+		}
+		p.flash("cancelled", false)
+		return nil
+	}
 	if p.help {
 		p.help = false
 		return nil
@@ -691,32 +831,47 @@ func (p *Panel) onKey(k tea.KeyMsg) tea.Cmd {
 	if p.search {
 		return p.searchKey(k)
 	}
+	return p.do(p.km.action(scopeMain, key))
+}
+
+// do runs a main action on the selection.
+func (p *Panel) do(action string) tea.Cmd {
+	t := p.tab()
 	rows := p.rows()
 	n := p.selected()
 	move := func(d int) tea.Cmd {
-		p.sel = clamp(p.sel+d, 0, len(rows)-1)
+		t.sel = clamp(t.sel+d, 0, len(rows)-1)
 		p.pscroll = 0
+		p.row = 0
 		return p.previewCmd()
 	}
-	switch key {
-	case p.opt.BackToEditorKey:
+	if strings.HasPrefix(action, "tab") && len(action) == 4 {
+		i := int(action[3] - '1')
+		if i < numMainTabs {
+			p.switchTab(i)
+			return p.previewCmd()
+		}
+		return nil
+	}
+	switch action {
+	case "backToEditor":
 		be := p.be
 		return func() tea.Msg { return doneMsg{err: be.BackToEditor()} }
-	case "q":
+	case "quit":
 		return tea.Quit
-	case "j", "down", "ctrl+n":
+	case "down":
 		return move(1)
-	case "k", "up", "ctrl+p":
+	case "up":
 		return move(-1)
-	case "g", "home":
+	case "top":
 		return move(-len(rows))
-	case "G", "end":
+	case "bottom":
 		return move(len(rows))
-	case "ctrl+d", "pgdown":
+	case "pageDown":
 		return move(max(p.treeHeight()/2, 1))
-	case "ctrl+u", "pgup":
+	case "pageUp":
 		return move(-max(p.treeHeight()/2, 1))
-	case "l", "right":
+	case "expand":
 		if n == nil {
 			return nil
 		}
@@ -726,7 +881,7 @@ func (p *Panel) onKey(k tea.KeyMsg) tea.Cmd {
 		if n.expanded && len(n.children) > 0 {
 			return move(1)
 		}
-	case "h", "left":
+	case "collapse":
 		if n == nil {
 			return nil
 		}
@@ -736,15 +891,15 @@ func (p *Panel) onKey(k tea.KeyMsg) tea.Cmd {
 		if n.parent != nil {
 			for i, r := range rows {
 				if r == n.parent {
-					p.sel = i
+					t.sel = i
 					break
 				}
 			}
 			return p.previewCmd()
 		}
-	case "enter":
-		return p.activate(n)
-	case " ":
+	case "open":
+		return p.open(n)
+	case "mark":
 		if n != nil && n.kind == nColumn {
 			p.marked[n.id] = !p.marked[n.id]
 			return move(1)
@@ -752,65 +907,62 @@ func (p *Panel) onKey(k tea.KeyMsg) tea.Cmd {
 		if n != nil && n.expandable() {
 			return p.setExpanded(n, !n.expanded)
 		}
-	case "/":
+	case "insert":
+		return p.insertNode(n)
+	case "copy":
+		if n != nil {
+			return p.copyCmd(copyText(n))
+		}
+	case "search":
 		p.search, p.query, p.rsel, p.rtop = true, "", 0, 0
-		p.runSearch()
-	case ".", "shift+tab", "a":
+		return p.runSearch()
+	case "actions":
 		p.openMenu(n)
-	case "tab":
-		p.tab = (p.tab + 1) % numTabs
+	case "previewNext":
+		p.ptab = (p.ptab + 1) % numPreviewTabs
 		p.pscroll = 0
 		return p.previewCmd()
-	case "s":
-		if n := p.previewNode(); n != nil && previewTable(n) != "" {
-			if p.samplePolicy() == "off" {
-				p.flash("sample rows are off for this connection (sample: off)", true)
-				return nil
-			}
-			p.tab = tabSample
-			table, col := previewTable(n), ""
-			if n.kind == nColumn {
-				col = n.col.Insert
-			}
-			delete(p.samples, sampleKey(table, col)) // s again: fresh
-			return tea.Batch(p.loadTable(table), p.loadSample(table, col))
-		}
-	case "v":
-		if p.tab == tabSample {
-			p.record = !p.record
-			p.recordRow, p.pscroll = 0, 0
-		}
-	case "p":
-		if p.tab == tabSample && p.record {
-			p.recordRow = max(p.recordRow-1, 0)
-			p.pscroll = 0
-		}
-	case "J":
+	case "previewPrev":
+		p.ptab = (p.ptab + numPreviewTabs - 1) % numPreviewTabs
+		p.pscroll = 0
+		return p.previewCmd()
+	case "sample":
+		return p.sampleNow()
+	case "nextRow":
+		p.row++
+		p.pscroll = 0
+	case "prevRow":
+		p.row = max(p.row-1, 0)
+		p.pscroll = 0
+	case "previewDown":
 		p.pscroll++
-	case "K":
+	case "previewUp":
 		p.pscroll = max(p.pscroll-1, 0)
-	case "y":
-		if n != nil {
-			return p.copyCmd(insertText(n))
-		}
-	case "o":
+	case "openResult":
 		if n != nil && n.kind == nHistory {
 			return p.openCmd(n.run.Result)
 		}
-	case "n":
-		if p.tab == tabSample && p.record {
-			p.recordRow++
-			p.pscroll = 0
-		} else if p.workspace() != nil {
-			return p.newQueryCmd()
-		}
-	case "e":
-		if n != nil && n.kind == nHistory && n.run.File != "" && p.workspace() != nil {
+	case "newQuery":
+		return p.newQueryCmd()
+	case "editFile":
+		if n != nil && n.kind == nHistory && n.run.File != "" {
 			return p.openFileCmd(n.run.File)
 		}
-	case "u":
-		return p.useCmd(n)
-	case "r":
+	case "newConnection":
+		return p.newConnection()
+	case "editConnection":
+		if n != nil && n.kind == nConnItem {
+			return p.editConnection(n.conn.Alias, false)
+		}
+	case "duplicateConnection":
+		if n != nil && n.kind == nConnItem {
+			return p.editConnection(n.conn.Alias, true)
+		}
+	case "deleteConnection":
+		if n != nil && n.kind == nConnItem {
+			p.deleteConnection(n.conn)
+		}
+	case "refresh":
 		be := p.be
 		p.flash("refreshing…", false)
 		return func() tea.Msg {
@@ -819,10 +971,30 @@ func (p *Panel) onKey(k tea.KeyMsg) tea.Cmd {
 			}
 			return doneMsg{text: "schema cache refreshed"}
 		}
-	case "?":
+	case "help":
 		p.help = true
 	}
 	return nil
+}
+
+// sampleNow loads sample rows of the selection (a column: its most common
+// values), whatever the policy.
+func (p *Panel) sampleNow() tea.Cmd {
+	n := p.previewNode()
+	if n == nil || previewTable(n) == "" {
+		return nil
+	}
+	if p.samplePolicy() == "off" {
+		p.flash("sample rows are off for this connection (sample: off)", true)
+		return nil
+	}
+	p.ptab = ptSample
+	table, col := previewTable(n), ""
+	if n.kind == nColumn {
+		col = n.col.Insert
+	}
+	delete(p.samples, sampleKey(table, col)) // again: fresh
+	return tea.Batch(p.loadTable(table), p.loadSample(table, col))
 }
 
 func clamp(v, lo, hi int) int {
@@ -832,8 +1004,8 @@ func clamp(v, lo, hi int) int {
 	return min(max(v, lo), hi)
 }
 
-// insertText is the plain name of a node (copy, objects).
-func insertText(n *node) string {
+// copyText: what y copies.
+func copyText(n *node) string {
 	switch n.kind {
 	case nTable, nRelation, nStmtTable:
 		return n.table
@@ -847,43 +1019,72 @@ func insertText(n *node) string {
 		return n.run.SQL
 	case nSchema:
 		return n.schema
+	case nQueryFile:
+		return n.file
 	}
 	return n.label
 }
 
-// activate is Enter on a node.
-func (p *Panel) activate(n *node) tea.Cmd {
+// open is Enter: navigation only.
+func (p *Panel) open(n *node) tea.Cmd {
 	if n == nil {
 		return nil
 	}
 	switch n.kind {
-	case nTable:
-		return p.act(control.PanelAction{Kind: control.ActionTable, Table: n.table}, "insert "+n.table)
-	case nRelation:
-		return p.act(control.PanelAction{Kind: control.ActionTable, Table: n.table, Anchor: n.anchor, Path: n.path}, "insert "+n.table)
-	case nColumn:
-		cols := p.markedColumns(n)
-		return p.act(control.PanelAction{Kind: control.ActionColumns, Table: n.table, Columns: cols}, "insert "+strings.Join(cols, ", "))
-	case nObject:
-		return p.act(control.PanelAction{Kind: control.ActionText, Text: n.obj.Insert}, "insert "+n.obj.Insert)
 	case nConnItem:
-		return p.useCmd(n)
+		return p.connectCmd(n.conn.Alias)
 	case nQueryFile:
 		return p.openFileCmd(n.file)
-	case nHistory:
-		if n.version {
-			if p.hist != nil && n.run.SQL == p.hist.Statement {
-				p.flash("that is the current text", false)
-				return nil
-			}
-			return p.act(control.PanelAction{Kind: control.ActionReplace, Text: n.run.SQL}, "replaced the statement")
-		}
-		return p.act(control.PanelAction{Kind: control.ActionText, Text: n.run.SQL}, "inserted the query")
 	}
 	if n.expandable() {
-		return p.setExpanded(n, !n.expanded)
+		return tea.Batch(p.setExpanded(n, !n.expanded), p.previewCmd())
+	}
+	switch n.kind {
+	case nColumn, nObject, nHistory:
+		p.flash(p.km.label("insert")+": insert · "+p.km.label("copy")+": copy · "+p.km.label("actions")+": actions", false)
 	}
 	return nil
+}
+
+// insertNode is ctrl+y: insert at the editor's cursor.
+func (p *Panel) insertNode(n *node) tea.Cmd {
+	if n == nil {
+		return nil
+	}
+	switch n.kind {
+	case nTable, nStmtTable:
+		return p.insert(control.PanelAction{Kind: control.ActionTable, Table: n.table}, n.table)
+	case nRelation:
+		return p.insert(control.PanelAction{Kind: control.ActionTable, Table: n.table, Anchor: n.anchor, Path: n.path}, n.table)
+	case nColumn:
+		cols := p.markedColumns(n)
+		return p.insert(control.PanelAction{Kind: control.ActionColumns, Table: n.table, Columns: cols}, strings.Join(cols, ", "))
+	case nObject:
+		return p.insert(control.PanelAction{Kind: control.ActionText, Text: n.obj.Insert}, n.obj.Insert)
+	case nHistory:
+		return p.insert(control.PanelAction{Kind: control.ActionText, Text: n.run.SQL}, n.run.SQL)
+	case nConnItem, nSchema, nQueryFile:
+		return p.copyCmd(copyText(n))
+	}
+	return nil
+}
+
+// insert hands an action to the editor; without one it copies the text.
+func (p *Panel) insert(a control.PanelAction, text string) tea.Cmd {
+	if p.editor == "" && p.opt.Standalone {
+		return p.copyCmd(text)
+	}
+	be := p.be
+	what := "insert " + firstLine(text)
+	if a.Kind == control.ActionReplace {
+		what = "replaced the statement"
+	}
+	return func() tea.Msg {
+		if err := be.Act(a); err != nil {
+			return doneMsg{err: err}
+		}
+		return doneMsg{text: what}
+	}
 }
 
 // markedColumns: the marked columns of n's table (n's own when none is
@@ -904,23 +1105,10 @@ func (p *Panel) markedColumns(n *node) []string {
 	return cols
 }
 
-func (p *Panel) act(a control.PanelAction, what string) tea.Cmd {
+func (p *Panel) openFileCmd(path string) tea.Cmd {
 	be := p.be
 	return func() tea.Msg {
-		if err := be.Act(a); err != nil {
-			return doneMsg{err: err}
-		}
-		return doneMsg{text: what}
-	}
-}
-
-func (p *Panel) openFileCmd(path string) tea.Cmd {
-	ws := p.workspace()
-	if ws == nil {
-		return nil
-	}
-	return func() tea.Msg {
-		if err := ws.OpenFile(path); err != nil {
+		if err := be.OpenFile(path); err != nil {
 			return doneMsg{err: err}
 		}
 		return doneMsg{text: "opened " + shortPath(path)}
@@ -930,10 +1118,6 @@ func (p *Panel) openFileCmd(path string) tea.Cmd {
 // newQueryCmd creates the next query file (a SELECT of the highlighted
 // table, if any) and opens it.
 func (p *Panel) newQueryCmd() tea.Cmd {
-	ws := p.workspace()
-	if ws == nil {
-		return nil
-	}
 	body := ""
 	if n := p.selected(); n != nil {
 		if t := previewTable(n); t != "" && n.kind != nColumn {
@@ -944,12 +1128,13 @@ func (p *Panel) newQueryCmd() tea.Cmd {
 			body = kw("SELECT") + " *\n" + kw("FROM") + " " + t + "\n"
 		}
 	}
+	be := p.be
 	return func() tea.Msg {
-		path, err := ws.NewQuery(body)
+		path, err := be.NewQuery(body)
 		if err != nil {
 			return doneMsg{err: err}
 		}
-		if err := ws.OpenFile(path); err != nil {
+		if err := be.OpenFile(path); err != nil {
 			return doneMsg{err: err}
 		}
 		return doneMsg{text: "new query " + shortPath(path)}
@@ -976,129 +1161,87 @@ func (p *Panel) copyCmd(text string) tea.Cmd {
 		if err := be.Copy(text); err != nil {
 			return doneMsg{err: err}
 		}
-		return doneMsg{text: "copied " + text}
+		return doneMsg{text: "copied " + firstLine(text), popup: true}
 	}
 }
 
-// useCmd switches to a connection or schema.
-func (p *Panel) useCmd(n *node) tea.Cmd {
-	if n == nil {
-		return nil
-	}
+// connectCmd switches to a connection and shows its objects.
+func (p *Panel) connectCmd(alias string) tea.Cmd {
 	be := p.be
-	switch n.kind {
-	case nConnItem:
-		alias := n.conn.Alias
-		p.flash("connecting to "+alias+"…", false)
-		return func() tea.Msg {
-			if err := be.Connect(alias); err != nil {
-				return doneMsg{err: err}
-			}
-			return doneMsg{text: "connected to " + alias, reload: true}
+	p.flash("connecting to "+alias+"…", false)
+	return func() tea.Msg {
+		if err := be.Connect(alias); err != nil {
+			return doneMsg{err: err}
 		}
-	case nSchema:
-		name := n.schema
-		p.flash("switching to "+name+"…", false)
-		return func() tea.Msg {
-			if err := be.UseSchema(name); err != nil {
-				return doneMsg{err: err}
-			}
-			return doneMsg{text: "current schema " + name, reload: true}
+		return doneMsg{text: "connected to " + alias, reload: true, tab: tabObjects + 1}
+	}
+}
+
+// ---- connections --------------------------------------------------------------
+
+func (p *Panel) newConnection() tea.Cmd {
+	after := ""
+	if n := p.selected(); n != nil && n.kind == nConnItem && p.cur == tabConns {
+		after = n.conn.Alias
+	}
+	f := map[string]string{}
+	if n := p.selected(); n != nil && p.cur == tabConns {
+		switch {
+		case n.kind == nConnGroup:
+			f["group"] = n.label
+		case n.kind == nConnItem:
+			f["group"] = n.conn.Group
 		}
 	}
+	p.form = newConnForm("New connection", "", after, f)
 	return nil
 }
 
-// ---- search -----------------------------------------------------------------
-
-func (p *Panel) runSearch() {
-	texts := make([]string, len(p.items))
-	for i, it := range p.items {
-		texts[i] = it.text
+// editConnection opens the form on a connection (dup: on a copy of it).
+func (p *Panel) editConnection(alias string, dup bool) tea.Cmd {
+	f, err := p.be.ConnectionFields(alias)
+	if err != nil {
+		p.flash(err.Error(), true)
+		return nil
 	}
-	p.results = fuzzyRank(p.query, texts)
-	p.rsel = clamp(p.rsel, 0, len(p.results)-1)
-}
-
-func (p *Panel) searchKey(k tea.KeyMsg) tea.Cmd {
-	switch k.String() {
-	case "esc":
-		p.search = false
-		return p.previewCmd()
-	case "enter":
-		if it := p.searchSelected(); it != nil {
-			p.search = false
-			if isTableKind(it.obj.Kind) {
-				return p.act(control.PanelAction{Kind: control.ActionTable, Table: it.obj.Insert}, "insert "+it.obj.Insert)
-			}
-			return p.act(control.PanelAction{Kind: control.ActionText, Text: it.obj.Insert}, "insert "+it.obj.Insert)
-		}
-	case "tab", "right", "ctrl+l":
-		if it := p.searchSelected(); it != nil {
-			p.search = false
-			return p.reveal(it)
-		}
-	case "up", "ctrl+p", "ctrl+k":
-		p.rsel = clamp(p.rsel-1, 0, len(p.results)-1)
-		return p.previewCmd()
-	case "down", "ctrl+n", "ctrl+j":
-		p.rsel = clamp(p.rsel+1, 0, len(p.results)-1)
-		return p.previewCmd()
-	case "backspace":
-		if r := []rune(p.query); len(r) > 0 {
-			p.query = string(r[:len(r)-1])
-			p.runSearch()
-		}
-	case "ctrl+u":
-		p.query = ""
-		p.runSearch()
-	case "ctrl+w":
-		q := strings.TrimRight(p.query, " ")
-		if i := strings.LastIndexAny(q, " ._"); i >= 0 {
-			p.query = q[:i]
-		} else {
-			p.query = ""
-		}
-		p.runSearch()
-	default:
-		if k.Type == tea.KeyRunes || k.Type == tea.KeySpace {
-			p.query += string(k.Runes)
-			p.rsel, p.rtop = 0, 0
-			p.runSearch()
-		}
+	if dup {
+		f["alias"] = p.freeAlias(alias + "_copy")
+		p.form = newConnForm("Duplicate of "+alias, "", alias, f)
+		return nil
 	}
+	p.form = newConnForm("Edit "+alias, alias, "", f)
 	return nil
 }
 
-func (p *Panel) searchSelected() *searchItem {
-	if p.rsel < 0 || p.rsel >= len(p.results) {
-		return nil
+func (p *Panel) freeAlias(base string) string {
+	taken := map[string]bool{}
+	for _, c := range p.conns {
+		taken[c.Alias] = true
 	}
-	return &p.items[p.results[p.rsel].index]
+	if !taken[base] {
+		return base
+	}
+	for i := 2; ; i++ {
+		if a := fmt.Sprintf("%s%d", base, i); !taken[a] {
+			return a
+		}
+	}
 }
 
-// reveal expands the tree down to a searched object and selects it.
-func (p *Panel) reveal(it *searchItem) tea.Cmd {
-	var target *node
-	walkAll(p.roots, func(n *node) {
-		if target == nil && n.parent != nil && n.parent.kind == nGroup && n.schema == it.schema &&
-			(n.kind == nTable || n.kind == nObject) && n.obj.Name == it.obj.Name && n.obj.Kind == it.obj.Kind {
-			target = n
+func (p *Panel) deleteConnection(c control.Connection) {
+	if c.Current {
+		p.flash("that is the current connection: connect to another one first", true)
+		return
+	}
+	alias, be := c.Alias, p.be
+	p.confirm = &confirm{question: "Delete connection " + alias + " from the config? y/n", yes: func() tea.Cmd {
+		return func() tea.Msg {
+			if err := be.DeleteConnection(alias); err != nil {
+				return doneMsg{err: err}
+			}
+			return doneMsg{text: "deleted " + alias}
 		}
-	})
-	if target == nil {
-		return nil
-	}
-	for a := target.parent; a != nil; a = a.parent {
-		a.expanded = true
-		p.expanded[a.id] = true
-	}
-	for i, r := range p.rows() {
-		if r == target {
-			p.sel = i
-		}
-	}
-	return p.previewCmd()
+	}}
 }
 
 // ---- action menu ------------------------------------------------------------
@@ -1136,15 +1279,16 @@ func (p *Panel) openMenu(n *node) {
 		if n.kind == nRelation {
 			base.Anchor, base.Path = n.anchor, n.path
 		}
-		add("i", "insert (join after JOIN)", func() tea.Cmd { return p.act(base, "insert "+table) })
+		add("i", "insert (join after JOIN)", func() tea.Cmd { return p.insert(base, table) })
 		name := base
 		name.Mode = "name"
-		add("n", "insert the name", func() tea.Cmd { return p.act(name, "insert "+table) })
+		add("n", "insert the name", func() tea.Cmd { return p.insert(name, table) })
 		join := base
 		join.Mode = "join"
-		add("j", "insert a join", func() tea.Cmd { return p.act(join, "insert join "+table) })
+		add("j", "insert a join", func() tea.Cmd { return p.insert(join, table) })
+		sel := kw("SELECT") + " *\n" + kw("FROM") + " " + table
 		add("s", "insert SELECT * FROM "+table, func() tea.Cmd {
-			return p.act(control.PanelAction{Kind: control.ActionText, Text: kw("SELECT") + " *\n" + kw("FROM") + " " + table}, "insert select")
+			return p.insert(control.PanelAction{Kind: control.ActionText, Text: sel}, sel)
 		})
 		add("c", "insert all columns", func() tea.Cmd {
 			cols := p.cols[table]
@@ -1155,45 +1299,63 @@ func (p *Panel) openMenu(n *node) {
 			for _, c := range cols {
 				names = append(names, c.Insert)
 			}
-			return p.act(control.PanelAction{Kind: control.ActionColumns, Table: table, Columns: names}, "insert columns")
+			return p.insert(control.PanelAction{Kind: control.ActionColumns, Table: table, Columns: names}, strings.Join(names, ", "))
 		})
 		add("y", "copy the name", func() tea.Cmd { return p.copyCmd(table) })
-		add("d", "show the DDL", func() tea.Cmd { p.tab = tabDDL; p.pscroll = 0; return p.previewCmd() })
-		add("S", "show sample rows", func() tea.Cmd {
-			return p.onKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
-		})
+		add("q", "new query file: SELECT * FROM "+table, func() tea.Cmd { return p.newQueryCmd() })
+		add("d", "show the DDL", func() tea.Cmd { p.ptab = ptDDL; p.pscroll = 0; return p.previewCmd() })
+		add("S", "show a sample row", func() tea.Cmd { return p.sampleNow() })
 	case nColumn:
-		add("i", "insert", func() tea.Cmd { return p.activate(n) })
-		add("s", "most common values", func() tea.Cmd {
-			return p.onKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
-		})
+		add("i", "insert", func() tea.Cmd { return p.insertNode(n) })
+		add("s", "most common values", func() tea.Cmd { return p.sampleNow() })
 		add("y", "copy the name", func() tea.Cmd { return p.copyCmd(n.col.Insert) })
 	case nObject:
-		add("i", "insert the name", func() tea.Cmd { return p.activate(n) })
+		add("i", "insert the name", func() tea.Cmd { return p.insertNode(n) })
 		add("y", "copy the name", func() tea.Cmd { return p.copyCmd(n.obj.Insert) })
 	case nSchema:
-		add("u", "use this schema", func() tea.Cmd { return p.useCmd(n) })
 		add("y", "copy the name", func() tea.Cmd { return p.copyCmd(n.schema) })
 	case nConnItem:
-		add("u", "connect", func() tea.Cmd { return p.useCmd(n) })
+		alias := n.conn.Alias
+		add("c", "connect", func() tea.Cmd { return p.connectCmd(alias) })
+		add("e", "edit", func() tea.Cmd { return p.editConnection(alias, false) })
+		add("d", "duplicate", func() tea.Cmd { return p.editConnection(alias, true) })
+		add("n", "new connection", func() tea.Cmd { return p.newConnection() })
+		add("x", "delete", func() tea.Cmd { p.deleteConnection(n.conn); return nil })
+		add("y", "copy the alias", func() tea.Cmd { return p.copyCmd(alias) })
+	case nConnGroup:
+		add("n", "new connection in "+n.label, func() tea.Cmd { return p.newConnection() })
+	case nQueryFile:
+		file := n.file
+		add("o", "open in the editor", func() tea.Cmd { return p.openFileCmd(file) })
+		add("y", "copy the path", func() tea.Cmd { return p.copyCmd(file) })
+		add("n", "new query file", func() tea.Cmd { return p.newQueryCmd() })
 	case nHistory:
 		e := n.run
-		if n.version {
-			add("r", "replace the statement with this version", func() tea.Cmd { return p.activate(n) })
+		if p.cursor != nil {
+			add("r", "replace the statement at the cursor with this", func() tea.Cmd {
+				if p.hist != nil && e.SQL == p.hist.Statement {
+					return func() tea.Msg { return doneMsg{text: "that is the current text"} }
+				}
+				return p.insert(control.PanelAction{Kind: control.ActionReplace, Text: e.SQL}, e.SQL)
+			})
 		}
 		add("i", "insert this query at the cursor", func() tea.Cmd {
-			return p.act(control.PanelAction{Kind: control.ActionText, Text: e.SQL}, "inserted the query")
+			return p.insert(control.PanelAction{Kind: control.ActionText, Text: e.SQL}, e.SQL)
 		})
 		add("y", "copy the SQL", func() tea.Cmd { return p.copyCmd(e.SQL) })
 		if e.Result != "" {
 			add("o", "open the result", func() tea.Cmd { return p.openCmd(e.Result) })
 		}
-		if e.File != "" && p.workspace() != nil {
+		if e.File != "" {
 			add("e", "open its file in the editor", func() tea.Cmd { return p.openFileCmd(e.File) })
 		}
 	}
-	if n.kind != nHistory {
-		add("r", "refresh the schema cache", func() tea.Cmd { return p.onKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("r")}) })
+	switch n.kind {
+	case nTable, nRelation, nStmtTable, nColumn, nObject, nSchema, nGroup:
+		add("r", "refresh the schema cache", func() tea.Cmd { return p.do("refresh") })
+	}
+	if len(items) == 0 {
+		return
 	}
 	p.menu = &menu{title: n.label, items: items}
 }
@@ -1227,13 +1389,23 @@ func (p *Panel) onMouse(m tea.MouseMsg) tea.Cmd {
 	if m.Action != tea.MouseActionPress {
 		return nil
 	}
+	t := p.tab()
 	switch m.Button {
 	case tea.MouseButtonWheelUp:
-		p.sel = clamp(p.sel-3, 0, len(p.rows())-1)
+		t.sel = clamp(t.sel-3, 0, len(p.rows())-1)
 		return p.previewCmd()
 	case tea.MouseButtonWheelDown:
-		p.sel = clamp(p.sel+3, 0, len(p.rows())-1)
+		t.sel = clamp(t.sel+3, 0, len(p.rows())-1)
 		return p.previewCmd()
+	case tea.MouseButtonLeft:
+		if m.Y == 1 { // the tab bar
+			for i, r := range p.tabBarRanges() {
+				if m.X >= r[0] && m.X < r[1] {
+					p.switchTab(i)
+					return p.previewCmd()
+				}
+			}
+		}
 	}
 	return nil
 }

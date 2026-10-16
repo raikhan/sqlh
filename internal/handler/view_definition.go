@@ -454,7 +454,7 @@ func (s *Server) controlDDL(ctx context.Context, name string) (*control.DDLResul
 	if repo, err := s.newDBRepository(ctx); err == nil {
 		deps.repo = repo
 	}
-	key := deps.conn + "\t" + s.targetKey()
+	key := deps.conn + "\t"
 	_, deps.skipMetadata = s.noMetadataDDL.Load(key)
 	deps.failed = func() { s.noMetadataDDL.Store(key, true) }
 	s.mu.Unlock()

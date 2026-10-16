@@ -36,6 +36,7 @@ func main() {
 
 func realMain() error {
 	app := &cli.App{
+		Before:  cmd.Before,
 		Name:    name,
 		Version: fmt.Sprintf("Version:%s, Revision:%s\n", version, revision),
 		Usage:   "SQL language server (Oracle, PostgreSQL, SQLite) and query runner.",
@@ -139,6 +140,7 @@ func serve(c *cli.Context) error {
 			return fmt.Errorf("cannot read specified config, %w", err)
 		}
 		server.SpecificFileCfg = cfg
+		server.ConfigPath = configFile
 	} else {
 		// Load default config
 		cfg, err := config.GetDefaultConfig()
@@ -146,7 +148,9 @@ func serve(c *cli.Context) error {
 			return fmt.Errorf("cannot read default config, %w", err)
 		}
 		server.DefaultFileCfg = cfg
+		server.ConfigPath = config.YamlConfigPath
 	}
+	server.NoteConfigRead()
 
 	// Set connect option
 	var connOpt []jsonrpc2.ConnOpt

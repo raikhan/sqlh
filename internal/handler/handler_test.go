@@ -138,8 +138,6 @@ func TestInitialized(t *testing.T) {
 					CommandShowDatabases,
 					CommandShowSchemas,
 					CommandShowConnections,
-					CommandSwitchDatabase,
-					CommandSwitchSchema,
 					CommandSwitchConnection,
 					CommandShowTables,
 				},

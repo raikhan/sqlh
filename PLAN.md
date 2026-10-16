@@ -799,6 +799,8 @@ the session `SET` is safe and `DISCARD ALL` resets it on release; transaction mo
 `SET LOCAL` per transaction (not built). Switching: `sqlh schema [NAME]` (fzf), `space i S`
 (status moved to `space i s`), LSP `switchSchema`; reconnects, rolled back on failure; not
 remembered (the header's `schema=` carries it). `run/export/dump --schema` standalone.
+**Superseded by Phase 11 (2026-10-16):** switching removed; a connection is one database and
+schema.
 Config: every connection validated; PostgreSQL/MySQL/Vertica `host` without `proto` → tcp.
 
 ### Phase 10 — sqlh panel: own TUI replacing fzf (2026-10-16) ✅ done (branch `tui-experiment`)
@@ -1034,6 +1036,125 @@ Herdr pane driving the originating Helix with `herdr pane send-keys`) and
 - The panel takes half of the split pane; `panel.placement` (default `right`).
 - No toggle on `space i t` (a Helix binding); `panel.keys.backToEditor` (default `backspace`).
 
+### Phase 11 — panel refinement after first use (2026-10-16) ✅ done (branch `tui-experiment`)
+
+Feedback from the first real session (pg_local, `sqlh tui` + panel). Decisions in 11.9.
+
+#### 11.0 Bugs ✅
+
+- [x] **`sqlh tui` → new Helix pane showed a Nushell error.** `splitEditor` set only
+      `HELIX_HELPER_ARGV`; `~/.config/helix/start-helper.nu` also reads
+      `$env.HELIX_ORIGIN_PANE_ID`; Helix only opened through the 3 s typed-`exec` fallback.
+      Now both are passed (origin = the app's pane); `TestSplitEditorEnv` (fake Herdr in
+      `internal/herdr/herdrtest`, usable from any package).
+- [x] **`sqlh tui` screen corrupted by log lines.** The in-process server's `log` output and
+      jsonrpc2's own logger (a `log.New(os.Stderr…)` of its own: `SetLogger(log.Default())` on
+      both ends of control connections now) wrote over the screen; `logAway` sends the log to
+      `--log` / `{cache}/sqlh/tui.log` while the panel or the app runs. Verified live: the
+      editor taking the socket over no longer prints `connection is closed` on screen.
+
+#### 11.1 A connection is the target ✅
+
+- [x] Removed: `sqlh db`, `sqlh schema`, `--schema` on run/export/dump/ddl/relations, the LSP
+      commands `switchDatabase`/`switchSchema`, control `useDatabase`/`schemaChoices`/
+      `useSchema`, the server's `curDBName`/`curSchema` and `targetKey`, the panel's `u`.
+      `header.ErrSwitch`: `db=`/`schema=` in a header is an error diagnostic, refuses editor
+      runs (`TestRunRefusesDBHeader`) and `dump`, and the header isn't restamped.
+- [x] `DBConfig.Target()` (database, schema; from fields or the DSN: PostgreSQL key=value and
+      URL `search_path`, Oracle login, SQLite file) and `Fields()` (labelled parts, passwords
+      masked; `internal/database/fields.go`, tests); `group:`; alias uniqueness validated.
+- [x] Connections tab: `alias  db › schema  env`, groups as folders (open when holding the
+      current one); Describe as a form.
+- [x] New / Edit / Duplicate / Delete: `internal/connedit` rewrites only the lines of the
+      connection (yaml.v3 node of that item re-rendered at its indentation; comments, blank
+      lines and the rest byte-for-byte; unchanged values keep their spelling), validated with
+      `config.Parse` before an atomic write (permissions and symlinks kept). Form in the TUI
+      (bubbles textinput; choices with ←/→; SQLite shows only the file); Ctrl-T tests
+      (`database.Open` + ping). Servers re-read the config when its mtime changes
+      (`reloadConfigIfChanged` on `connections`/`reloadConfig`; the current connection follows
+      its alias and reconnects when its settings changed; a broken file is refused;
+      `TestReloadConfig`); `Status.Panel.ConfigPath` says which file.
+
+#### 11.2 Tabs ✅
+
+- [x] 1 Connections · 2 Objects · 3 Statement · 4 Queries · 5 History (`1`–`9`, tab bar
+      clickable, short labels when narrow); per-tab selection/scroll; default 3 in the panel, 2
+      in `sqlh tui`. Queries in the panel too (the backend opens files with `:open`).
+- [x] Keymaps: `panel.keys.<action>` / `picker.keys.<action>` (a key or a list), defaults in
+      `config.DefaultPanelKeys`/`DefaultPickerKeys`, scopes (main, search, form; picker)
+      validated for unknown actions and clashes; footer and `?` help from the keymap. The CLI
+      picker reads `picker.keys` from the config (`cmd.Before` records the command line).
+
+#### 11.3 Statement tab ✅
+
+- [x] Statement tables open, Relations open under each, details in the alias form
+      (`→ customer  o.customer_id`; nested: `customer.region_id`); the flat list is gone. The
+      same succinct form in Objects.
+
+#### 11.4 Search ✅
+
+- [x] Omni-like in every tab: the tab's kind by default (all tables & views for an empty
+      query in Objects/Statement), prefixes `:` `.` `#` `~` `@` `*`; columns from
+      `sqlh/allColumns` (loaded on first use; `.orders.tot` matches table.column). Enter goes
+      to the result in its tab (a column opens its table and selects it once loaded), Ctrl-Y
+      inserts.
+
+#### 11.5 Enter / Ctrl-Y ✅
+
+- [x] Enter navigates (expand, connect → tab 2, open file, history versions); Ctrl-Y inserts;
+      without an editor (`sqlh tui`) it copies with a popup; replace-statement in the `.` menu.
+
+#### 11.6 Sample ✅
+
+- [x] One row as `column  value` (wrapped), `]`/`[` through the fetched rows; the
+      distinct-values grid and `v` are gone; `s` on a column kept.
+
+#### 11.7 Docs/tests ✅
+
+- [x] doc/cli.md (Panel rewritten with the key table, sqlh tui, no db/schema), README,
+      config.example.yml; `~/.config/helix`: `space i D`/`S` removed, README updated. Tests:
+      tui (tabs, search prefixes, form flows, sample row, history versions, configurable keys,
+      copy popup), connedit, fields, reload, all columns, header error, editConfigFile.
+- [x] Verified live in Herdr: tui starts clean on Objects; duplicate shop_prod → form →
+      shop_test (dev) written into the config's PROD group; Enter connects → Objects; `.tot`
+      search → orders.total; Sample one row; `n` opens Helix without the Nushell error, no log
+      lines; Statement follows that Helix, Ctrl-Y on a relation inserts the join; the panel
+      from Helix starts on Statement, Enter expands, Ctrl-Y inserts, closes with Helix.
+
+#### 11.8 Later — relationship overview widget (idea, not scheduled)
+
+An overview of the statement's relationships as a 4-column table, the left table named once:
+
+```
+sds_data_raw   ai_extraction_id  id                ai_extraction_process
+               id                sds_data_raw_id   batch_document
+               input_id          id                sds_extraction_input
+```
+
+Navigable on table names: choosing a foreign table makes it the left column with its own
+relationships; Back returns to the previous table (a breadcrumb stack). Interactive, so it
+needs its own place in the flow (a tab or a full-screen view) — revisit after 11.2.
+
+#### 11.9 Decided (2026-10-16)
+
+1. Headers with `db=`/`schema=` are an **error** (few files; the user fixes them). Objects shows
+   the connection's own schema; the other `schemas:` entries as folders below it.
+2. Groups: one level (`group: CADE`), ungrouped connections at the top level.
+3. Connection form in the TUI writing config.yml, with **New**, **Duplicate**, **Edit** and
+   **Delete**; `passwdCmd` editable as a plain field (passwords masked).
+4. Queries tab: only `tui.queriesDir`.
+5. Search is omni-like and works in every tab; with no prefix it searches **the tab's own kind**
+   (Connections → connections, Objects/Statement → tables & views, Queries → files, History →
+   runs). Prefixes: `:` tables & views, `.` columns (`table.col` too), `#` indexes/constraints,
+   `~` sequences, `@` connections, `*` everything. Choosing a result of another kind switches
+   to its tab.
+6. Enter on a connection makes it current and goes to tab 2; Enter on a history run expands
+   its versions, "replace statement" is in the `.` menu.
+7. Ctrl-Y without an editor copies and says so in a popup.
+8. The sample row is the first the database returns; `s` on a column (most common values)
+   stays.
+9. Keys under each part: `panel.keys.<action>` (panel and `sqlh tui`), `picker.keys.<action>`.
+
 ### Phase 5 — later / optional
 
 - [ ] `EXPLAIN` to buffer
@@ -1107,6 +1228,12 @@ Herdr pane driving the originating Helix with `herdr pane send-keys`) and
 - **2026-10-16** Phase 7 done: fix for UNION lineage in derived tables/CTEs (+ Oracle
   `MINUS`); current schema per connection (`sqlh schema`, header `schema=`, CADE works from
   read-only logins); lineage for UNION views; go to definition of tables and `sqlh ddl`.
+
+- **2026-10-16** Phase 11 (first-use feedback): tabs 1–5, omni search with prefixes, Enter
+  navigates / Ctrl-Y inserts, connection form editing config.yml (connedit), groups,
+  one-row samples, configurable keys (panel + picker); database/schema switching removed
+  (a connection is the target; `db=`/`schema=` headers are errors); tui bugs fixed (Nushell
+  hook env, log over the screen).
 
 - **2026-10-16** Phase 10 built on `tui-experiment`: `internal/tui` (panel, inline picker),
   `internal/herdr` (socket API), `internal/history`; panel with object tree, statement
