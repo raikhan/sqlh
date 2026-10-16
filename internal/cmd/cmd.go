@@ -122,6 +122,7 @@ func Commands() []*cli.Command {
 		},
 		panelCommand(),
 		tuiCommand(),
+		keysCommand(),
 	}, append(catalogCommands(), relationCommands()...)...)
 }
 

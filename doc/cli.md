@@ -26,6 +26,7 @@ runs standalone, on the connection in the file's header (see [Query files](#quer
 | `sqlh schemas [--all]` / `sqlh databases` | lists (`-p` picks one): the connection's schemas, the server's databases |
 | `sqlh panel` | open (or focus) the side panel of this Helix pane: connections, objects, the statement at the cursor, queries, history; Ctrl-Y inserts at Helix's cursor (Herdr); see [Panel](#panel) |
 | `sqlh panel take` | print what the panel chose, for the cursor (the hidden Helix binding `space i P`) |
+| `sqlh keys [SECTION]` | every key binding action for the config — `panel.keys` (every tab, then each tab's own: `connections`, `objects`, `statement`, `queries`, `history`; `search`, `form`) and `picker.keys` — with its keys as configured, the default when it differs, and what it does (`--defaults`: ignore the config; `--json`); SECTION: `panel`, `picker` or a tab |
 | `sqlh tui` | the panel as an app, for the workspace around the current directory (`-C DIR`): `c` new query opened in Helix next to it; see [sqlh tui](#sqlh-tui) |
 
 A connection is one database and schema: to work in another, add a connection for it (the
@@ -124,7 +125,8 @@ the background load a few seconds later (`(views are still loading)` until then)
 
 `sqlh panel` (Helix `space i t`) opens a side panel next to the Helix pane it is run from —
 in [Herdr](https://herdr.dev), half of that pane, on the side `panel.placement` says
-(`right`, `left`, `up`, `down`) — or focuses it when it is already open. It belongs to that
+(`right`, `left`, `up`, `down`; read each time a panel opens, an edited config counts at
+once) — or focuses it when it is already open. It belongs to that
 Helix: it closes when Helix exits. Set the cursor in Helix, go to the panel, pick an object,
 press **Ctrl-Y**: it is inserted at Helix's cursor and the focus goes back to Helix.
 
@@ -264,7 +266,8 @@ panel:
       sample: d
 ```
 
-The defaults:
+`sqlh keys` lists every action with its keys as your config has them (and the default where
+it differs). The defaults:
 
 | actions | default |
 |---|---|

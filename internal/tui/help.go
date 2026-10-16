@@ -13,51 +13,8 @@ import (
 	"github.com/raikhan/sqlh/internal/config"
 )
 
-// actionDesc: what an action does, as the palette lists it.
-var actionDesc = map[string]string{
-	"up": "Move up", "down": "Move down", "top": "Go to the top", "bottom": "Go to the bottom",
-	"pageUp": "Half a page up", "pageDown": "Half a page down",
-	"scrollTop":   "Scroll the selected row to the top",
-	"expand":      "Open the selected item",
-	"collapse":    "Close it (on a closed one: go to its parent)",
-	"collapseAll": "Collapse all",
-	"expandAll":   "Expand all tables (and follow new ones open)",
-	"open":        "Enter: open/close, connect, open the file",
-	"tab1":        "Tab: Connections", "tab2": "Tab: Objects", "tab3": "Tab: Statement",
-	"tab4": "Tab: Queries", "tab5": "Tab: History",
-	"previewNext": "Preview: next tab", "previewPrev": "Preview: previous tab",
-	"previewDown": "Preview: scroll down", "previewUp": "Preview: scroll up",
-	"copy":         "Copy the name (a run: its SQL; a file: its path)",
-	"actions":      "Actions of the selection (menu)",
-	"search":       "Search (: tables  . columns  # indexes  ~ sequences  @ connections  * all)",
-	"help":         "Keys (this list)",
-	"quit":         "Quit",
-	"backToEditor": "Back to the editor",
-	"insert":       "Insert at the editor's cursor (no editor: copy)",
-	"mark":         "Mark a column (insert the marked ones together)",
-	"sample":       "Sample a row (a column: its most common values)",
-	"nextRow":      "Sample: next row", "prevRow": "Sample: previous row",
-	"newQuery":            "New query file (SELECT * FROM the selected table)",
-	"refresh":             "Refresh the schema cache",
-	"newConnection":       "New connection",
-	"editConnection":      "Edit the connection",
-	"duplicateConnection": "Duplicate the connection",
-	"deleteConnection":    "Delete the connection",
-	"openResult":          "Open the run's result in the viewer",
-	"editFile":            "Open the run's file in the editor",
-	"renameQuery":         "Rename the query file",
-	"nextChain":           "Join chains: the next one's table (after / :)",
-	"prevChain":           "Join chains: the previous one's table",
-	"clearChains":         "Join chains: stop stepping through them",
-	"editConfig":          "Edit the config file in $EDITOR (reloads after)",
-	"reloadConfig":        "Reload the config file (keys, colours, connections, …)",
-	"historyAllConns":     "Recent runs: all connections / the current one's",
-	"deleteQuery":         "Delete the query file",
-	"searchUp":            "Search: previous result", "searchDown": "Search: next result",
-	"searchOpen": "Search: go to the result", "searchInsert": "Search: insert the result",
-	"searchCancel": "Search: back to the tree", "searchNextKind": "Search: next kind (prefix)",
-	"searchPrevKind": "Search: previous kind",
-}
+// actionDesc: what an action does (also `sqlh keys`).
+var actionDesc = config.PanelActionHelp
 
 // actionTitle: an action's description, lower case (for notes).
 func actionTitle(a string) string {

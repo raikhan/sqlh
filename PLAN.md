@@ -1879,6 +1879,15 @@ Herdr grants the app's keyboard-enhancement request (`Flags:1`, disambiguate) an
   `MINUS`); current schema per connection (`sqlh schema`, header `schema=`, CADE works from
   read-only logins); lineage for UNION views; go to definition of tables and `sqlh ddl`.
 
+- **2026-10-16** `sqlh/status` re-reads an edited config file (as `connections` does): the
+  panel's settings (`panel.placement`, keys, …) count from the next `space i t` without
+  `:lsp-restart`.
+
+- **2026-10-16** `sqlh keys [SECTION] [--defaults] [--json]`: every key binding action for
+  the config (panel.keys by section, picker.keys), keys as configured, defaults, help — the
+  descriptions moved to `config.PanelActionHelp` / `PickerActionHelp` (shared with the `?`
+  palette; a test checks every action has one).
+
 - **2026-10-16** Phase 16: Bubble Tea v2 (kitty keyboard protocol): `ctrl+:` edits and
   `ctrl+R` reloads the config; shift spellings matched either way.
 

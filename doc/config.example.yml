@@ -37,7 +37,7 @@ panel:
   # `:insert-output sqlh panel take …` (the hidden binding space i P, see doc/cli.md)
   # insertKeys: [esc, space, i, P]
   # keys by action (a key or a list; Bubble Tea key names; the rest keep their defaults,
-  # all listed in doc/cli.md#panel); per tab in a section (connections, objects,
+  # all listed by `sqlh keys`); per tab in a section (connections, objects,
   # statement, queries, history; search, form), e.g.:
   # keys:
   #   insert: ctrl+y          # insert at Helix's cursor (Enter navigates)
@@ -55,7 +55,7 @@ panel:
   #   keyword: "#b6a0ff"      # also comment, string, number, function, type, alias,
   #                           # parameter, operator
 # the inline picker (tables -p, connect, …): keys by action, e.g.
-# picker:
+# picker:                     # `sqlh keys picker` lists the actions
 #   keys:
 #     nameOnly: ctrl+t        # the table picker: insert the other form (name / JOIN)
 tui:

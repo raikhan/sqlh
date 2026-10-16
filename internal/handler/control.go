@@ -173,6 +173,9 @@ func (s *Server) handleControl(ctx context.Context, conn *jsonrpc2.Conn, req *js
 	defer s.mu.Unlock()
 	switch req.Method {
 	case control.MethodStatus:
+		// the panel reads its settings here (placement, keys, …): a config
+		// file edited since counts at once
+		s.reloadConfigIfChanged(ctx)
 		return s.controlStatus(), nil
 	case control.MethodConnections:
 		s.reloadConfigIfChanged(ctx)
