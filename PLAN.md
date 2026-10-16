@@ -381,7 +381,7 @@ words*), and both failed on CTE columns. A wider probe found more subquery bugs.
 - [x] Fix: an indented first statement stayed indented — `restoreGaps` copied the document's
       leading whitespace verbatim; now only its newlines (like the gaps between statements).
 
-### Phase 7 — relationships between tables (DBeaver-like explorer, in fzf)
+### Phase 7 — relationships between tables (DBeaver-like explorer, in fzf) ✅ done
 
 Decided: no separate TUI; the table picker and `describe` cover it. Schemas are boundaries
 (no cross-schema relationships). A wrong connection is worse than none: guesses are labelled
@@ -433,7 +433,18 @@ Decided: no separate TUI; the table picker and `describe` cover it. Schemas are 
       `describe` and the preview; hover marks the table as inline code (coloured like the
       title; markdown hard breaks instead of an aligned code block), the preview in cyan
       with dimmed notes.
-- [ ] Lineage for `UNION` views when every branch takes a column from the same table column.
+- [x] Lineage for `UNION` views (2026-10-16): a set operation's column has one origin per
+      branch adding rows (`SubQueryColumn.Origins`, flattened through nested unions, derived
+      tables, CTEs, views on views; `EXCEPT`/`MINUS` right sides add none). The same column in
+      every branch: full lineage. Different columns: an edge to a table all of them reference
+      (multi-column too, a branch's columns from one table reference), "via N tables"
+      (`Edge.ViaTables`), outgoing only, "maybe" if a branch only has a guess. Hover lists a
+      view column's origins (`RelGraph.ColumnOrigins`, capped at 5). CADE: +1573 edges, 135
+      UNION views, e.g. `CACLIENTMODULEUSAGE → CABUSINESSUNIT via 12 tables`.
+      - Fix first (f02b100): a UNION in a derived table/CTE took the first branch as the
+        origin (9 wrong CADE edges); columns matched by position, unnamed expressions keep
+        theirs (CTE column lists were shifted); Oracle `MINUS` (an identifier for the lexer)
+        was swallowed as a table alias.
 - [x] Views in the LSP: go to definition of a view or a view's column opens a read-only file
       with its `CREATE` statement (`<runtime dir>/views/<workspace key>/<conn>/<schema>.<view>.sql`; `control.Find` maps
       that directory back to the workspace's server, so the Helix glue works there; the
@@ -445,7 +456,14 @@ Decided: no separate TUI; the table picker and `describe` cover it. Schemas are 
       "no INSERT" in hover and `describe`. Test views in pg_local: `scratch/views_pg.sql`
       (`v_batch_document` read-only, `v_excluded_document` on it, `v_openai_model`
       updatable, `mv_batch_summary`). CADE: 513 read-only, 143 writable views.
-- [ ] Go to definition of a table: generated DDL (columns, keys) the same way.
+- [x] Go to definition of a table (2026-10-16), the same way as views, fetched without the
+      server lock (5 s): Oracle `DBMS_METADATA.GET_DDL` (2 s budget: 15 s cold on CADE2, then
+      0.4 s) when allowed, else — ORA-31603 for `cade_read_only`, remembered — generated from
+      `ALL_*` like DBeaver does (DBeaver silently falls back too); PostgreSQL from
+      `pg_catalog`; SQLite `sqlite_master`; failing that from the schema cache (marked
+      approximate). Targets: names, `schema.name` (allowed schemas; views of other schemas
+      fetched), DDL statements (`internal/ddl` refs), columns (cursor on their line), Oracle
+      synonyms (`ALL_SYNONYMS`). `sqlh ddl TABLE` prints it (`control` `sqlh/ddl`, standalone).
 
 ### Phase 8 — query files: connection header, `sqlh dump`, result reuse
 
@@ -458,6 +476,7 @@ Decided:
   other keys kept). `db=` only when the database was switched (`space i D`). No schema: it
   comes from the connection (DSN `search_path`, Oracle login schema); session state
   (`SET search_path`, `ALTER SESSION`) is not carried — put it in the file.
+  *Superseded 2026-10-16*: `schema=` when the schema was switched (see "Current schema").
 - **The header follows the editor**: the server rewrites (or inserts) it, in open buffers only
   (`workspace/applyEdit`, versioned; the buffer is modified, the CLI sees it after `:w`):
   on every run of a document (code actions, `space i r/e/d`, `sqlh run --file` via the server),
@@ -763,6 +782,24 @@ for the default list, ~450 for PostgreSQL), unfiltered by context.
 7. **Formatter**: part of this phase (M9).
 8. **Snippets**: plain words only for now. Candidate for a later phase (see Phase 5).
 
+### Current schema per connection (2026-10-16) ✅ done
+
+Trigger: with a read-only login (`cade_read_only`, `sdsai`) the current schema was the
+login's, empty: FKs, views, relationships, view go to definition were all off for CADE (the
+CADE checks only worked through `PROBE_SCHEMA`).
+
+Decided: one schema at a time per connection; `schema:` else the first of `schemas:` else the
+login's. Oracle `ALTER SESSION SET CURRENT_SCHEMA` on every pooled session (`initConnector`
+around go-ora's connector); PostgreSQL `SET search_path TO <schema>, <rest of the original>`
+after connecting (pgx `OptionAfterConnect`) — not a startup parameter: PgBouncer refuses it
+before PostgreSQL 18 (prod `srepgcluster:5411`, Percona 17.7). Probed (`scratch/pgbprobe`):
+PgBouncer in **session** mode (two clients keep their backends; PIDs reused across runs), so
+the session `SET` is safe and `DISCARD ALL` resets it on release; transaction mode would need
+`SET LOCAL` per transaction (not built). Switching: `sqlh schema [NAME]` (fzf), `space i S`
+(status moved to `space i s`), LSP `switchSchema`; reconnects, rolled back on failure; not
+remembered (the header's `schema=` carries it). `run/export/dump --schema` standalone.
+Config: every connection validated; PostgreSQL/MySQL/Vertica `host` without `proto` → tcp.
+
 ### Phase 5 — later / optional
 
 - [ ] `EXPLAIN` to buffer
@@ -831,6 +868,10 @@ for the default list, ~450 for PostgreSQL), unfiltered by context.
   completion, hover and a DDL lint pass; index/constraint/sequence/trigger/type metadata;
   schema cache reloaded after DDL runs (`refreshAfterDDL`); DDL formatting layout.
 
+- **2026-10-16** Phase 7 done: fix for UNION lineage in derived tables/CTEs (+ Oracle
+  `MINUS`); current schema per connection (`sqlh schema`, header `schema=`, CADE works from
+  read-only logins); lineage for UNION views; go to definition of tables and `sqlh ddl`.
+
 ## 6. Environment notes
 
 - Helix: `[language-server.sqlh] command = "sqlh"`, `args = ["-log", "/tmp/sqlh.log"]`
@@ -858,3 +899,12 @@ for the default list, ~450 for PostgreSQL), unfiltered by context.
   views and their writability: `go run ./scratch/viewprobe ALIAS [all]`; pg_local test views
   (cadetst): `scratch/views_pg.sql`;
   scenario scripts `/tmp/sqls-build/t_rel*.py` (`t_rel_pty.py` drives real fzf in a pty)
+- Edge dumps before/after a change: `CFG=<config> DUMP=out.txt go run ./scratch/zz_reldump ALIAS`
+  (`PROBE_SCHEMA=S` pretends S is current), diff two dumps
+- Definitions: `go run ./scratch/ddlprobe ALIAS SCHEMA NAME [skip]` (skip: no DBMS_METADATA);
+  `cade2` (casys) may use DBMS_METADATA, `cadetst_read_only`/`cadedev_exp` may not
+- Pooler mode of a PostgreSQL connection (read-only, no SET): `go run ./scratch/pgbprobe ALIAS`
+- Schema switching / table definitions against PostgreSQL: `SQLH_TEST_PG=<dsn> go test
+  ./internal/handler -run 'SwitchSchema|TableDefinition'` (needs two user schemas)
+- Oracle end to end over LSP with only the read-only connection (the config's first one is
+  `cadeprod`): `/tmp/sqlh-e2e-gd/e2e.py` (own config, runtime and state dirs)
