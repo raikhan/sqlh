@@ -1,12 +1,53 @@
-# sqlh: SQL Language Server
+# sqlh: SQL Language Server + query runner
 
 ![test](https://github.com/raikhan/sqlh/workflows/test/badge.svg)
 
-An implementation of the Language Server Protocol for SQL.
+An implementation of the Language Server Protocol for SQL, plus a CLI and a terminal UI for
+running queries, built around [Helix](https://helix-editor.com) (and [Herdr](https://herdr.dev)
+panes) but usable from any LSP client.
+
+sqlh is a fork of [sqls](https://github.com/sqls-server/sqls) (MIT). The parser, completer,
+hover and formatter come from sqls; the fork adds the rest.
 
 ## Note
 
 This project is currently under development and there is no stable release. Therefore, destructive interface changes and configuration changes are expected.
+
+## What this fork adds
+
+Compared to upstream sqls:
+
+- **Oracle with a pure-Go driver** ([go-ora](https://github.com/sijms/go-ora), no Oracle
+  Instant Client needed), with schema allow-lists for big dictionaries, views, synonyms,
+  packages and PL/SQL blocks.
+- **Running queries to CSV**: preview (first N rows) or full export, streamed to
+  `{workspace}/.sqlh/results/`, cancellable, reported in the editor's status line rather than
+  in popups. Runs the statement at the cursor or every statement in a selection. See
+  [Running queries](#running-queries).
+- **The `sqlh` CLI**: it talks to the editor's server over a Unix socket (same connection and
+  same unsaved buffers), or runs standalone: `run`, `export`, `dump`, `connect`, `tables`,
+  `describe`, `ddl`, `relations`, `columns`, `keys`, … See [doc/cli.md](doc/cli.md).
+- **A side panel / app** (Bubble Tea TUI): connections, schema objects, the statement at the
+  cursor, query files and history. It inserts tables, join chains and columns at Helix's
+  cursor. See [Side panel](#side-panel).
+- **Schema-aware diagnostics** for DML and DDL, checked against the schema cache only, with no
+  database round-trips.
+- **Deeper completion**: CTEs, derived tables, correlated subqueries, `RETURNING`/`ON
+  CONFLICT`/`MERGE`, DDL statements, function names with signatures (from `pg_proc` / Oracle
+  packages), and **JSON keys** sampled from the data (PostgreSQL `->`/`->>`/`#>`/jsonpath,
+  Oracle `json_value`/`json_query`/…).
+- **Relationships**: foreign keys, keys inherited through views and guessed ("maybe")
+  relationships. These drive join completion, hover, the table picker and join-chain search.
+- **Go to definition** of tables and views (DDL fetched or generated from the catalog), of
+  aliases and of CTEs. **Rename** works on table aliases.
+- **Query files** with a `-- sqlh: conn=ALIAS` header, `sqlh dump` for scheduled exports,
+  reuse of recent results, and a **query history** with versions and diffs.
+- **Per-connection current schema**, `environment` labels (dev/test/prod), and secrets from
+  `passwdCmd` (e.g. the macOS keychain) or `${ENV}` references.
+- A formatter that is safe for format-on-save (JSON operators, DDL layout).
+- The language server is started as `sqlh lsp`; `sqlh` on its own starts the app.
+
+The working plan and progress log is in [PLAN.md](PLAN.md).
 
 ## Features
 
@@ -16,10 +57,15 @@ sqlh aims to provide advanced intelligence for you to edit sql in your own edito
 
 - MySQL([Go-MySQL-Driver](https://github.com/go-sql-driver/mysql))
 - PostgreSQL([pgx](https://github.com/jackc/pgx))
+- Oracle([go-ora](https://github.com/sijms/go-ora), pure Go)
 - SQLite3([go-sqlite3](https://github.com/mattn/go-sqlite3))
 - MSSQL([go-mssqldb](https://github.com/microsoft/go-mssqldb))
-- H2([pgx](https://github.com/CodinGame/h2go))
+- H2([h2go](https://github.com/CodinGame/h2go))
 - Vertica([vertica-sql-go](https://github.com/vertica/vertica-sql-go))
+- ClickHouse([clickhouse-go](https://github.com/ClickHouse/clickhouse-go))
+
+PostgreSQL, Oracle and SQLite get the most attention in this fork: function catalogs,
+column types, view lineage, DDL and JSON completion. The other drivers keep sqls' feature set.
 
 ### Language Server Features
 
@@ -47,48 +93,60 @@ checked against the target table.
 
 #### Auto Completion
 
-![completion](./imgs/sqlh-completion.gif)
+![completion](./imgs/sqls-completion.gif)
 
 - DML(Data Manipulation Language)
-    - [x] SELECT
-        - [x] Sub Query (derived tables: `s.` lists the subquery's columns, incl. aliased
-              expressions such as `count(*) as n`)
-        - [x] WITH queries (CTEs): names in `FROM`/`JOIN` (listed first), `x.` and unqualified
-              columns, explicit column lists `x (a, b)`, CTEs built on CTEs, `RECURSIVE`
-        - [x] Scoping per query level: an inner subquery's or CTE body's `FROM` doesn't leak
-              into the outer query; `UNION` branches are separate; correlated subqueries see
-              the enclosing query's aliases (`b.` inside `EXISTS (…)`)
-    - [x] INSERT (incl. `RETURNING`, `ON CONFLICT (…) DO UPDATE SET` with `EXCLUDED.`)
-    - [x] UPDATE, DELETE (incl. `RETURNING`)
-    - [x] MERGE (`INTO`/`USING` tables, `UPDATE SET`/`INSERT (…)` target columns)
+  - [x] SELECT
+    - [x] Sub Query (derived tables: `s.` lists the subquery's columns, incl. aliased
+          expressions such as `count(*) as n`)
+    - [x] WITH queries (CTEs): names in `FROM`/`JOIN` (listed first), `x.` and unqualified
+          columns, explicit column lists `x (a, b)`, CTEs built on CTEs, `RECURSIVE`
+    - [x] Scoping per query level: an inner subquery's or CTE body's `FROM` doesn't leak
+          into the outer query; `UNION` branches are separate; correlated subqueries see
+          the enclosing query's aliases (`b.` inside `EXISTS (…)`)
+  - [x] INSERT (incl. `RETURNING`, `ON CONFLICT (…) DO UPDATE SET` with `EXCLUDED.`)
+  - [x] UPDATE, DELETE (incl. `RETURNING`)
+  - [x] MERGE (`INTO`/`USING` tables, `UPDATE SET`/`INSERT (…)` target columns)
 - DDL(Data Definition Language): the keywords that fit the position, then names
-    - [x] CREATE TABLE: column types of the dialect (PostgreSQL, Oracle, SQLite, a generic set
-          for the others; user types and domains too), column and table constraints,
-          `REFERENCES` tables (the one guessed from the column name first, `customer_id` →
-          `customer`) and their columns (keys first), key column lists from the columns
-          defined above, `CHECK`/`DEFAULT` expressions; `… AS SELECT` like a query
-    - [x] ALTER TABLE: tables, actions, columns of the table (`DROP`/`RENAME`/`ALTER`/`MODIFY`
-          `COLUMN`), types after `ADD [COLUMN] x`/`TYPE`, constraints, triggers
-    - [x] DROP / TRUNCATE / COMMENT ON / GRANT … ON / ALTER VIEW|INDEX|SEQUENCE|TRIGGER: only
-          the kind of object named (`DROP VIEW` → views, `DROP INDEX` → indexes, `DROP
+  - [x] CREATE TABLE: column types of the dialect (PostgreSQL, Oracle, SQLite, a generic set
+        for the others; user types and domains too), column and table constraints,
+        `REFERENCES` tables (the one guessed from the column name first, `customer_id` →
+        `customer`) and their columns (keys first), key column lists from the columns
+        defined above, `CHECK`/`DEFAULT` expressions; `… AS SELECT` like a query
+  - [x] ALTER TABLE: tables, actions, columns of the table (`DROP`/`RENAME`/`ALTER`/`MODIFY`
+        `COLUMN`), types after `ADD [COLUMN] x`/`TYPE`, constraints, triggers
+  - [x] DROP / TRUNCATE / COMMENT ON / GRANT … ON / ALTER VIEW|INDEX|SEQUENCE|TRIGGER: only
+        the kind of object named (`DROP VIEW` → views, `DROP INDEX` → indexes, `DROP
           SEQUENCE`, `DROP TRIGGER`, `DROP TYPE`), `schema.` qualified, `COMMENT ON COLUMN t.`
-    - [x] CREATE INDEX (`ON` table, its columns), CREATE VIEW (`AS SELECT` like a query),
-          CREATE TRIGGER (`ON` table), CREATE SEQUENCE options
+  - [x] CREATE INDEX (`ON` table, its columns), CREATE VIEW (`AS SELECT` like a query),
+        CREATE TRIGGER (`ON` table), CREATE SEQUENCE options
 
-    Index, constraint, sequence, trigger and type names come from the database's catalog
-    with the background load (Oracle: the allowed schemas; a non-owner login may not see
-    another owner's triggers and sequences).
+  Index, constraint, sequence, trigger and type names come from the database's catalog
+  with the background load (Oracle: the allowed schemas; a non-owner login may not see
+  another owner's triggers and sequences).
 
-    A space triggers completion where names are expected (after `DROP VIEW`, `ALTER TABLE`,
-    `REFERENCES`, `FROM`, `JOIN`, …), so the list comes up without typing a first letter;
-    at other spaces the server answers with nothing (no popup).
+  A space triggers completion where names are expected (after `DROP VIEW`, `ALTER TABLE`,
+  `REFERENCES`, `FROM`, `JOIN`, …), so the list comes up without typing a first letter;
+  at other spaces the server answers with nothing (no popup).
 
-    The schema cache is reloaded after a run that executed DDL (`refreshAfterDDL: false` to
-    turn off; `space i U` / `sqlh refresh` still reload by hand).
+  The schema cache is reloaded after a run that executed DDL (`refreshAfterDDL: false` to
+  turn off; `space i U` / `sqlh refresh` still reload by hand).
 
 DDL is formatted with its own layout: a `CREATE TABLE`'s columns one per line, an `ALTER TABLE`
 with several actions one action per line, other DDL on one line, the query of `CREATE VIEW … AS`
 below its header.
+
+#### JSON keys
+
+Inside JSON paths, completion offers the keys found in the data. sqlh samples 1,000 non-null
+rows and caches the result for 10 minutes; a lookup that takes longer than 1.5 s finishes in
+the background.
+
+- PostgreSQL `json`/`jsonb`: `col->'…'`, `->>'…'`, nested chains including array indexes,
+  `#>`/`#>>` `'{a,…'`, `?`, `jsonb_path_*(col, '$.a.…')`. Each key comes with its types and
+  frequency (`code: string|null · 6/6 sampled`).
+- Oracle: `json_value`/`json_query`/`json_exists`/`json_table(col, '$.…')` on any column, via
+  `JSON_DATAGUIDE`. Keys that need quotes are inserted as `."CAS RN"`.
 
 #### Functions
 
@@ -109,9 +167,10 @@ Signature help inside a call shows the overloads with the argument being typed h
 (the first overload that takes that many arguments is selected).
 
 #### Join completion
-If the tables are connected with a foreign key sqlh can complete ```JOIN``` statements
 
-![join_completion](imgs/sqlh-fk_joins.gif)
+If the tables are connected with a foreign key sqlh can complete `JOIN` statements
+
+![join_completion](imgs/sqls-fk_joins.gif)
 
 Views join too: a view column taken from a table column inherits its foreign keys
 (`v_orders.customer_id` → `customer.id`, "view column from orders"), and a view exposing a
@@ -127,6 +186,47 @@ From the CLI, `sqlh describe TABLE` / `sqlh relations TABLE`, and the table pick
 (`sqlh tables -p --file F --line L --col C`) lists the tables related to the statement at the
 cursor first and, after `JOIN`, inserts the whole join clause; Ctrl-R drills into a table's
 relationships and inserts the join chain. See [doc/cli.md](doc/cli.md#relationships).
+
+#### Running queries
+
+The statement at the cursor, or every statement in a selection, runs on the current connection
+and the result goes to a CSV file. Results are written to `{workspace}/.sqlh/results/`
+(`results.dir`) as `{conn}_{stamp}.csv`, plus a `latest.csv` link. The `.sqlh/` directory
+gitignores itself.
+
+- **Run**: the first `results.previewLimit` rows (default 100). PostgreSQL reads through a
+  server-side cursor, so only N rows are fetched. **Export**: all rows, streamed.
+- Queries run in the background. Progress, the summary and errors appear in the editor's status
+  line, not in popups. `sqlh cancel` (Helix `space i X`) cancels the running query.
+- Statements are split by sqlh's own dialect-aware splitter (Oracle `;` vs PL/SQL `END;`,
+  `$$` bodies, …).
+- Results open in `results.viewer` (e.g. VisiData in a Herdr pane) with `--open` / `sqlh open`.
+- After a run that executed DDL, the schema cache reloads.
+- Every run is recorded in `{workspace}/.sqlh/history.jsonl`. Runs of the same query are
+  grouped as versions, and the panel shows them with diffs.
+
+From Helix this is bound under `space i` (`r` run, `e` export, `d` dump, `X` cancel). From an
+LSP client, use the code actions. From the terminal, use `sqlh run` / `sqlh export`. See
+[doc/cli.md](doc/cli.md#what-run--export-execute).
+
+#### CLI
+
+`sqlh <command>` uses the server of the current workspace (found by walking up from the
+current directory or `--file`) over a Unix socket. It gets the same connection, the same
+session and the editor's unsaved buffers. Without a server, `run`, `export`, `dump`,
+`connections` and `latest` work standalone from the config.
+
+```sh
+sqlh run --sql "select * from orders" --limit 500   # → .sqlh/results/<conn>_….csv
+sqlh export -f report.sql -l 12 --open              # the statement at line 12, all rows
+sqlh dump reports/*.sql -d ~/exports/$(date +%F)    # each file on its header's connection
+sqlh connect pg_local                               # switch the editor's connection
+sqlh tables -p                                      # pick a table (inline picker)
+sqlh describe orders                                # columns, keys, relationships
+sqlh keys panel                                     # every panel key binding
+```
+
+The full command list, the pickers and the Helix keybindings are in [doc/cli.md](doc/cli.md).
 
 #### Side panel
 
@@ -164,12 +264,13 @@ another, add a connection (the panel duplicates and edits them). See
 
 #### CodeAction
 
-![code_actions](https://github.com/raikhan/sqlh.vim/blob/master/imgs/sqls_vim_demo.gif)
-
-- [x] Execute SQL
+- [x] Run → CSV (first N rows), Export → CSV (all rows), Show results (text)
+- [x] Cancel the running query
+- [x] Switch the editor to the file header's connection / point the header at the editor's
+- [x] Show / Switch Connections, Show Databases, Show Schemas, Show Tables
 - [ ] Explain SQL
-- [x] Switch Connection(Selected Database Connection)
-- [x] Switch Database
+
+Code actions run on the selection, or on the statement at the cursor.
 
 #### Hover
 
@@ -211,18 +312,55 @@ same definition.
 
 ![document_format](./imgs/sqls_document_format.gif)
 
+The formatter is safe for format-on-save: it handles JSON operators (`->`, `->>`), comments and
+PL/SQL, and keyword case follows `lowercaseKeywords` (identifiers: `lowercaseIdentifiers`).
+
 ## Installation
 
 ```shell
 go install github.com/raikhan/sqlh@latest
 ```
 
-## Editor Plugins
+or from a checkout with [just](https://github.com/casey/just):
 
-- [sqlh.vim](https://github.com/raikhan/sqlh.vim)
-- [vscode-sqlh](https://github.com/lighttiger2505/vscode-sqlh)
-- [sqlh.nvim](https://github.com/nanotee/sqlh.nvim)
-- [Emacs LSP mode](https://emacs-lsp.github.io/lsp-mode/page/lsp-sqlh/)
+```shell
+just install   # go install into $GOBIN / $GOPATH/bin, warns if another sqlh is first on PATH
+just test
+```
+
+Editors start the language server as `sqlh lsp`.
+
+## Editor Setup
+
+### Helix
+
+`~/.config/helix/languages.toml`:
+
+```toml
+[language-server.sqlh]
+command = "sqlh"
+args = ["lsp"]
+
+[[language]]
+name = "sql"
+language-servers = ["sqlh"]
+auto-format = true
+```
+
+The `space i` keybindings (run, export, dump, panel, table picker, connection switcher,
+cancel, refresh) are listed in [doc/cli.md](doc/cli.md#helix). Helix discards the results of
+`workspace/executeCommand`, so these bindings call the CLI in editor mode, and the server
+reports back through the status line.
+
+### Other editors
+
+Any LSP client can run `sqlh lsp`. The upstream sqls plugins below target `sqls`; point
+their command at `sqlh lsp` (their sqls-specific extras may not work):
+
+- [sqls.vim](https://github.com/sqls-server/sqls.vim)
+- [vscode-sqls](https://github.com/lighttiger2505/vscode-sqls)
+- [sqls.nvim](https://github.com/nanotee/sqls.nvim)
+- [Emacs LSP mode](https://emacs-lsp.github.io/lsp-mode/page/lsp-sqls/)
 
 ## DB Configuration
 
@@ -237,13 +375,17 @@ Whichever method you choose, the settings you make will remain the same.
 1. Configuration file specified by the `-config` flag
 1. `workspace/configuration` set to LSP client
 1. Configuration file located in the following location
-    - `$XDG_CONFIG_HOME`/sqlh/config.yml ("`$HOME`/.config" is used instead of `$XDG_CONFIG_HOME` if it's not set)
+   - `$XDG_CONFIG_HOME`/sqlh/config.yml ("`$HOME`/.config" is used instead of `$XDG_CONFIG_HOME` if it's not set)
 
 ### Configuration file sample
+
+An annotated reference with every option is in [doc/config.example.yml](doc/config.example.yml).
 
 ```yaml
 # Set to true to use lowercase keywords instead of uppercase.
 lowercaseKeywords: false
+# Insert all-upper-case identifiers (Oracle's stored form) in lower case.
+lowercaseIdentifiers: false
 # Underline unknown tables, aliases and columns, checked against the schema cache
 # (never the database). Default: true.
 diagnostics: true
@@ -255,7 +397,34 @@ relations:
   insert: join
   # Offer relationships guessed from column names ("maybe"). Default: true.
   maybe: true
+results:
+  dir: "{workspace}/.sqlh/results" # also {home}, {conn}, "~"
+  previewLimit: 100 # rows for a preview run
+  null: "" # text written for SQL NULL
+  reuseFor: 10m # `space i d` reuses a complete result this recent
+# viewer: ["vd"]                    # opens results; default open / xdg-open
+panel:
+  placement: right # the side panel: right, left, up or down
+tui:
+  queriesDir: queries # query files of the panel's Queries tab
 connections:
+  - alias: pg_local
+    driver: postgresql
+    dataSourceName: host=localhost port=5432 user=admin password=${PG_PASSWORD} dbname=app sslmode=disable
+    schemas: [
+      app,
+      public,
+    ] # metadata allow-list; the first is the current schema
+    environment: dev # dev, test or prod
+  - alias: oracle_dev
+    driver: oracle # pure Go: no Oracle Instant Client
+    host: oracle.example.com
+    port: 1521
+    dbName: ORCLPDB1 # service name
+    user: app
+    passwdCmd: security find-generic-password -s sqlh-oracle_dev -w
+    schemas: [APP, APP_HIST]
+    group: Oracle
   - alias: dsn_mysql
     driver: mysql
     dataSourceName: root:root@tcp(127.0.0.1:13306)/world
@@ -326,27 +495,27 @@ In `coc-settings.json` opened by `:CocConfig`
 
 ```json
 {
-    "languageserver": {
-        "sql": {
-            "command": "sqlh",
-            "args": ["lsp", "-config", "$HOME/.config/sqlh/config.yml"],
-            "filetypes": ["sql"],
-            "shell": true
-        }
+  "languageserver": {
+    "sql": {
+      "command": "sqlh",
+      "args": ["lsp", "-config", "$HOME/.config/sqlh/config.yml"],
+      "filetypes": ["sql"],
+      "shell": true
     }
+  }
 }
 ```
 
-- setting example with [nvim-lspconfig](https://github.com/neovim/nvim-lspconfig/blob/master/doc/server_configurations.md#sqlh).
+- setting example with [nvim-lspconfig](https://github.com/neovim/nvim-lspconfig/blob/master/doc/server_configurations.md#sqls) (reusing its `sqls` server definition).
 
 ```lua
-require'lspconfig'.sqlh.setup{
+require'lspconfig'.sqls.setup{
   cmd = { "sqlh", "lsp" },
   on_attach = function(client, bufnr)
-    require('sqlh').on_attach(client, bufnr) -- require sqlh.nvim
-  end
+    require('sqls').on_attach(client, bufnr) -- require sqls.nvim
+  end,
   settings = {
-    sqlh = {
+    sqlh = { -- sqlh reads its settings under "sqlh"
       connections = {
         {
           driver = 'mysql',
@@ -364,16 +533,17 @@ require'lspconfig'.sqlh.setup{
 
 - Setting example for Sublime Text 4
 
-  Install the LSP Client by Opening the command palette and run ```Package Control: Install Package```, then select ```LSP```.
+  Install the LSP Client by Opening the command palette and run `Package Control: Install Package`, then select `LSP`.
 
-  Open ```Preferences > Package Settings > LSP > Settings``` and add the ```"sqlh"``` client configuration to the ```"clients"```:
+  Open `Preferences > Package Settings > LSP > Settings` and add the `"sqlh"` client configuration to the `"clients"`:
+
 ```
 {
     "show_diagnostics_count_in_view_status": true,
     "clients": {
         "sqlh": {
             "enabled": true,
-            "command": ["/path/to/sqlh binary"],
+            "command": ["/path/to/sqlh", "lsp"],
             "selector": "source.sql"
         }
     }
@@ -386,31 +556,48 @@ require'lspconfig'.sqlh.setup{
 
 The first setting in `connections` is the default connection.
 
-| Key         | Description          |
-| ----------- | -------------------- |
-| connections | Database connections |
+| Key                  | Description                                                                 |
+| -------------------- | --------------------------------------------------------------------------- |
+| connections          | Database connections                                                        |
+| lowercaseKeywords    | Lowercase keywords in completion and formatting. Default `false`.           |
+| lowercaseIdentifiers | Insert all-upper-case identifiers in lower case. Default `false`.           |
+| diagnostics          | Schema-aware diagnostics. Default `true`.                                   |
+| refreshAfterDDL      | Reload the schema cache after a run that executed DDL. Default `true`.      |
+| relations            | `insert` (`join`/`name`), `maybe`, `chainDepth`, `chainLimit`               |
+| results              | `dir`, `previewLimit`, `null`, `reuseFor`, `viewer`                         |
+| panel                | `placement`, `insertKeys`, `keys`, `icons`, `statement`, `chains`, `syntax` |
+| picker               | `keys` of the inline picker                                                 |
+| tui                  | `queriesDir`, `editor`                                                      |
+
+`sqlh keys` lists every configurable key binding. See [doc/cli.md](doc/cli.md#panel).
 
 ### connections
 
 `dataSourceName` takes precedence over the value set in `proto`, `user`, `passwd`, `host`, `port`, `dbName`, `params`.
 
-| Key            | Description                                 |
-| -------------- | ------------------------------------------- |
-| alias          | Connection alias name. Optional.            |
-| driver         | `mysql`, `postgresql`, `sqlite3`, `mssql`, `h2`. Required. |
-| dataSourceName | Data source name.                           |
-| proto          | `tcp`, `udp`, `unix`. Default `tcp` when `host`/`port` is set. |
-| user           | User name                                   |
-| passwd         | Password                                    |
-| host           | Host                                        |
-| port           | Port                                        |
-| path           | unix socket path                            |
-| dbName         | Database name                               |
-| params         | Option params. Optional.                    |
-| sshConfig      | ssh config. Optional.                       |
-| schemas        | Metadata allow-list (Oracle, PostgreSQL). The first is the current schema on connect. Optional. |
-| schema         | The schema the connection works in, instead of the first of `schemas`. Optional. |
-| group          | A folder in the panel's connection list (one level). Optional. |
+| Key            | Description                                                                                        |
+| -------------- | -------------------------------------------------------------------------------------------------- |
+| alias          | Connection alias name. Optional.                                                                   |
+| driver         | `mysql`, `postgresql`, `oracle`, `sqlite3`, `mssql`, `h2`, `vertica`, `clickhouse`. Required.      |
+| dataSourceName | Data source name (Oracle: a go-ora URL).                                                           |
+| proto          | `tcp`, `udp`, `unix`. Default `tcp` when `host`/`port` is set.                                     |
+| user           | User name                                                                                          |
+| passwd         | Password                                                                                           |
+| passwdCmd      | Shell command printing the password (e.g. macOS keychain). Used when `passwd` is empty.            |
+| host           | Host                                                                                               |
+| port           | Port                                                                                               |
+| path           | unix socket path                                                                                   |
+| dbName         | Database name (Oracle: service name)                                                               |
+| params         | Option params. Optional.                                                                           |
+| sshConfig      | ssh config. Optional.                                                                              |
+| schemas        | Metadata allow-list (Oracle, PostgreSQL). The first is the current schema on connect. Optional.    |
+| schema         | The schema the connection works in, instead of the first of `schemas`. Optional.                   |
+| environment    | `dev` (default), `test` or `prod`: shown in the panel and `sqlh status`. Optional.                 |
+| sample         | The panel's sample rows: `auto`, `manual` or `off`. Default: `auto` on dev/test, `manual` on prod. |
+| group          | A folder in the panel's connection list (one level). Optional.                                     |
+
+`${NAME}` in `user`, `passwd` and `dataSourceName` is expanded from the environment (a bare
+`$NAME` is left literal).
 
 #### sshConfig
 
@@ -433,17 +620,19 @@ See also.
 ## Contributors
 
 This project exists thanks to all the people who contribute.
-<a href="https://github.com/raikhan/sqlh/graphs/contributors">
-    <img src="https://contrib.rocks/image?repo=sqlh/sqlh" />
+Most of the foundation comes from the [sqls contributors](https://github.com/sqls-server/sqls/graphs/contributors):
+<a href="https://github.com/sqls-server/sqls/graphs/contributors">
+<img src="https://contrib.rocks/image?repo=sqls-server/sqls" />
 </a>
 
-## Inspired
+## Credits
 
-I created sqlh inspired by the following OSS.
+sqlh is a fork of [sqls](https://github.com/sqls-server/sqls) by Toshikazu Ohashi
+([lighttiger2505](https://github.com/lighttiger2505)), MIT licensed. sqls was inspired by the following OSS:
 
 - [dbcli Tools](https://github.com/dbcli)
-    - [mycli](https://www.mycli.net/)
-    - [pgcli](https://www.pgcli.com/)
-    - [litecli](https://litecli.com/)
+  - [mycli](https://www.mycli.net/)
+  - [pgcli](https://www.pgcli.com/)
+  - [litecli](https://litecli.com/)
 - non-validating SQL parser
-    - [sqlparse](https://github.com/andialbrecht/sqlparse)
+  - [sqlparse](https://github.com/andialbrecht/sqlparse)
