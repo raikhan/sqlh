@@ -188,6 +188,7 @@ type runRequest struct {
 	file    string
 	line    int
 	col     int
+	endLine int    // > line: the statements on lines line..endLine
 	out     string // CSV path for the first result set (later ones numbered)
 	fromCLI bool
 
@@ -220,7 +221,8 @@ func parseRunArgs(args []interface{}) (uri string, rng *lsp.Range, limit int, ve
 
 // resolveStatements works out what to run:
 //   - CLI SQL (stdin/--sql): all statements in it;
-//   - CLI file + line: the statement at that line, using the editor's live
+//   - CLI file + line: the statement at that line (with endLine: those on
+//     lines line..endLine), using the editor's live
 //     buffer when the file is open (unsaved edits included), else the disk;
 //   - editor selection: its statements; editor cursor: the statement under it;
 //   - editor without a range: the whole document.
@@ -246,11 +248,11 @@ func (s *Server) resolveStatements(req runRequest) ([]sqlsplit.Statement, string
 			return st, uri, err
 		}
 		col := max(req.col-1, 0)
-		st, ok := sqlsplit.AtCursor(text, sqlsplit.Split(text, d), sqlsplit.Position{Line: req.line - 1, Char: col})
+		st, ok := sqlsplit.InLines(text, sqlsplit.Split(text, d), req.line-1, req.endLine-1, sqlsplit.Position{Line: req.line - 1, Char: col})
 		if !ok {
 			return nil, "", fmt.Errorf("no statement at %s:%d", filepath.Base(req.file), req.line)
 		}
-		return []sqlsplit.Statement{st}, uri, nil
+		return st, uri, nil
 	}
 
 	uri := req.uri

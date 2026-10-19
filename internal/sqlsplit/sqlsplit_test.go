@@ -3,6 +3,7 @@ package sqlsplit
 import (
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -103,6 +104,34 @@ func TestAtCursor(t *testing.T) {
 		got, ok := AtCursor(text, st, c.cur)
 		if !ok || got.SQL != c.want {
 			t.Errorf("cursor %v: got %q want %q", c.cur, got.SQL, c.want)
+		}
+	}
+}
+
+func TestInLines(t *testing.T) {
+	text := "select 1;\n\n-- about two\nselect 2; select 3;\nselect\n  4;\n\n\nselect 5;"
+	//       line0      1  2            3                   4      5    6 7 8
+	st := Split(text, Generic)
+	cases := []struct {
+		from, to int
+		want     string
+	}{
+		{0, 0, "select 1"},                                         // one line: the statement at the cursor
+		{3, 3, "select 2"},                                         // one line, two statements: still the cursor's
+		{0, 3, "select 1|select 2|select 3"},                       // a selection: all its statements
+		{3, 4, "select 2|select 3|select\n  4"},                    // partly selected statements count
+		{5, 8, "select\n  4|select 5"},                             //
+		{6, 7, "select\n  4"},                                      // only blank lines: the cursor's (previous)
+		{0, 99, "select 1|select 2|select 3|select\n  4|select 5"}, // whole file
+	}
+	for _, c := range cases {
+		got, ok := InLines(text, st, c.from, c.to, Position{Line: c.from})
+		var sqls []string
+		for _, s := range got {
+			sqls = append(sqls, s.SQL)
+		}
+		if !ok || strings.Join(sqls, "|") != c.want {
+			t.Errorf("lines %d-%d: got %q want %q", c.from, c.to, strings.Join(sqls, "|"), c.want)
 		}
 	}
 }

@@ -452,7 +452,7 @@ func (s *Server) controlRun(ctx context.Context, conn *jsonrpc2.Conn, req *jsonr
 		return fail(err)
 	}
 	rr := runRequest{
-		kind: jobPreview, limit: p.Limit, sql: p.SQL, file: p.File, line: p.Line, col: p.Col,
+		kind: jobPreview, limit: p.Limit, sql: p.SQL, file: p.File, line: p.Line, col: p.Col, endLine: p.EndLine,
 		out: p.Out, fromCLI: true,
 	}
 	switch {

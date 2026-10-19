@@ -132,11 +132,11 @@ func statements(p control.RunParams, d sqlsplit.Dialect) ([]sqlsplit.Statement, 
 		}
 		return all, nil
 	}
-	st, ok := sqlsplit.AtCursor(text, all, sqlsplit.Position{Line: p.Line - 1, Char: max(p.Col-1, 0)})
+	st, ok := sqlsplit.InLines(text, all, p.Line-1, p.EndLine-1, sqlsplit.Position{Line: p.Line - 1, Char: max(p.Col-1, 0)})
 	if !ok {
 		return nil, fmt.Errorf("no statement at %s:%d", filepath.Base(p.File), p.Line)
 	}
-	return []sqlsplit.Statement{st}, nil
+	return st, nil
 }
 
 func runStandalone(c *cli.Context, p control.RunParams) (*control.RunResult, error) {

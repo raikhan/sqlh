@@ -349,8 +349,11 @@ In order of precedence:
 2. piped stdin, if longer than one character — Helix `:pipe-to` sends the selection, which in
    normal mode is only the character under the cursor, so that is ignored and…
 3. `--file F --line L [--col C]`: the statement at that line (1-based, e.g. Helix
-   `%{cursor_line}`); `--file` without `--line` runs the whole file. With a server, an open
-   file's live buffer is used.
+   `%{cursor_line}`); with `--end-line E` (`-L`) greater than `L`, every statement with a part
+   on lines `L`…`E` (a selection: Helix `%{selection_line_start}`/`%{selection_line_end}`;
+   several statements on one selected line are all run only when the selection spans more than
+   that line). `--file` without `--line` runs the whole file. With a server, an open file's
+   live buffer is used.
 
 Options: `--out PATH` (CSV path; further result sets `<name>_2.csv`, …), `--table` (print a text table instead
 of writing CSV), `--json` (structured result), `--conn ALIAS` / `--standalone` (run on a separate
@@ -482,9 +485,9 @@ summary or the error in the editor.
 
 ```toml
 [keys.normal.space.i]
-r = ":pipe-to sqlh run --editor --bg --open -f r##'%{buffer_name}'## -l %{cursor_line}"
-e = ":pipe-to sqlh export --editor --bg --open -f r##'%{buffer_name}'## -l %{cursor_line}"
-d = ":pipe-to sqlh dump --editor --bg r##'%{buffer_name}'## -l %{cursor_line}"
+r = ":pipe-to sqlh run --editor --bg --open -f r##'%{buffer_name}'## -l %{selection_line_start} -L %{selection_line_end}"
+e = ":pipe-to sqlh export --editor --bg --open -f r##'%{buffer_name}'## -l %{selection_line_start} -L %{selection_line_end}"
+d = ":pipe-to sqlh dump --editor --bg r##'%{buffer_name}'## -l %{selection_line_start} -L %{selection_line_end}"
 o = ":pipe-to sqlh open --editor -f r##'%{buffer_name}'##"
 t = ":pipe-to sqlh panel --editor -f r##'%{buffer_name}'## -l %{cursor_line} --col %{cursor_column}"
 P = ":insert-output sqlh panel take --editor -f r##'%{buffer_name}'## -l %{cursor_line} --col %{cursor_column}"
@@ -502,8 +505,8 @@ path survives); with the default `sh`, write `'%{buffer_name}'`. `r`/`e` open th
 
 | Keys | |
 |---|---|
-| `space i r` / `e` | run the statement at the cursor → CSV, first `results.previewLimit` rows / all rows, opened in the viewer |
-| `space i d` | dump the statement at the cursor → `<file>.csv` in Helix's working directory (all rows; copies a recent complete result of the same statement, see [Query files](#query-files-connection-header-and-dump)) |
+| `space i r` / `e` | run the statement at the cursor (or every statement on the selected lines; `%` first: the whole file) → CSV, first `results.previewLimit` rows / all rows, opened in the viewer |
+| `space i d` | dump the statement at the cursor (or the selected lines' statements: `<file>_2.csv`, … for the later ones) → `<file>.csv` in Helix's working directory (all rows; copies a recent complete result of the same statement, see [Query files](#query-files-connection-header-and-dump)) |
 | `space i o` | open the latest result in the viewer |
 | `space i t` | open or focus the [panel](#panel) (synced to the cursor) |
 | `space i P` | (pressed by the panel) insert what the panel chose at the cursor |

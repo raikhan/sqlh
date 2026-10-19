@@ -36,6 +36,7 @@ once and lets the query finish in a detached process.`,
 			&cli.StringFlag{Name: "out", Aliases: []string{"o"}, Usage: "CSV `PATH` (one FILE only)"},
 			&cli.IntFlag{Name: "line", Aliases: []string{"l"}, Usage: "only the statement at this 1-based line (one FILE only)"},
 			&cli.IntFlag{Name: "col", Usage: "1-based column, with --line"},
+			endLineFlag,
 			&cli.StringFlag{Name: "conn", Usage: "run on connection `ALIAS` instead of the header's"},
 			editorFlag("run in the editor's server (live buffer, its connection; header updated); errors in its status line"),
 			&cli.BoolFlag{Name: "bg", Usage: "return at once; the query continues in a detached process (reports in the editor)"},
@@ -120,7 +121,7 @@ func dumpFile(c *cli.Context, file, outDir, wd string, cfg **config.Config) (*co
 	if out == abs {
 		return nil, fmt.Errorf("the CSV would overwrite the query file")
 	}
-	p := control.RunParams{File: abs, Line: c.Int("line"), Col: c.Int("col"), All: true, Out: out, Dump: true}
+	p := control.RunParams{File: abs, Line: c.Int("line"), Col: c.Int("col"), EndLine: c.Int("end-line"), All: true, Out: out, Dump: true}
 
 	if c.Bool("editor") {
 		if !c.IsSet("dir") {

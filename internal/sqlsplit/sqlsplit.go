@@ -407,6 +407,29 @@ func AtCursor(text string, stmts []Statement, cur Position) (Statement, bool) {
 	return *next, true
 }
 
+// InLines picks the statements to run for a selection of whole lines
+// (0-based, inclusive): every statement with a part on one of them. A
+// selection within one line, or one touching no statement (blank lines,
+// comments), falls back to AtCursor at cur.
+func InLines(text string, stmts []Statement, from, to int, cur Position) ([]Statement, bool) {
+	if to > from {
+		var sel []Statement
+		for _, st := range stmts {
+			if st.Start.Line <= to && st.End.Line >= from {
+				sel = append(sel, st)
+			}
+		}
+		if len(sel) > 0 {
+			return sel, true
+		}
+	}
+	st, ok := AtCursor(text, stmts, cur)
+	if !ok {
+		return nil, false
+	}
+	return []Statement{st}, true
+}
+
 // attached reports whether lines (from, to) contain no blank line and the
 // cursor is not on the line where the previous statement ends.
 func attached(text string, from, to int, prev *Statement) bool {

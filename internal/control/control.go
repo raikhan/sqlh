@@ -540,14 +540,17 @@ type ConnectParams struct {
 // RunParams selects what to run and how. Exactly one source is used, in
 // order: SQL, then File+Line.
 type RunParams struct {
-	SQL   string `json:"sql,omitempty"`
-	File  string `json:"file,omitempty"` // absolute path
-	Line  int    `json:"line,omitempty"` // 1-based
-	Col   int    `json:"col,omitempty"`  // 1-based, optional
-	Limit int    `json:"limit,omitempty"`
-	All   bool   `json:"all,omitempty"`   // export: no row limit
-	Out   string `json:"out,omitempty"`   // CSV path for the first result set; later ones <stem>_N.csv
-	Table bool   `json:"table,omitempty"` // return a text table instead of writing CSV
+	SQL  string `json:"sql,omitempty"`
+	File string `json:"file,omitempty"` // absolute path
+	Line int    `json:"line,omitempty"` // 1-based
+	Col  int    `json:"col,omitempty"`  // 1-based, optional
+	// EndLine > Line: the statements on lines Line..EndLine (a selection)
+	// instead of the one at Line.
+	EndLine int    `json:"endLine,omitempty"`
+	Limit   int    `json:"limit,omitempty"`
+	All     bool   `json:"all,omitempty"`   // export: no row limit
+	Out     string `json:"out,omitempty"`   // CSV path for the first result set; later ones <stem>_N.csv
+	Table   bool   `json:"table,omitempty"` // return a text table instead of writing CSV
 	// Dump: an export to Out (all rows) that may copy a complete result of
 	// the same statement the server still has, unless Fresh.
 	Dump  bool `json:"dump,omitempty"`

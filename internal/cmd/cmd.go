@@ -28,6 +28,10 @@ import (
 // its connection header.
 var headerFileFlag = &cli.StringFlag{Name: "file", Aliases: []string{"f"}, Usage: "update the connection header of `FILE` (if open in the editor)"}
 
+// endLineFlag: with --line, a selection of lines (e.g. Helix
+// %{selection_line_start}/%{selection_line_end}) runs all its statements.
+var endLineFlag = &cli.IntFlag{Name: "end-line", Aliases: []string{"L"}, Usage: "with --line: run every statement on lines --line..`END` (e.g. Helix %{selection_line_end}); not after --line: just the statement at --line"}
+
 // Commands returns the CLI subcommands.
 func Commands() []*cli.Command {
 	dirFlag := &cli.StringFlag{Name: "dir", Aliases: []string{"C"}, Usage: "find the workspace from `DIR` (default: --file's directory, else cwd)"}
@@ -37,6 +41,7 @@ func Commands() []*cli.Command {
 		&cli.StringFlag{Name: "file", Aliases: []string{"f"}, Usage: "SQL file; with --line runs the statement at that line (the editor's unsaved buffer if open)"},
 		&cli.IntFlag{Name: "line", Aliases: []string{"l"}, Usage: "1-based line in --file (e.g. Helix %{cursor_line})"},
 		&cli.IntFlag{Name: "col", Usage: "1-based column in --file"},
+		endLineFlag,
 		&cli.StringFlag{Name: "out", Aliases: []string{"o"}, Usage: "write the CSV to `PATH` instead of the results directory"},
 		&cli.BoolFlag{Name: "table", Aliases: []string{"t"}, Usage: "print a text table instead of writing CSV"},
 		&cli.StringFlag{Name: "conn", Usage: "run standalone on connection `ALIAS` (does not change the editor's connection)"},
@@ -213,7 +218,7 @@ func readStdin() (string, error) {
 
 func runParams(c *cli.Context, all bool, limit limitChoice) (control.RunParams, error) {
 	p := control.RunParams{
-		SQL: c.String("sql"), Line: c.Int("line"), Col: c.Int("col"),
+		SQL: c.String("sql"), Line: c.Int("line"), Col: c.Int("col"), EndLine: c.Int("end-line"),
 		Table: c.Bool("table"), All: all || limit.all,
 	}
 	if !p.All {

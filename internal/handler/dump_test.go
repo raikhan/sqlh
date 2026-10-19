@@ -569,3 +569,25 @@ func TestHeaderHintAndActions(t *testing.T) {
 		t.Errorf("unknown alias actions: %v", cmds[0].Command)
 	}
 }
+
+func TestRunSelectionOfLines(t *testing.T) {
+	// with an up-to-date header: a run doesn't insert one (shifting the lines)
+	d := newDumpServer(t, "-- sqlh: conn=lite\n\nselect 1 as a;\nselect 2 as b; select 3 as c;\n\nselect 4 as d;\n")
+	count := func(p control.RunParams) int {
+		t.Helper()
+		p.File, p.Table = d.file, true
+		return len(d.run(p).Statements)
+	}
+	if n := count(control.RunParams{Line: 4}); n != 1 {
+		t.Errorf("cursor: %d statements, want 1", n)
+	}
+	if n := count(control.RunParams{Line: 4, EndLine: 4}); n != 1 {
+		t.Errorf("one line: %d statements, want 1", n)
+	}
+	if n := count(control.RunParams{Line: 3, EndLine: 4}); n != 3 {
+		t.Errorf("lines 3-4: %d statements, want 3", n)
+	}
+	if n := count(control.RunParams{Line: 4, EndLine: 6}); n != 3 {
+		t.Errorf("lines 4-6: %d statements, want 3", n)
+	}
+}
